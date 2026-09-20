@@ -10,7 +10,7 @@ import TicketNoteModal from './TicketNoteModal'
 import BookingTotalsCard from './BookingTotalsCard'
 import PaymentModal from './PaymentModal'
 import BatchPaymentModal from './BatchPaymentModal'
-import DatePicker from '../common/DatePicker'
+import DateRangePicker from '../common/DateRangePicker'
 import { listBookings, deleteBooking, totalsBookings } from '../../services/vmbApi'
 import { parseAmount, formatMoney, sumAmounts, toVnd } from '../../lib/money'
 import { primaryDeparture } from '../../lib/countdown'
@@ -184,13 +184,17 @@ export default function TicketsTab() {
 
         <div className="flex gap-2 items-center shrink-0">
           <span className="text-xs text-gray-500 font-semibold hidden lg:inline">Ngày bán:</span>
-          <div className="w-36"><DatePicker value={fromSale}
-            onChange={v => { setPage(0); setFromSale(v) }}
-            placeholder="Từ ngày" size="sm" /></div>
-          <span className="text-gray-400 text-xs">→</span>
-          <div className="w-36"><DatePicker value={toSale}
-            onChange={v => { setPage(0); setToSale(v) }}
-            placeholder="Đến ngày" size="sm" /></div>
+          <div className="w-72">
+            <DateRangePicker
+              value={{ from: fromSale, to: toSale }}
+              onChange={({ from, to }) => {
+                setPage(0)
+                setFromSale(from)
+                setToSale(to)
+              }}
+              placeholder="Chọn khoảng ngày bán"
+            />
+          </div>
         </div>
 
         <button type="button" onClick={handleExportPdf} disabled={exporting}
