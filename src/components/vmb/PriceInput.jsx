@@ -60,17 +60,28 @@ export default function PriceInput({
     if (!pasted) return
 
     // Trích số ở ĐẦU chuỗi — bỏ . , _ và khoảng trắng (thousand-sep), dừng ở chữ.
-    // Cho phép dạng thập phân dùng "," hoặc "." (heuristic parseAmount xử lý).
-    // Regex: 1..* digit, có thể có group với . , _ hoặc space, hoặc thập phân.
     const cleaned = pasted.trim()
-    // Tách phần đầu trước khi gặp ký tự chữ cái đầu tiên
     const m = /^([\d.,\s_]+)/.exec(cleaned)
     if (!m) return // không phát hiện số → để browser tự paste bình thường
 
     e.preventDefault()
 
-    // Parse phần số vừa lấy được
-    const raw = m[1].replace(/[\s_]/g, '') // loại space + underscore
+    // Chuẩn hóa: strip whitespace + underscore
+    let raw = m[1].replace(/[\s_]/g, '')
+
+    // ── 2026-09-20 fix ────────────────────────────────────
+    // Pre-format: nếu chuỗi CHỈ CÓ comma (không có dot) → đổi hết comma
+    // thành dot. Xong parseAmount tự xử đúng qua heuristic dot có sẵn.
+    //   "99,000"    → "99.000"    → parseAmount → 99000
+    //   "18,181"    → "18.181"    → parseAmount → 18181
+    //   "1,234,567" → "1.234.567" → parseAmount → 1234567
+    //   "624,20"    → "624.20"    → parseAmount → 624.2 (decimal OK)
+    // Chuỗi có cả dot lẫn comma ("1.234,56") KHÔNG đụng vào — parseAmount
+    // đã xử lý đúng mixed format.
+    if (raw.includes(',') && !raw.includes('.')) {
+      raw = raw.replace(/,/g, '.')
+    }
+
     const pastedNum = parseAmount(raw)
     if (!Number.isFinite(pastedNum)) return
 
