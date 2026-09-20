@@ -8,6 +8,7 @@ import WatermarkEditor from '../components/media/WatermarkEditor'
 import TodoBoard from '../components/todo/TodoBoard'
 import AlbumDropdown from '../components/media/AlbumDropdown'
 import { SkeletonStyles } from '../components/common/Skeleton'
+import UserMenu from '../components/auth/UserMenu'
 
 /**
  * Bộ tiện ích: Hình ảnh · Tệp · Office · Watermark.
@@ -157,7 +158,9 @@ export default function MediaPage() {
             </button>
           ))}
 
-          <div className="ml-auto shrink-0 pl-2" />
+          <div className="ml-auto shrink-0 pl-2 flex items-center">
+            <UserMenu />
+          </div>
         </div>
 
         {/* Dòng 2 — 4 nút chức năng, FULL WIDTH, kính mờ (chỉ tab Hình ảnh) */}

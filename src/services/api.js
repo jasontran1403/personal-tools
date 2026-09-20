@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { readToolsToken, wipeToolsToken } from './toolsAuth'
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:9009'
 
@@ -7,19 +8,82 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' }
 })
 
-// Upload file → remove Content-Type to let browser set boundary
+/**
+ * Không phải endpoint tool nào cũng cần Bearer:
+ *   - /api/tools/auth/**   : bản thân là đăng nhập, không cần
+ *   - /api/tools/qr, /watermark/add|logo, /sign : tiện ích, không lưu theo user
+ *
+ * Còn lại đều gắn token. Nếu chưa có token thì cứ để trống — backend sẽ trả 401
+ * và interceptor response sẽ điều hướng về màn Đăng nhập.
+ *
+ * ── FIX 2026-09-15 ──────────────────────────────────────────────────────
+ * Trước đây `needsAuth('/vmb-files/')` trả true để interceptor tự đính Bearer
+ * — nhưng token đó là scope Tools, không verify được ở JwtAuthenticationFilter
+ * chính (2 secret khác nhau) → 401 "signature does not match".
+ *
+ * Nay BE đã: (a) hợp nhất secret, (b) đưa /vmb-files/** vào PUBLIC_API_PREFIXES.
+ * File mặt vé + CCCD/PP là static với tên UUID không đoán được, tương đương
+ * "public" cho mục đích thực tế. FE không cần đính token cho /vmb-files/ nữa,
+ * ưu điểm là {@code <iframe>} / {@code <img>} có thể lấy trực tiếp qua URL
+ * không phải fetch-as-blob rồi createObjectURL.
+ */
+const NO_AUTH_PREFIXES = [
+  '/api/tools/auth',
+  '/api/tools/qr',
+  '/api/tools/watermark/add',
+  '/api/tools/watermark/logo',
+  '/api/tools/sign',
+]
+
+function needsAuth(url = '') {
+  // /vmb-files/** giờ public — không đính token
+  if (url.startsWith('/vmb-files/')) return false
+  if (!url.startsWith('/api/tools/')) return false
+  return !NO_AUTH_PREFIXES.some(p => url.startsWith(p))
+}
+
 api.interceptors.request.use(cfg => {
+  // Upload file → xóa Content-Type để trình duyệt tự đặt kèm boundary
   if (typeof FormData !== 'undefined' && cfg.data instanceof FormData) {
     delete cfg.headers['Content-Type']
     delete cfg.headers['content-type']
   }
+  if (needsAuth(cfg.url || '')) {
+    const token = readToolsToken()
+    if (token) cfg.headers.Authorization = `Bearer ${token}`
+  }
   return cfg
 })
+
+api.interceptors.response.use(
+  res => res,
+  err => {
+    const status = err?.response?.status
+    if (status === 401 && needsAuth(err?.config?.url || '')) {
+      wipeToolsToken({ keepRememberedUsername: true })
+      window.dispatchEvent(new CustomEvent('tools:session-expired'))
+      if (!window.location.pathname.startsWith('/login')) {
+        const back = encodeURIComponent(window.location.pathname + window.location.search)
+        window.location.replace(`/login?back=${back}`)
+      }
+    }
+    return Promise.reject(err)
+  },
+)
 
 export default api
 
 // ─── Media ────────────────────────────────────────────────────────
 export const mediaUrl = path => {
+  if (!path) return ''
+  return /^https?:\/\//.test(path) ? path : BASE + path
+}
+
+/**
+ * URL đầy đủ cho file /vmb-files/** (dùng cho <img src>, <iframe src>).
+ * Endpoint này giờ public — không cần token.
+ */
+export const vmbFileUrl = path => {
   if (!path) return ''
   return /^https?:\/\//.test(path) ? path : BASE + path
 }
@@ -128,7 +192,7 @@ export const signPdf = async ({ file, zones, pin }) => {
   form.append('zones', JSON.stringify({ zones }))
   const res = await api.post('/api/tools/sign', form, { responseType: 'blob', timeout: 5 * 60 * 1000, headers: { 'X-Token-Pin': pin } })
   const type = res.data?.type || ''
-  if (type.includes('json')) { let m = 'Ký số thất bại'; try { const b = JSON.parse(await res.data.text()); m = b.message || m } catch {}; throw new Error(m) }
+  if (type.includes('json')) { let m = 'Ký số thất bại'; try { const b = JSON.parse(await res.data.text()); m = b.message || m } catch { }; throw new Error(m) }
   if (!type.includes('pdf')) { const h = await res.data.slice(0, 5).text(); if (!h.startsWith('%PDF')) throw new Error('Không phải file PDF') }
   const cd = res.headers['content-disposition'] || ''
   const match = cd.match(/filename[^;=\n]*=\s*(?:["']?)([^"'\n;]+)/i)
@@ -162,3 +226,9 @@ export const createTodo = data => api.post('/api/tools/todo', data)
 export const updateTodo = (id, data) => api.patch(`/api/tools/todo/${id}`, data)
 export const updateTodoStatus = (id, status) => api.patch(`/api/tools/todo/${id}/status`, { status })
 export const deleteTodo = id => api.delete(`/api/tools/todo/${id}`)
+
+// ─── Tools users (admin) ──────────────────────────────────────────
+export const listToolsUsers = () => api.get('/api/tools/users')
+export const createToolsUser = data => api.post('/api/tools/users', data)
+export const updateToolsUser = (id, data) => api.patch(`/api/tools/users/${id}`, data)
+export const deleteToolsUser = id => api.delete(`/api/tools/users/${id}`)

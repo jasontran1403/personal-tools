@@ -1,159 +1,94 @@
 // ═══════════════════════════════════════════════════════════════════════════
-// Cổng đăng nhập cho khu Tiện ích nội bộ (/tools)
+// Auth phía client cho khu Tiện ích (/tools/*).
 //
-// Khác hẳn với đăng nhập Kế toán (useAuth.js): khu này KHÔNG dùng tài khoản
-// trong bảng users. Chỉ có hai tài khoản cứng được phép vào, xác thực ngay ở
-// trình duyệt rồi tự phát một JWT (HS256, ký bằng Web Crypto) để:
-//   • Có hạn dùng (exp) → hết hạn thì đá ra đăng nhập lại.
-//   • Có chữ ký → không sửa tay để kéo dài phiên được.
+// TRƯỚC: ký JWT ngay trong bundle bằng Web Crypto — chỉ chặn được giao diện,
+// backend vẫn công khai. Ai biết URL /api/tools/media là vẫn tải file.
 //
-// LƯU Ý BẢO MẬT: vì ký ở client nên SECRET nằm trong bundle, đây là cổng chặn
-// GIAO DIỆN, không phải hàng rào ở API. Các endpoint /api/tools/** phía backend
-// vẫn công khai như thiết kế cũ. Muốn siết thật thì phải phát/kiểm token này ở
-// Spring (xem ghi chú ở cuối repo).
+// GIỜ: đăng nhập gọi thẳng POST /api/tools/auth/login của backend. Backend phát
+// JWT ký bằng secret ở server, tự kiểm khi mọi request /api/tools/{media,files,
+// todo,office,users,watermark/save} đi qua ToolsAuthFilter. Bí mật không còn ở
+// browser nên không thể giả token.
+//
+// File này chỉ còn: lưu/đọc/xóa token trong storage + gọi các endpoint auth.
+// Toàn bộ verify chuyển sang backend.
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Hai tài khoản được phép — KHÔNG lưu vào DB, chỉ nằm ở đây. */
-const ACCOUNTS = {
-  nguyenhai: '1412',
-  phuongthao: '123',
-}
-export const ALLOWED_USERNAMES = new Set(Object.keys(ACCOUNTS))
+import axios from 'axios'
 
-/** Khóa ký JWT. Đổi chuỗi này sẽ vô hiệu mọi token đã phát trước đó. */
-const SECRET = 'tools-gate::b6f0a1c9-nhatnam-internal-2024'
+const BASE = import.meta.env.VITE_API_URL || 'http://localhost:9009'
+
+const K_TOKEN     = 'tools:token'
+const K_USER      = 'tools:user'        // JSON: { username, displayName, admin, expiresAt }
+const K_REMEMBER  = 'tools:remember'
+const K_USERNAME  = 'tools:username'    // tên đã "ghi nhớ" để điền sẵn form
+
+/** Client axios độc lập với instance chính (không có Authorization interceptor gọi lại vòng) */
+const authClient = axios.create({
+  baseURL: BASE,
+  headers: { 'Content-Type': 'application/json' },
+})
 
 /**
- * Hạn dùng token.
- *   • Ghi nhớ  → 30 ngày, lưu localStorage (còn sau khi đóng trình duyệt).
- *   • Không    → 12 giờ,  lưu sessionStorage (mất khi đóng tab).
+ * Giải nén envelope { success, code, message, data } của backend.
  *
- * MUỐN THỬ NHANH cảnh báo "hết phiên": tạm hạ TTL_SESSION xuống, ví dụ
- * 30 * 1000 (30 giây), đăng nhập KHÔNG tick ghi nhớ rồi đợi.
+ * ── FIX 2026-09-13 ──────────────────────────────────────────────────────
+ * Backend Nhật Nam dùng code 900 cho response THÀNH CÔNG (không phải 200 hay
+ * 0 theo convention chung). Version cũ check `code !== 0 && code !== 200` →
+ * ném Error kèm message = "Đăng nhập thành công", khiến LoginPage catch
+ * rồi `toast.error("Đăng nhập thành công")` với icon đỏ — trông rất buồn cười.
+ *
+ * Chuyển sang dùng field `success: true` làm nguồn sự thật — flag boolean
+ * ổn định qua mọi endpoint, không phụ thuộc code cụ thể của backend nào.
  */
-export const TTL_REMEMBER = 30 * 24 * 60 * 60 * 1000
-export const TTL_SESSION  = 12 * 60 * 60 * 1000
-
-const K_TOKEN    = 'tools:token'
-const K_REMEMBER = 'tools:remember'
-const K_USERNAME = 'tools:username'
-
-/** Chuẩn hóa tên đăng nhập: bỏ khoảng trắng thừa + về chữ thường (không phân biệt hoa/thường) */
-export function normalizeUsername(username) {
-  return String(username || '').trim().toLowerCase()
-}
-
-export function checkCredentials(username, password) {
-  const u = normalizeUsername(username)
-  return Object.prototype.hasOwnProperty.call(ACCOUNTS, u)
-    && ACCOUNTS[u] === password
-}
-
-// ── base64url + HMAC-SHA256 (Web Crypto) ────────────────────────────────────
-
-const enc = new TextEncoder()
-
-function b64urlFromBytes(buf) {
-  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
-  let bin = ''
-  for (const b of bytes) bin += String.fromCharCode(b)
-  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
-}
-
-function b64urlToString(s) {
-  let t = s.replace(/-/g, '+').replace(/_/g, '/')
-  while (t.length % 4) t += '='
-  const bin = atob(t)
-  const bytes = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
-  return new TextDecoder().decode(bytes)
-}
-
-const b64urlFromString = str => b64urlFromBytes(enc.encode(str))
-
-async function hmac(data) {
-  const key = await crypto.subtle.importKey(
-    'raw', enc.encode(SECRET),
-    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
-  )
-  const sig = await crypto.subtle.sign('HMAC', key, enc.encode(data))
-  return b64urlFromBytes(new Uint8Array(sig))
-}
-
-// ── Tạo / đọc / kiểm token ──────────────────────────────────────────────────
-
-export async function createToken(username, ttlMs) {
-  const now = Math.floor(Date.now() / 1000)
-  const header  = { alg: 'HS256', typ: 'JWT' }
-  const payload = { sub: username, scope: 'tools', iat: now, exp: now + Math.floor(ttlMs / 1000) }
-  const head = b64urlFromString(JSON.stringify(header))
-  const body = b64urlFromString(JSON.stringify(payload))
-  const sig  = await hmac(`${head}.${body}`)
-  return `${head}.${body}.${sig}`
-}
-
-/** Đọc payload mà KHÔNG kiểm chữ ký — dùng cho việc xem nhanh exp/sub. */
-export function decodeToken(token) {
-  try {
-    const parts = String(token).split('.')
-    if (parts.length !== 3) return null
-    return JSON.parse(b64urlToString(parts[1]))
-  } catch {
-    return null
+const unwrap = res => {
+  const env = res?.data
+  if (!env) throw new Error('Máy chủ không trả về dữ liệu')
+  if (env.success === false) {
+    throw new Error(env.message || 'Yêu cầu thất bại')
   }
+  return env.data
 }
 
-export function isExpired(token) {
-  const p = decodeToken(token)
-  if (!p || typeof p.exp !== 'number') return true
-  return p.exp * 1000 <= Date.now()
-}
-
-/** Kiểm đầy đủ: chữ ký + scope + hạn dùng + username hợp lệ. Trả payload hoặc null. */
-export async function verifyToken(token) {
-  const parts = String(token || '').split('.')
-  if (parts.length !== 3) return null
-  const expected = await hmac(`${parts[0]}.${parts[1]}`)
-  if (expected !== parts[2]) return null
-  const p = decodeToken(token)
-  if (!p || p.scope !== 'tools') return null
-  if (typeof p.exp !== 'number' || p.exp * 1000 <= Date.now()) return null
-  if (!ALLOWED_USERNAMES.has(p.sub)) return null
-  return p
-}
-
-// ── Lưu / xóa phiên ─────────────────────────────────────────────────────────
+// ── Đọc/ghi token ─────────────────────────────────────────────────
 
 export function readToolsToken() {
   return localStorage.getItem(K_TOKEN) || sessionStorage.getItem(K_TOKEN)
 }
 
-export function saveToolsToken(token, { remember = false, username = '' } = {}) {
+export function readToolsUser() {
+  const raw = localStorage.getItem(K_USER) || sessionStorage.getItem(K_USER)
+  if (!raw) return null
+  try { return JSON.parse(raw) } catch { return null }
+}
+
+function saveSession(token, user, remember) {
   const store = remember ? localStorage : sessionStorage
   const other = remember ? sessionStorage : localStorage
 
   other.removeItem(K_TOKEN)
-  other.removeItem(K_USERNAME)
+  other.removeItem(K_USER)
 
   store.setItem(K_TOKEN, token)
-  if (username) store.setItem(K_USERNAME, username)
+  store.setItem(K_USER, JSON.stringify(user))
 
   if (remember) {
     localStorage.setItem(K_REMEMBER, '1')
-    if (username) localStorage.setItem(K_USERNAME, username)
+    localStorage.setItem(K_USERNAME, user.username || '')
   } else {
     localStorage.removeItem(K_REMEMBER)
   }
 }
 
-/** Xóa phiên. Mặc định giữ lại tên đã "ghi nhớ" để điền sẵn form đăng nhập. */
+/** Xóa phiên. Mặc định giữ lại username đã ghi nhớ để điền sẵn form đăng nhập. */
 export function wipeToolsToken({ keepRememberedUsername = true } = {}) {
   const remembered = keepRememberedUsername && localStorage.getItem(K_REMEMBER) === '1'
     ? localStorage.getItem(K_USERNAME)
     : null
 
-  ;[localStorage, sessionStorage].forEach(s => s.removeItem(K_TOKEN))
-  sessionStorage.removeItem(K_USERNAME)
+  ;[localStorage, sessionStorage].forEach(s => {
+    s.removeItem(K_TOKEN)
+    s.removeItem(K_USER)
+  })
 
   if (remembered) {
     localStorage.setItem(K_USERNAME, remembered)
@@ -167,4 +102,71 @@ export function rememberedToolsUsername() {
   return localStorage.getItem(K_REMEMBER) === '1'
     ? (localStorage.getItem(K_USERNAME) || '')
     : ''
+}
+
+// ── Gọi backend ───────────────────────────────────────────────────
+
+/**
+ * Đăng nhập. Trả { ok, message?, user? }.
+ * Không ném exception ra ngoài để UI đăng nhập không phải bọc try/catch riêng
+ * cho từng lý do sai (sai mật khẩu, mạng lỗi...).
+ */
+export async function login(username, password, remember = false) {
+  try {
+    const res = await authClient.post('/api/tools/auth/login', {
+      username, password, remember,
+    })
+    const data = unwrap(res)
+    saveSession(data.token, {
+      username: data.username,
+      displayName: data.displayName || '',
+      admin: !!data.admin,
+      expiresAt: data.expiresAt,
+    }, remember)
+    return { ok: true, user: data }
+  } catch (e) {
+    // axios ném cả khi status !=2xx và khi backend trả success: false
+    const msg = e?.response?.data?.message || e?.message || 'Đăng nhập thất bại.'
+    return { ok: false, message: msg }
+  }
+}
+
+/**
+ * Verify token còn hạn/còn hiệu lực không. Đồng thời làm mới thông tin user
+ * (displayName, admin) để không phụ thuộc cache localStorage.
+ */
+export async function verifyToken() {
+  const token = readToolsToken()
+  if (!token) return null
+  try {
+    const res = await authClient.post('/api/tools/auth/verify', null, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    const data = unwrap(res)
+    // Cập nhật thông tin user mới nhất, giữ nơi lưu (local/session) đúng như cũ
+    const remember = localStorage.getItem(K_TOKEN) === token
+    saveSession(token, {
+      username: data.username,
+      displayName: data.displayName || '',
+      admin: !!data.admin,
+      expiresAt: data.expiresAt,
+    }, remember)
+    return data
+  } catch {
+    // Token đã hết hạn / bị vô hiệu / sai chữ ký → dọn phiên
+    wipeToolsToken({ keepRememberedUsername: true })
+    return null
+  }
+}
+
+/** Đổi mật khẩu của chính mình */
+export async function changePassword(currentPassword, newPassword) {
+  const token = readToolsToken()
+  if (!token) throw new Error('Chưa đăng nhập')
+  const res = await authClient.post(
+    '/api/tools/auth/change-password',
+    { currentPassword, newPassword },
+    { headers: { Authorization: `Bearer ${token}` } },
+  )
+  return unwrap(res)
 }
