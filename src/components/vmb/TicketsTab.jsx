@@ -557,7 +557,7 @@ function renderBookingRows(b, bIdx, {
               ? (hasFace ? 'Vé đã có mặt vé — click để copy số vé' : 'Click để copy số vé')
               : 'Vé chưa có số'}
             className="font-mono text-[10px] text-gray-500 truncate leading-tight mt-0.5 block text-left w-full hover:text-blue-700 hover:underline cursor-copy disabled:cursor-default disabled:hover:no-underline">
-            {t.ticketNumber || 'chưa có số vé'}
+            {t.ticketNumber || ''}
             {hasFace && <span className="ml-1 text-emerald-600">📎</span>}
           </button>
         </td>
