@@ -41,6 +41,11 @@
  * 8. Đơn vị trong ô Tổng booking:
  *    - Sau số tổng booking → in đậm (cùng bold với số).
  *    - Sau số tổng đã quy đổi VND → cùng style với số (bold + màu xanh).
+ *
+ * ── 2026-09-21 (lần 3) ──────────────────────────────────
+ * 9. BỎ màu xanh của đơn vị USD ở các cột tiền thường (Giá gốc, Phí thu hộ,
+ *    Các loại phí, Thành tiền vé, Phí xuất vé, Giá bán) → dùng màu xám cho
+ *    tất cả đơn vị. CHỈ giữ màu xanh ở cột Tổng booking.
  */
 
 import { parseAmount, formatMoney } from '../lib/money'
@@ -126,15 +131,15 @@ function fmt(n, currency = 'VND') {
 }
 
 /**
- * Text đơn vị tiền tệ với màu tương ứng.
- * VND → xám, USD → xanh.
+ * Text đơn vị tiền tệ — LUÔN dùng màu xám (không phân biệt VND/USD).
+ * Áp dụng cho các cột tiền thường (Giá gốc, Phí thu hộ, Các loại phí,
+ * Thành tiền vé, Phí xuất vé, Giá bán).
  */
 function currencyUnit(currency) {
-  const isUsd = currency === 'USD'
   return {
-    text: isUsd ? 'USD' : 'VND',
+    text: currency === 'USD' ? 'USD' : 'VND',
     fontSize: 6.5,
-    color: isUsd ? CURRENCY_COLOR_USD : CURRENCY_COLOR_VND,
+    color: CURRENCY_COLOR_VND,
     bold: true,
   }
 }
@@ -162,8 +167,8 @@ function fmtDateTimeShort(ms) {
 }
 
 function passengerLine(t) {
-  const name = t.passengerName || '—'
-  const num  = t.ticketNumber || 'chưa có số vé'
+  const name = t.passengerName || ''
+  const num  = t.ticketNumber || ''
   return [
     { text: name, bold: true, fontSize: 8 },
     { text: num, fontSize: 7, color: '#666' },
@@ -183,7 +188,7 @@ function routeLine(b) {
 
 function feesLines(t, currency) {
   const fees = t.fees || []
-  if (fees.length === 0) return [{ text: '—', fontSize: 8, color: '#aaa' }]
+  if (fees.length === 0) return [{ text: '──', fontSize: 8, color: '#aaa' }]
   // ── Mỗi dòng phí = 2 cột (nhãn trái, số tiền phải) ──
   return fees.map(f => ({
     columns: [
@@ -267,6 +272,7 @@ function buildRows(bookings) {
     // - VND: 1 dòng tổng (bold) + đơn vị in đậm cùng style số.
     // - USD: dòng 1 = tổng USD + đơn vị USD (bold cùng số), dòng 2 = ≈ VND +
     //   đơn vị VND (cùng style với số: bold + màu xanh), dòng 3 = "Tỷ giá ...".
+    // ── CHỈ cột này giữ màu xanh cho đơn vị USD / VND quy đổi ──
     const isUsd = b.currency === 'USD'
     const unitColor = isUsd ? CURRENCY_COLOR_USD : CURRENCY_COLOR_VND
 
