@@ -1,26 +1,12 @@
-/**
- * Card tổng tiền theo filter hiện tại (search + sale date range).
- *
- * Layout: 5 cột — mỗi cột 1 label + 2 dòng số (VND, USD). Nếu = 0 vẫn hiển
- * thị "0" (giữ layout không co giãn nhảy loạn xạ khi lọc).
- *
- * Backend đã tính sẵn tổng (BookingTotals theo currency), FE chỉ format hiển
- * thị. Tổng này quét TOÀN BỘ booking match filter, không giới hạn page hiện
- * tại — dữ liệu chính xác thay vì "tổng của trang này".
- *
- * Bg khác nhau VND (blue-50) vs USD (violet-50) để dễ phân biệt khi lướt.
- */
 export default function BookingTotalsCard({ totals = [], loading = false }) {
   // Đảm bảo có đúng 2 dòng (VND + USD) — BE đã bảo đảm nhưng defensive
   const vnd = totals.find(t => t.currency === 'VND') || emptyTotal('VND')
   const usd = totals.find(t => t.currency === 'USD') || emptyTotal('USD')
 
   const cols = [
-    { label: 'Đã có thu hộ',   vnd: vnd.withCollection, usd: usd.withCollection },
-    { label: 'Phí dịch vụ',    vnd: vnd.serviceFee,     usd: usd.serviceFee     },
-    { label: 'Thành tiền',     vnd: vnd.subTotal,       usd: usd.subTotal       },
-    { label: 'Phí xuất vé',    vnd: vnd.issuanceFee,    usd: usd.issuanceFee    },
-    { label: 'Tổng booking',   vnd: vnd.grandTotal,     usd: usd.grandTotal, hi: true },
+    { label: 'Thành tiền',   vnd: vnd.subTotal,    usd: usd.subTotal    },
+    { label: 'Phí xuất vé',  vnd: vnd.issuanceFee, usd: usd.issuanceFee },
+    { label: 'Tổng booking', vnd: vnd.grandTotal,  usd: usd.grandTotal, hi: true },
   ]
 
   return (
@@ -33,7 +19,7 @@ export default function BookingTotalsCard({ totals = [], loading = false }) {
         </span>
         {loading && <span className="text-[10px] text-gray-400 animate-pulse">đang tính…</span>}
       </div>
-      <div className="grid grid-cols-2 sm:grid-cols-5 divide-y sm:divide-y-0 sm:divide-x divide-gray-100">
+      <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-gray-100">
         {cols.map((c, i) => (
           <div key={i} className={`p-3 ${c.hi ? 'bg-blue-50/50' : ''}`}>
             <div className="text-[10px] font-bold text-gray-500 uppercase mb-1.5 text-right">
@@ -67,3 +53,4 @@ function emptyTotal(currency) {
     issuanceFee: '0', grandTotal: '0', ticketCount: 0,
   }
 }
+
