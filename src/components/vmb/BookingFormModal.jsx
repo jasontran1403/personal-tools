@@ -3,7 +3,7 @@ import toast from 'react-hot-toast'
 import Modal from '../common/Modal'
 import RouteInput from './RouteInput'
 import PriceInput from './PriceInput'
-import { getBooking, createBooking, updateBooking, listCompanies, listFeeTypes } from '../../services/vmbApi'
+import { getBooking, createBooking, updateBooking, listCompanies, listFeeTypes, listBookings } from '../../services/vmbApi'
 import { parseAmount, formatMoney } from '../../lib/money'
 import TicketFeesEditor from './TicketFeesEditor'
 
@@ -124,6 +124,71 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
   const setTicket = (i, patch) => setForm(f => ({
     ...f, tickets: f.tickets.map((t, idx) => idx === i ? { ...t, ...patch } : t),
   }))
+
+  // ── 2026-09-21: Auto lookup mã booking cũ khi kind là EXCHANGE/REFUND/SERVICE ──
+  // Chỉ áp dụng ở CREATE mode (không lookup khi sửa vé đã tồn tại).
+  // Debounce 500ms để tránh gọi mỗi phím user gõ.
+  // Nếu tìm được booking cùng mã → tự fill routeStr + segments + airlineCode
+  //   NHƯNG chỉ khi các field đó còn TRỐNG (không đè lên input user đã sửa).
+  // Toast báo cho user biết đã tự điền.
+  const [lookedUpCode, setLookedUpCode] = useState('') // để không lookup lặp lại cùng mã
+
+  useEffect(() => {
+    if (isEdit) return
+    if (form.kind === 'NEW') return
+    const code = (form.bookingCode || '').trim()
+    if (!code || code.length < 3) return
+    if (code === lookedUpCode) return
+
+    const timer = setTimeout(async () => {
+      try {
+        const res = await listBookings({ q: code, size: 10 })
+        const found = (res.data?.data?.content || []).find(b => (b.bookingCode || '').toUpperCase() === code.toUpperCase())
+        if (!found) return
+
+        setLookedUpCode(code)
+
+        // Fill route + segments nếu chưa có
+        // Fill airlineCode + currency + exchangeRate nếu chưa có
+        setForm(f => {
+          const nextRouteStr = f.routeStr ? f.routeStr : (found.routeStr || '')
+          const nextSegments = (f.segments && f.segments.length > 0)
+            ? f.segments
+            : (found.segments || []).map(s => ({
+                fromCode: s.fromCode, toCode: s.toCode,
+                departLocalMs: s.departLocalMs, segOrder: s.segOrder,
+              }))
+          const nextAirline = f.airlineCode ? f.airlineCode : (found.airlineCode || '')
+          const nextCurrency = f.currency
+          const nextRate = f.exchangeRate ? f.exchangeRate : (found.exchangeRate || '')
+          return {
+            ...f,
+            routeStr: nextRouteStr,
+            segments: nextSegments,
+            airlineCode: nextAirline,
+            currency: nextCurrency,
+            exchangeRate: nextRate,
+          }
+        })
+
+        const kindLabel = { EXCHANGE: 'đổi vé', REFUND: 'hoàn vé', SERVICE: 'dịch vụ' }[form.kind] || 'giao dịch'
+        toast.success(
+          `Tìm thấy booking cũ ${code}. Đã điền hành trình / hãng.` +
+          (form.kind === 'EXCHANGE' ? ' Nhớ sửa giờ bay mới nếu có.' : ''),
+          { duration: 4000 }
+        )
+      } catch { /* silent — user không cần biết lỗi API */ }
+    }, 500)
+
+    return () => clearTimeout(timer)
+  }, [form.bookingCode, form.kind, isEdit, lookedUpCode])
+
+  // Nếu user đổi kind về NEW hoặc clear code → reset lookup state
+  useEffect(() => {
+    if (form.kind === 'NEW' || !form.bookingCode) {
+      setLookedUpCode('')
+    }
+  }, [form.kind, form.bookingCode])
 
   /**
    * Set basePrice + đồng thời reset gross baseline.
@@ -297,9 +362,8 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
               </Field>
               {form.currency === 'USD' && (
                 <Field label="Tỷ giá (1 USD = ? VND)" span={3}>
-                  <input type="text" value={form.exchangeRate}
-                    onChange={e => setField('exchangeRate', e.target.value)}
-                    placeholder="24500" className="input tabular-nums font-mono" />
+                  <PriceInput value={form.exchangeRate} currency="VND"
+                    onChange={v => setField('exchangeRate', v)} />
                 </Field>
               )}
             </div>

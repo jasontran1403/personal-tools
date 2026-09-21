@@ -238,9 +238,8 @@ export default function TicketsTab() {
           <table className="w-full text-xs border-collapse table-fixed">
             <colgroup>
               <col style={{ width: 32 }} />
-              <col style={{ width: 30 }} />
-              <col style={{ width: 130 }} />
-              <col style={{ width: 80 }} />   {/* Công ty */}
+              <col style={{ width: 130 }} />  {/* Loại/Hãng */}
+              <col style={{ width: 130 }} />  {/* Công ty — tăng từ 80 → 130 */}
               <col style={{ width: 210 }} />  {/* Khách hàng (name + số vé) */}
               <col style={{ width: 100 }} />  {/* Booking */}
               <col style={{ width: 130 }} />  {/* Hành trình */}
@@ -262,7 +261,6 @@ export default function TicketsTab() {
                     onChange={toggleAllOnPage}
                     className="rounded" />
                 </Th>
-                <Th>#</Th>
                 <Th>Loại / hãng</Th>
                 <Th>Công ty</Th>
                 <Th>Khách hàng</Th>
@@ -281,9 +279,9 @@ export default function TicketsTab() {
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={16} className="text-center py-10 text-gray-400">Đang tải…</td></tr>
+                <tr><td colSpan={15} className="text-center py-10 text-gray-400">Đang tải…</td></tr>
               ) : rows.length === 0 ? (
-                <tr><td colSpan={16} className="text-center py-14 text-gray-400">
+                <tr><td colSpan={15} className="text-center py-14 text-gray-400">
                   {q || fromSale || toSale ? 'Không tìm thấy vé phù hợp' : 'Chưa có booking nào. Bấm "Thêm booking" để tạo.'}
                 </td></tr>
               ) : (
@@ -517,13 +515,6 @@ function renderBookingRows(b, bIdx, {
         )}
 
         {firstRow && (
-          <td className="px-2 py-2 text-gray-500 tabular-nums text-center align-middle font-semibold"
-              rowSpan={N}>
-            {page * 50 + bIdx + 1}
-          </td>
-        )}
-
-        {firstRow && (
           <td className="px-2 py-2 align-middle relative" rowSpan={N}>
             {primary && badgeCls && (
               <span className={`inline-block mb-1 px-1.5 py-0.5 rounded font-mono text-[10px] font-bold ${badgeCls}`}
@@ -571,14 +562,19 @@ function renderBookingRows(b, bIdx, {
           </button>
         </td>
 
-        {/* Booking — chỉ mã booking, rowspan cả booking */}
+        {/* Booking — click để copy mã booking (không mở modal xuất trình nữa) */}
         {firstRow && (
           <td className="px-2 py-2 align-middle" rowSpan={N}>
-            <button type="button" onClick={() => onOpenBookingFace(b)}
-              title={b.sharedTicketFace
-                ? 'Xem mặt vé chung cả booking'
-                : 'Chọn hành khách để xem mặt vé'}
-              className="block w-full text-left font-mono text-[11px] font-bold text-gray-900 hover:text-blue-700 hover:underline truncate">
+            <button type="button"
+              onClick={() => {
+                if (!b.bookingCode) return
+                navigator.clipboard.writeText(b.bookingCode)
+                  .then(() => toast.success(`Đã copy: ${b.bookingCode}`))
+                  .catch(() => toast.error('Không copy được'))
+              }}
+              disabled={!b.bookingCode}
+              title={b.bookingCode ? 'Click để copy mã booking' : 'Chưa có mã'}
+              className="block w-full text-left font-mono text-[11px] font-bold text-gray-900 hover:text-blue-700 hover:underline truncate cursor-copy disabled:cursor-default">
               {b.bookingCode || '—'}
               {b.sharedTicketFace && b.bookingFace && <span className="ml-1 text-emerald-600">📎</span>}
             </button>
@@ -587,18 +583,31 @@ function renderBookingRows(b, bIdx, {
 
         {firstRow && (
           <td className="px-2 py-2 align-middle" rowSpan={N}>
-            {(b.segments || []).length === 0 ? <span className="text-gray-400">—</span> :
-              (b.segments || []).map((s, i) => (
-                <div key={i} className={`${i > 0 ? 'mt-1.5 pt-1.5 border-t border-dashed border-gray-200' : ''}`}>
-                  <div className="text-xs font-bold text-gray-900 leading-tight">
-                    {s.fromCode} <span className="text-gray-400">→</span> {s.toCode}
-                  </div>
-                  <div className="text-[11px] tabular-nums text-gray-500 leading-tight">
-                    {formatDepart(s.departLocalMs, s.fromCode) || '—'}
-                  </div>
-                </div>
-              ))
-            }
+            {(b.segments || []).length === 0 ? <span className="text-gray-400">—</span> : (() => {
+              const concat = routeConcat(b.segments)
+              const copyRoute = () => {
+                if (!concat) return
+                navigator.clipboard.writeText(concat)
+                  .then(() => toast.success(`Đã copy: ${concat}`))
+                  .catch(() => toast.error('Không copy được'))
+              }
+              return (
+                <button type="button" onClick={copyRoute}
+                  title={`Click để copy: ${concat}`}
+                  className="block w-full text-left cursor-copy hover:bg-blue-50 rounded px-1 -mx-1">
+                  {(b.segments || []).map((s, i) => (
+                    <div key={i} className={`${i > 0 ? 'mt-1.5 pt-1.5 border-t border-dashed border-gray-200' : ''}`}>
+                      <div className="text-xs font-bold text-gray-900 leading-tight">
+                        {s.fromCode} <span className="text-gray-400">→</span> {s.toCode}
+                      </div>
+                      <div className="text-[11px] tabular-nums text-gray-500 leading-tight">
+                        {formatDepart(s.departLocalMs, s.fromCode) || '—'}
+                      </div>
+                    </div>
+                  ))}
+                </button>
+              )
+            })()}
           </td>
         )}
 
@@ -627,7 +636,7 @@ function renderBookingRows(b, bIdx, {
                   {formatMoney(totalVnd, 'VND')}
                 </div>
                 <div className="text-[10px] text-gray-500 tabular-nums">
-                  1 USD = {b.exchangeRate || '—'}
+                  1 USD = {b.exchangeRate ? formatMoney(b.exchangeRate, 'VND', { withUnit: false }) : '—'}
                 </div>
               </>
             )}
@@ -934,8 +943,16 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-bold">
               {kindLabel(b.kind)} · {b.airlineCode || '?'}
             </span>
-            <button type="button" onClick={() => onOpenBookingFace(b)}
-              className="font-mono text-xs font-bold text-gray-900 hover:text-blue-700 hover:underline">
+            <button type="button"
+              onClick={() => {
+                if (!b.bookingCode) return
+                navigator.clipboard.writeText(b.bookingCode)
+                  .then(() => toast.success(`Đã copy: ${b.bookingCode}`))
+                  .catch(() => toast.error('Không copy được'))
+              }}
+              disabled={!b.bookingCode}
+              title="Click để copy mã booking"
+              className="font-mono text-xs font-bold text-gray-900 hover:text-blue-700 hover:underline cursor-copy disabled:cursor-default">
               {b.bookingCode || '—'}
               {b.sharedTicketFace && b.bookingFace && <span className="ml-1 text-emerald-600">📎</span>}
             </button>
@@ -1064,4 +1081,20 @@ function formatDateTimeShort(ms) {
     const p = (t) => parts.find(x => x.type === t)?.value || ''
     return `${p('hour')}:${p('minute')} ${p('day')}/${p('month')}/${p('year')}`
   } catch { return '' }
+}
+
+/**
+ * Ghép các mã sân bay trong segments thành 1 chuỗi liền, bỏ trùng lặp liền kề.
+ * Dùng cho click-to-copy ô Hành trình.
+ * VD: [{HAN,NRT}, {NRT,HAN}] → "HANNRTHAN"
+ *     [{HAN,NRT}, {HKG,HAN}] → "HANNRTHKGHAN"  (route gãy — vẫn concat đủ mã)
+ */
+function routeConcat(segments) {
+  if (!segments || segments.length === 0) return ''
+  const codes = []
+  for (const s of segments) {
+    if (codes[codes.length - 1] !== s.fromCode) codes.push(s.fromCode)
+    if (codes[codes.length - 1] !== s.toCode) codes.push(s.toCode)
+  }
+  return codes.join('')
 }
