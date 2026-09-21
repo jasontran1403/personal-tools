@@ -26,10 +26,6 @@
  *   M  Quy đổi VND (chỉ khi currency=USD, rowSpan cả booking)
  *   N  Note (rowSpan cả booking)
  *
- * ── Màu nền phân biệt VND / USD ─────────────────────────
- * Mỗi booking tô nền theo currency: VND #FFFFFF, USD #E0F2FE (sky-100).
- * Row header của booking (row đầu) đậm nhẹ hơn để nhìn rõ boundary.
- *
  * ── 2026-09-21 cập nhật ─────────────────────────────────
  * 1. Đơn vị tiền tệ hiển thị trong từng ô tiền (Giá gốc, Phí thu hộ, Các loại
  *    phí, Thành tiền vé, Phí xuất vé, Giá bán). VND → xám, USD → xanh.
@@ -39,6 +35,12 @@
  * 4. Date range cùng ngày → "trong ngày dd/MM/yyyy".
  * 5. Ô không có data → emdash "—" thay vì "-".
  * 6. Bỏ đơn vị tiền tệ ở ô Mã BK (đã chuyển vào các ô tiền).
+ *
+ * ── 2026-09-21 (lần 2) ──────────────────────────────────
+ * 7. BỎ màu nền theo loại tiền — tất cả row đều nền trắng.
+ * 8. Đơn vị trong ô Tổng booking:
+ *    - Sau số tổng booking → in đậm (cùng bold với số).
+ *    - Sau số tổng đã quy đổi VND → cùng style với số (bold + màu xanh).
  */
 
 import { parseAmount, formatMoney } from '../lib/money'
@@ -67,9 +69,7 @@ const FEE_LABEL = {
   PRICE_UPGRADE: 'Phí nâng giá thường',
 }
 
-// ── Màu nền ────────────────────────────────────────────────
-const COLOR_VND_ROW = null        // Trắng (không set fillColor)
-const COLOR_USD_ROW = '#E0F2FE'   // sky-100
+// ── Màu header ─────────────────────────────────────────────
 const COLOR_HEADER  = '#1E293B'   // slate-800
 const COLOR_HEADER_TEXT = '#FFFFFF'
 
@@ -260,22 +260,34 @@ function buildRows(bookings) {
     if (tickets.length === 0) continue
     const N = tickets.length
     const total = bookingTotals(b)
-    const rowBg = b.currency === 'USD' ? COLOR_USD_ROW : COLOR_VND_ROW
+    // ── BỎ màu nền theo loại tiền — tất cả row nền trắng ──
+    const rowBg = null
 
-    // ── Cột Tổng booking: dòng tổng theo đơn vị vé + dòng quy đổi VND ──
-    // - VND: chỉ 1 dòng tổng + đơn vị.
-    // - USD: dòng 1 = tổng USD + đơn vị USD, dòng 2 = ≈ VND + đơn vị VND (xanh),
-    //   dòng 3 = "Tỷ giá ...".
+    // ── Cột Tổng booking ──
+    // - VND: 1 dòng tổng (bold) + đơn vị in đậm cùng style số.
+    // - USD: dòng 1 = tổng USD + đơn vị USD (bold cùng số), dòng 2 = ≈ VND +
+    //   đơn vị VND (cùng style với số: bold + màu xanh), dòng 3 = "Tỷ giá ...".
+    const isUsd = b.currency === 'USD'
+    const unitColor = isUsd ? CURRENCY_COLOR_USD : CURRENCY_COLOR_VND
+
     const totalStack = [
       {
         columns: [
           { text: fmt(total, b.currency), bold: true, fontSize: 8, alignment: 'right', width: '*' },
-          { ...currencyUnit(b.currency), alignment: 'right', width: 'auto', margin: [2, 0, 0, 0] },
+          {
+            text: isUsd ? 'USD' : 'VND',
+            bold: true,                       // in đậm cùng số tổng
+            fontSize: 6.5,
+            color: unitColor,
+            alignment: 'right',
+            width: 'auto',
+            margin: [2, 0, 0, 0],
+          },
         ],
         columnGap: 0,
       },
     ]
-    if (b.currency === 'USD') {
+    if (isUsd) {
       const rate = parseAmount(b.exchangeRate) || 0
       const vnd = total * rate
       totalStack.push(
@@ -289,7 +301,16 @@ function buildRows(bookings) {
               bold: true,
               width: '*',
             },
-            { ...currencyUnit('VND'), alignment: 'right', width: 'auto', margin: [2, 0, 0, 0] },
+            {
+              // cùng style với số đã quy đổi: bold + màu xanh
+              text: 'VND',
+              fontSize: 6.5,
+              color: CURRENCY_COLOR_USD,
+              bold: true,
+              alignment: 'right',
+              width: 'auto',
+              margin: [2, 0, 0, 0],
+            },
           ],
           columnGap: 0,
         },
@@ -307,12 +328,10 @@ function buildRows(bookings) {
       const isFirst = i === 0
       const cell = (content, extra = {}) => ({
         stack: Array.isArray(content) ? content : [content],
-        fillColor: rowBg,
         ...extra,
       })
       // Ô số tiền: số ở trên (align right), đơn vị ở dưới (align right).
       // Không có data → chỉ hiển thị emdash, KHÔNG hiển thị đơn vị.
-      const hasValue = Number.isFinite(n.base) // sẽ ghi đè trong từng cell
       const numCell = (v) => {
         const val = typeof v === 'number' ? v : parseAmount(v)
         const isEmpty = !Number.isFinite(val) || val === 0
@@ -321,7 +340,6 @@ function buildRows(bookings) {
             { text: isEmpty ? '—' : formatMoney(val, b.currency, { withUnit: false }), fontSize: 8, alignment: 'right' },
             ...(isEmpty ? [] : [{ ...currencyUnit(b.currency), alignment: 'right', margin: [0, 0, 0, 0] }]),
           ],
-          fillColor: rowBg,
           alignment: 'right',
         }
       }
