@@ -54,42 +54,38 @@ export default function PriceInput({
   }
 
   const handlePaste = (e) => {
-    if (!sumOnPaste) return
     // Lấy clipboard text
     const pasted = (e.clipboardData || window.clipboardData)?.getData('text') ?? ''
     if (!pasted) return
 
-    // Trích số ở ĐẦU chuỗi — bỏ . , _ và khoảng trắng (thousand-sep), dừng ở chữ.
+    // Trích số ở ĐẦU chuỗi — bỏ . , _ và khoảng trắng, dừng ở chữ.
     const cleaned = pasted.trim()
     const m = /^([\d.,\s_]+)/.exec(cleaned)
     if (!m) return // không phát hiện số → để browser tự paste bình thường
 
-    e.preventDefault()
-
-    // Chuẩn hóa: strip whitespace + underscore
+    // Chuẩn hóa: strip whitespace + underscore, đổi comma-thousand → dot
     let raw = m[1].replace(/[\s_]/g, '')
-
-    // ── 2026-09-20 fix ────────────────────────────────────
-    // Pre-format: nếu chuỗi CHỈ CÓ comma (không có dot) → đổi hết comma
-    // thành dot. Xong parseAmount tự xử đúng qua heuristic dot có sẵn.
-    //   "99,000"    → "99.000"    → parseAmount → 99000
-    //   "18,181"    → "18.181"    → parseAmount → 18181
-    //   "1,234,567" → "1.234.567" → parseAmount → 1234567
-    //   "624,20"    → "624.20"    → parseAmount → 624.2 (decimal OK)
-    // Chuỗi có cả dot lẫn comma ("1.234,56") KHÔNG đụng vào — parseAmount
-    // đã xử lý đúng mixed format.
     if (raw.includes(',') && !raw.includes('.')) {
       raw = raw.replace(/,/g, '.')
     }
-
     const pastedNum = parseAmount(raw)
     if (!Number.isFinite(pastedNum)) return
 
-    // Cộng vào giá trị hiện tại
-    const currentNum = parseAmount(buf)
-    const sum = (Number.isFinite(currentNum) ? currentNum : 0) + pastedNum
-    const formatted = formatMoney(sum, currency, { withUnit: false })
+    // ── 2026-09-20 ────────────────────────────────────────
+    // Nếu sumOnPaste → cộng dồn. Nếu không → REPLACE buffer bằng số đã format.
+    // Trước: paste không sumOnPaste thì để browser tự chèn raw text → onChange
+    // chỉ fire lúc blur, format bị delay. Nay format ngay khi paste → parent
+    // biết giá trị mới ngay tại lúc paste, phù hợp với logic gross-tracking.
+    e.preventDefault()
 
+    let finalNum
+    if (sumOnPaste) {
+      const currentNum = parseAmount(buf)
+      finalNum = (Number.isFinite(currentNum) ? currentNum : 0) + pastedNum
+    } else {
+      finalNum = pastedNum
+    }
+    const formatted = formatMoney(finalNum, currency, { withUnit: false })
     setBuf(formatted)
     onChange?.(formatted)
   }

@@ -4,6 +4,7 @@ import Modal from '../common/Modal'
 import RouteInput from './RouteInput'
 import PriceInput from './PriceInput'
 import { getBooking, createBooking, updateBooking, listCompanies, listFeeTypes } from '../../services/vmbApi'
+import { parseAmount, formatMoney } from '../../lib/money'
 import TicketFeesEditor from './TicketFeesEditor'
 
 /**
@@ -15,26 +16,35 @@ import TicketFeesEditor from './TicketFeesEditor'
  *
  * ── 2026-09-15 chiều ────────────────────────────────────────
  * - Cty là {@code CompanySearchSelect} (searchable dropdown thay vì {@code <select>}).
- *   Khi list công ty dài, user gõ vài ký tự sẽ lọc ngay.
- * - Nút "+ Thêm vé" sao chép các field DÙNG CHUNG từ vé TRƯỚC ĐÓ (companyId +
- *   basePrice + collectionFee + issuanceFee) — thao tác nhập nhanh cho booking
- *   đông khách. Riêng tên khách + số vé + ghi chú vẫn để trống (mỗi khách
- *   khác nhau).
+ * - Nút "+ Thêm vé" sao chép các field DÙNG CHUNG từ vé TRƯỚC ĐÓ.
  *
  * ── 2026-09-19 refactor ────────────────────────────────────
  * - BỎ trường serviceFee đơn. Thay bằng list {@code fees} chi tiết với 10
- *   loại phí (đổi vé, hoàn vé, hành lý, chỗ ngồi, suất ăn, fast track, bảo
- *   hiểm, trợ giúp đặc biệt, trẻ em đi một mình, mang theo thú cưng). Cùng
- *   loại có thể lặp nhiều dòng (VD 2× "Phí hành lý" cho 2 kiện).
- *   UI dùng {@link TicketFeesEditor}.
+ *   loại phí. UI dùng {@link TicketFeesEditor}.
  * - "+ Thêm vé" KHÔNG copy fees (mỗi khách có phí phát sinh khác nhau).
+ *
+ * ── 2026-09-21 gross-tracking cho Giá gốc + Phí thu hộ ────
+ * User workflow:
+ *   1. Paste "tổng tiền vé từ vendor" (VD 4.124.362) vào Giá gốc.
+ *   2. Paste liên tục các phí thu hộ (sumOnPaste) → cộng dồn.
+ *   3. Giá gốc TỰ ĐỘNG = tổng - phí thu hộ, giữ invariant
+ *      "gross = basePrice + collectionFee" constant.
+ *   4. Xóa phí → giá gốc quay về gross ban đầu.
+ *
+ * Cách track: ticket có field ẨN {@code _originalTotal} (Number) = gross.
+ * - {@link setBasePrice}: user commit basePrice → cập nhật _originalTotal =
+ *   basePrice + collectionFee hiện tại (baseline mới).
+ * - {@link setCollectionFee}: user commit collectionFee → nếu _originalTotal
+ *   đã set → basePrice = _originalTotal - collectionFee mới.
+ *
+ * _originalTotal KHÔNG bao giờ được gửi lên BE (bị strip trong submit).
  */
 export default function BookingFormModal({ mode = 'create', bookingId, onClose, onSaved }) {
   const isEdit = mode === 'edit'
   const [loading, setLoading] = useState(isEdit)
   const [busy, setBusy] = useState(false)
   const [companies, setCompanies] = useState([])
-  const [feeTypes, setFeeTypes] = useState([]) // ─ dropdown loại phí (10 loại)
+  const [feeTypes, setFeeTypes] = useState([])
 
   useEffect(() => {
     listCompanies()
@@ -60,52 +70,54 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
 
   useEffect(() => {
     if (!isEdit) return
-      ; (async () => {
-        try {
-          const res = await getBooking(bookingId)
-          const b = res.data?.data
-          if (!b) throw new Error('Không tìm thấy')
-          setForm({
-            kind: b.kind || 'NEW',
-            airlineCode: b.airlineCode || '',
-            bookingCode: b.bookingCode || '',
-            routeStr: b.routeStr || '',
-            currency: b.currency || 'VND',
-            exchangeRate: b.exchangeRate || '',
-            note: b.note || '',
-            sharedTicketFace: !!b.sharedTicketFace,
-            segments: (b.segments || []).map(s => ({
-              fromCode: s.fromCode, toCode: s.toCode,
-              departLocalMs: s.departLocalMs, segOrder: s.segOrder,
+    ;(async () => {
+      try {
+        const res = await getBooking(bookingId)
+        const b = res.data?.data
+        if (!b) throw new Error('Không tìm thấy')
+        setForm({
+          kind: b.kind || 'NEW',
+          airlineCode: b.airlineCode || '',
+          bookingCode: b.bookingCode || '',
+          routeStr: b.routeStr || '',
+          currency: b.currency || 'VND',
+          exchangeRate: b.exchangeRate || '',
+          note: b.note || '',
+          sharedTicketFace: !!b.sharedTicketFace,
+          segments: (b.segments || []).map(s => ({
+            fromCode: s.fromCode, toCode: s.toCode,
+            departLocalMs: s.departLocalMs, segOrder: s.segOrder,
+          })),
+          tickets: (b.tickets || []).map(t => ({
+            id: t.id,
+            passengerName: t.passengerName || '',
+            companyId: t.companyId || null,
+            ticketNumber: t.ticketNumber || '',
+            basePrice: t.basePrice || '',
+            collectionFee: t.collectionFee || '',
+            issuanceFee: t.issuanceFee || '',
+            paidStatus: t.paidStatus || 'PENDING',
+            note: t.note || '',
+            fees: (t.fees || []).map(f => ({
+              id: f.id,
+              feeType: f.feeType,
+              feeTypeLabel: f.feeTypeLabel,
+              amount: f.amount || '',
+              note: f.note || '',
+              orderIdx: f.orderIdx ?? 0,
             })),
-            tickets: (b.tickets || []).map(t => ({
-              id: t.id,
-              passengerName: t.passengerName || '',
-              companyId: t.companyId || null,
-              ticketNumber: t.ticketNumber || '',
-              basePrice: t.basePrice || '',
-              collectionFee: t.collectionFee || '',
-              issuanceFee: t.issuanceFee || '',
-              paidStatus: t.paidStatus || 'PENDING',
-              note: t.note || '',
-              // ── 2026-09-19: thay serviceFee đơn bằng list fees chi tiết ──
-              fees: (t.fees || []).map(f => ({
-                id: f.id,
-                feeType: f.feeType,
-                feeTypeLabel: f.feeTypeLabel,
-                amount: f.amount || '',
-                note: f.note || '',
-                orderIdx: f.orderIdx ?? 0,
-              })),
-            })),
-          })
-        } catch (e) {
-          toast.error(e?.response?.data?.message || 'Không tải được booking')
-          onClose()
-        } finally {
-          setLoading(false)
-        }
-      })()
+            // Load lên với _originalTotal = null → chưa track. User paste
+            // basePrice mới thì mới bắt đầu track (baseline mới).
+            _originalTotal: null,
+          })),
+        })
+      } catch (e) {
+        toast.error(e?.response?.data?.message || 'Không tải được booking')
+        onClose()
+      } finally {
+        setLoading(false)
+      }
+    })()
   }, [isEdit, bookingId, onClose])
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }))
@@ -114,9 +126,42 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
   }))
 
   /**
-   * Thêm vé mới. COPY từ vé cuối trong list: companyId + các loại giá / phí.
-   * KHÔNG copy: passengerName, ticketNumber, note (mỗi khách khác nhau).
+   * Set basePrice + đồng thời reset gross baseline.
+   * Sau mỗi lần user commit basePrice (paste hoặc blur):
+   *   _originalTotal = basePrice + collectionFee (current)
+   * → gross invariant reset về mốc mới. Fee thay đổi tiếp theo sẽ shift base.
    */
+  const setBasePrice = (i, val) => setForm(f => ({
+    ...f,
+    tickets: f.tickets.map((t, idx) => {
+      if (idx !== i) return t
+      const newBaseNum = parseAmount(val)
+      const currFeeNum = parseAmount(t.collectionFee)
+      const gross = (Number.isFinite(newBaseNum) ? newBaseNum : 0)
+                  + (Number.isFinite(currFeeNum) ? currFeeNum : 0)
+      return { ...t, basePrice: val, _originalTotal: gross }
+    }),
+  }))
+
+  /**
+   * Set collectionFee + đồng thời recompute basePrice từ gross.
+   *   Nếu _originalTotal chưa set → chỉ set collectionFee bình thường.
+   *   Nếu set rồi → basePrice = _originalTotal - collectionFee (clamp ≥ 0).
+   */
+  const setCollectionFee = (i, val) => setForm(f => ({
+    ...f,
+    tickets: f.tickets.map((t, idx) => {
+      if (idx !== i) return t
+      const patched = { ...t, collectionFee: val }
+      if (t._originalTotal != null) {
+        const newFeeNum = parseAmount(val)
+        const newBase = Math.max(0, t._originalTotal - (Number.isFinite(newFeeNum) ? newFeeNum : 0))
+        patched.basePrice = formatMoney(newBase, f.currency, { withUnit: false })
+      }
+      return patched
+    }),
+  }))
+
   const MAX_TICKETS = 9
 
   const addTicket = () => setForm(f => {
@@ -133,7 +178,9 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
         basePrice: first.basePrice || '',
         collectionFee: first.collectionFee || '',
         issuanceFee: first.issuanceFee || '',
-        // KHÔNG copy fees — mỗi khách có phí phát sinh khác nhau
+        // Copy gross tracking từ vé đầu tiên — vé mới cũng ăn theo cùng gross.
+        // Nếu user muốn khác, họ tự paste giá gốc mới → baseline reset.
+        _originalTotal: first._originalTotal ?? null,
       }, ...f.tickets],
     }
   })
@@ -142,7 +189,6 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
     ...f,
     tickets: f.tickets.length <= 1 ? f.tickets : f.tickets.filter((_, idx) => idx !== i),
   }))
-
 
   const submit = async (e) => {
     e.preventDefault()
@@ -158,10 +204,14 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
 
     setBusy(true)
     try {
+      // ── Strip _originalTotal (chỉ dùng ở client) trước khi gửi BE ──
       const body = {
         ...form,
         segments: (form.segments || []).map((s, i) => ({ ...s, segOrder: i })),
-        tickets: form.tickets,
+        tickets: form.tickets.map(t => {
+          const { _originalTotal, ...cleanT } = t
+          return cleanT
+        }),
       }
       if (isEdit) {
         await updateBooking(bookingId, body)
@@ -178,7 +228,6 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
     }
   }
 
-  // Flatten companies 1 lần → dùng lại cho mọi CompanySearchSelect
   const flatCompanies = useMemo(() => companyOptions(companies), [companies])
 
   return (
@@ -255,7 +304,6 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
               )}
             </div>
 
-            {/* Cờ mặt vé chung */}
             <div className="mt-3 p-3 rounded-xl bg-amber-50/50 border border-amber-200">
               <label className="flex items-start gap-2 cursor-pointer">
                 <input type="checkbox" checked={!!form.sharedTicketFace}
@@ -297,6 +345,11 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
               💡 Sau khi lưu, click mã booking / số vé ở bảng để tải mặt vé lên.
               Vé thêm mới tự copy công ty + các giá / phí từ vé cuối để nhập nhanh.
             </div>
+            <div className="text-[11px] text-blue-700 mb-2 bg-blue-50 border border-blue-200 rounded-md p-2">
+              💰 <b>Mẹo nhập nhanh</b>: paste tổng tiền vé vào <b>Giá gốc</b> trước, sau đó paste
+              các phí thu hộ (chuỗi kiểu <code>"79000AX"</code>, <code>"36362C4"</code>…) → hệ
+              thống tự cộng dồn Phí thu hộ và giảm Giá gốc tương ứng. Xóa phí → Giá gốc quay lại.
+            </div>
             <div className="space-y-3">
               {form.tickets.map((t, i) => {
                 return (
@@ -329,10 +382,6 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                       <Field label="Số vé">
                         <input type="text" value={t.ticketNumber}
                           onChange={e => {
-                            // ── 2026-09-20: chuẩn hóa số vé ──
-                            // Bỏ khoảng trắng và dấu "-" ngay khi gõ/paste.
-                            // "738 2324658890" → "7382324658890"
-                            // "738-3944968132" → "7383944968132"
                             const raw = e.target.value || ''
                             const normalized = raw.replace(/[\s-]/g, '')
                             setTicket(i, { ticketNumber: normalized })
@@ -344,11 +393,11 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                     <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mt-2">
                       <Field label="Giá gốc (chưa thu hộ)">
                         <PriceInput value={t.basePrice} currency={form.currency}
-                          onChange={v => setTicket(i, { basePrice: v })} />
+                          onChange={v => setBasePrice(i, v)} />
                       </Field>
                       <Field label="Phí thu hộ">
                         <PriceInput value={t.collectionFee} currency={form.currency}
-                          onChange={v => setTicket(i, { collectionFee: v })}
+                          onChange={v => setCollectionFee(i, v)}
                           sumOnPaste />
                       </Field>
                       <Field label="Phí xuất vé">
@@ -357,7 +406,6 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                       </Field>
                     </div>
 
-                    {/* ── 2026-09-19: danh sách phí phát sinh chi tiết ── */}
                     <div className="mt-2">
                       <div className="text-[10px] font-semibold text-gray-600 mb-1">Các loại phí phát sinh</div>
                       <TicketFeesEditor
@@ -405,20 +453,6 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
 //  CompanySearchSelect — combobox typeahead cho công ty
 // ═══════════════════════════════════════════════════════════════
 
-/**
- * Dropdown có ô search bên trong. Click ô hiển thị mở dropdown, gõ để lọc,
- * click option để chọn, click ngoài hoặc Esc để đóng.
- *
- * Props:
- *   value      — companyId đang chọn (Number | null)
- *   options    — flat list [{ id, label, isBranch }, ...] từ companyOptions()
- *   onChange   — (id | null) → void
- *   placeholder— text khi chưa chọn (mặc định "— Khách lẻ —")
- *
- * Match dùng lowercase substring — search cả tiếng có/không dấu (chỉ dấu
- * lowercase; user thường copy paste chính xác nên đủ dùng, không cần
- * strip accent).
- */
 function CompanySearchSelect({ value, options, onChange, placeholder = '— Khách lẻ —' }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -427,22 +461,18 @@ function CompanySearchSelect({ value, options, onChange, placeholder = '— Khá
   const inputRef = useRef(null)
   const listRef = useRef(null)
 
-  // Filter theo query
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return options
     return options.filter(o => o.label.toLowerCase().includes(q))
   }, [query, options])
 
-  // Reset activeIdx mỗi khi mở lại hoặc filtered thay đổi
   useEffect(() => { setActiveIdx(0) }, [open, query])
 
-  // Focus input khi mở
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 0)
   }, [open])
 
-  // Click ngoài → đóng
   useEffect(() => {
     if (!open) return
     const onDown = (e) => {
@@ -455,7 +485,6 @@ function CompanySearchSelect({ value, options, onChange, placeholder = '— Khá
     return () => document.removeEventListener('mousedown', onDown)
   }, [open])
 
-  // Scroll active vào view khi dùng phím
   useEffect(() => {
     if (!open || !listRef.current) return
     const el = listRef.current.querySelector(`[data-idx="${activeIdx}"]`)
@@ -478,7 +507,7 @@ function CompanySearchSelect({ value, options, onChange, placeholder = '— Khá
     else if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIdx(i => Math.max(0, i - 1)) }
     else if (e.key === 'Enter') {
       e.preventDefault()
-      if (activeIdx === 0) pick(null)     // "Khách lẻ"
+      if (activeIdx === 0) pick(null)
       else pick(filtered[activeIdx - 1])
     }
     else if (e.key === 'Escape') { e.preventDefault(); setOpen(false); setQuery('') }
@@ -486,7 +515,6 @@ function CompanySearchSelect({ value, options, onChange, placeholder = '— Khá
 
   return (
     <div ref={wrapRef} className="relative">
-      {/* Nút hiển thị giá trị đang chọn */}
       <button type="button"
         onClick={() => setOpen(o => !o)}
         className="input flex items-center justify-between text-left w-full"
@@ -510,7 +538,6 @@ function CompanySearchSelect({ value, options, onChange, placeholder = '— Khá
           </div>
 
           <div ref={listRef} className="max-h-56 overflow-y-auto py-0.5">
-            {/* Option 0: "Khách lẻ" (null) — luôn ở đầu, không bị filter */}
             <OptionRow
               idx={0} activeIdx={activeIdx} setActiveIdx={setActiveIdx}
               onPick={() => pick(null)}
@@ -563,8 +590,10 @@ function newTicket() {
     passengerName: '', companyId: null, ticketNumber: '',
     basePrice: '', collectionFee: '', issuanceFee: '',
     paidStatus: 'PENDING', note: '',
-    // ── 2026-09-19: fees là list các dòng phí chi tiết (0..N dòng) ──
     fees: [],
+    // Client-only: theo dõi "tổng tiền gốc từ vendor" để đồng bộ basePrice
+    // với collectionFee. Bị strip trong submit.
+    _originalTotal: null,
   }
 }
 
