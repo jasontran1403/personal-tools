@@ -75,7 +75,7 @@ const FEE_LABEL = {
 }
 
 // ── Màu header ─────────────────────────────────────────────
-const COLOR_HEADER  = '#1E293B'   // slate-800
+const COLOR_HEADER = '#1E293B'   // slate-800
 const COLOR_HEADER_TEXT = '#FFFFFF'
 
 // ── Màu đơn vị tiền tệ ────────────────────────────────────
@@ -168,7 +168,7 @@ function fmtDateTimeShort(ms) {
 
 function passengerLine(t) {
   const name = t.passengerName || ''
-  const num  = t.ticketNumber || ''
+  const num = t.ticketNumber || ''
   return [
     { text: name, bold: true, fontSize: 8 },
     { text: num, fontSize: 7, color: '#666' },
@@ -188,7 +188,7 @@ function routeLine(b) {
 
 function feesLines(t, currency) {
   const fees = t.fees || []
-  if (fees.length === 0) return [{ text: '──', fontSize: 8, color: '#aaa' }]
+  if (fees.length === 0) return [{ text: '—', fontSize: 8, color: '#aaa' }]
   // ── Mỗi dòng phí = 2 cột (nhãn trái, số tiền phải) ──
   return fees.map(f => ({
     columns: [
@@ -240,7 +240,7 @@ function noteLine(b) {
 function ticketNumbers(t) {
   const base = parseAmount(t.basePrice) || 0
   const coll = parseAmount(t.collectionFee) || 0
-  const iss  = parseAmount(t.issuanceFee) || 0
+  const iss = parseAmount(t.issuanceFee) || 0
   const feesSum = (t.fees || []).reduce((s, f) => s + (parseAmount(f.amount) || 0), 0)
   const subTotal = base + coll + feesSum
   const sellPrice = subTotal + iss
@@ -439,7 +439,7 @@ function tableHeader() {
 function computeDateRange(filterParams, bookings) {
   // Ưu tiên filter, nếu không đủ 2 mốc thì lấy min/max saleDate
   let fromMs = filterParams?.fromSale ?? null
-  let toMs   = filterParams?.toSale ?? null
+  let toMs = filterParams?.toSale ?? null
   if (!fromMs || !toMs) {
     let minD = null, maxD = null
     for (const b of bookings) {
@@ -448,7 +448,7 @@ function computeDateRange(filterParams, bookings) {
       if (maxD == null || b.saleDate > maxD) maxD = b.saleDate
     }
     if (!fromMs) fromMs = minD
-    if (!toMs)   toMs = maxD
+    if (!toMs) toMs = maxD
   }
   return { fromMs, toMs }
 }
@@ -558,7 +558,7 @@ export async function exportBookingsReport(filterParams, { onProgress } = {}) {
 
   // Dynamic import pdfmake để tránh nặng khi chưa dùng
   const pdfMakeMod = await import('pdfmake/build/pdfmake')
-  const vfsMod     = await import('pdfmake/build/vfs_fonts')
+  const vfsMod = await import('pdfmake/build/vfs_fonts')
 
   // pdfmake ESM/CJS interop — lấy default nếu có, không thì lấy module trực tiếp
   const pdfMake = pdfMakeMod.default || pdfMakeMod
@@ -568,7 +568,7 @@ export async function exportBookingsReport(filterParams, { onProgress } = {}) {
   //   v0.2.x  : vfsMod.default.pdfMake.vfs (hoặc vfsMod.pdfMake.vfs với CJS)
   //   v0.2.10+: vfsMod.vfs hoặc vfsMod.default (đôi khi vfs = object trực tiếp)
   const vfs =
-       vfsMod?.pdfMake?.vfs
+    vfsMod?.pdfMake?.vfs
     ?? vfsMod?.default?.pdfMake?.vfs
     ?? vfsMod?.default?.vfs
     ?? vfsMod?.vfs
