@@ -164,16 +164,11 @@ export default function TicketsTab() {
     const tid = toast.loading('Đang tải dữ liệu và tạo PDF…')
     try {
       const mod = await import('../../lib/bookingsPdfExport')
-      const { bookings, saved, fromMs, toMs } = await mod.exportBookingsReport(filterParams, {
+      const { bookings, fromMs, toMs } = await mod.exportBookingsReport(filterParams, {
         onProgress: (loaded, total) => {
           toast.loading(`Đã tải ${loaded}/${total || '?'} booking…`, { id: tid })
         },
       })
-      if (!saved) {
-        // User cancel dialog Save → không toast success, không hỏi tải draft.
-        toast.dismiss(tid)
-        return
-      }
       toast.success('Đã tạo PDF', { id: tid })
 
       // ── Guard 1: date range phải nằm trong hôm nay ──
@@ -206,13 +201,9 @@ export default function TicketsTab() {
     const tid = toast.loading(`Chuẩn bị tải ${count} hóa đơn nháp…`)
     try {
       const mod = await import('../../lib/bookingsPdfExport')
-      const { total, done, cancelled, errors } = await mod.downloadDraftInvoices(bookings, {
+      const { total, done, errors } = await mod.downloadDraftInvoices(bookings, {
         onProgress: (d, t) => toast.loading(`Đã tải ${d}/${t} hóa đơn nháp…`, { id: tid }),
       })
-      if (cancelled) {
-        toast.dismiss(tid)
-        return
-      }
       if (done === total) {
         toast.success(`Đã tải ${done} hóa đơn nháp`, { id: tid })
       } else {
@@ -490,7 +481,7 @@ export default function TicketsTab() {
         <ConfirmModal
           open
           title="Tải hóa đơn nháp?"
-          message={`Có ${confirmDraftDl.count} hóa đơn nháp trong các booking vừa xuất báo cáo. Tải tất cả về Desktop?`}
+          message={`Có ${confirmDraftDl.count} hóa đơn nháp trong các booking vừa xuất báo cáo. Tải tất cả?`}
           confirmLabel="Tải tất cả"
           cancelLabel="Bỏ qua"
           onConfirm={handleDownloadDraftInvoices}

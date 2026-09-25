@@ -579,69 +579,31 @@ export async function exportBookingsReport(filterParams, { onProgress } = {}) {
   const filename = `bao-cao-ve-${fmtDate(fromMs || Date.now())}-${fmtDate(toMs || Date.now())}.pdf`
     .replace(/\//g, '-')
 
-  // ── 2026-09-25: mặc định lưu ra Desktop, không hỏi từng lần ────────────
-  // pdfMake.createPdf(...).download() dùng <a download> → phụ thuộc setting
-  // "Ask where to save each file" của trình duyệt (Chrome). Thay bằng
-  // getBlob() rồi saveBlob() để dùng showSaveFilePicker (Chrome/Edge) —
-  // dialog mở SẴN ở thư mục Desktop, user chỉ cần Enter là xong.
-  // Fallback về <a download> cho Firefox/Safari (dùng download folder mặc
-  // định của trình duyệt).
-  const blob = await new Promise((resolve, reject) => {
-    try { pdfMake.createPdf(docDefinition).getBlob(b => resolve(b)) }
-    catch (e) { reject(e) }
-  })
-  const saved = await saveBlobToDesktop(blob, filename, 'application/pdf')
+  // ── 2026-09-25 v2: DÙNG pdfMake.download() (như gốc) ──────────────────
+  // v1 đã thử showSaveFilePicker({ startIn: 'desktop' }) cho UX "mở dialog
+  // sẵn ở Desktop", NHƯNG API này yêu cầu "transient user activation" —
+  // phải chạy ngay sau user click. Sau chuỗi await (dynamic import + fetch
+  // bookings, mất vài giây), activation đã hết. Ở nhiều bản Chrome,
+  // showSaveFilePicker khi thiếu activation KHÔNG reject mà silently hang
+  // → Promise không resolve → toàn bộ chain treo → nút "Xuất PDF" kẹt ở
+  // "Đang xuất…". Đây là bug user report.
+  //
+  // Cách chắc chắn: dùng <a download> qua pdfMake.download() (giống code
+  // gốc). Trình duyệt sẽ save vào download folder mặc định.
+  //
+  // Muốn tự động save về Desktop mà không hỏi:
+  //   Chrome → Settings → Downloads:
+  //     - Location: chọn Desktop
+  //     - Ask where to save each file before downloading: TẮT
+  //
+  // Đây là setting per-browser, không code nào bypass được (vì lý do
+  // security).
+  pdfMake.createPdf(docDefinition).download(filename)
 
-  // Trả bookings + trạng thái save + date range để caller (TicketsTab) chain
-  // bước tiếp theo: (a) check date range có phải "trong ngày" không,
+  // Trả bookings + date range để caller (TicketsTab) chain bước tiếp theo:
+  // (a) check date range có phải "trong ngày" không,
   // (b) hỏi có tải hóa đơn nháp không.
-  return { bookings, saved, fromMs, toMs }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  File saving — showSaveFilePicker (startIn: desktop) với fallback
-// ═══════════════════════════════════════════════════════════════════════════
-
-/**
- * Lưu 1 blob ra file. Ưu tiên showSaveFilePicker (Chrome/Edge) với dialog
- * mở sẵn ở Desktop → user chỉ cần bấm Save.
- *
- * @returns {Promise<boolean>} true nếu đã lưu; false nếu user cancel.
- */
-async function saveBlobToDesktop(blob, suggestedName, mimeType = 'application/octet-stream') {
-  if (typeof window !== 'undefined' && window.showSaveFilePicker) {
-    try {
-      const ext = suggestedName.slice(suggestedName.lastIndexOf('.'))
-      const handle = await window.showSaveFilePicker({
-        suggestedName,
-        startIn: 'desktop',
-        types: [{
-          description: mimeType === 'application/pdf' ? 'PDF' : 'File',
-          accept: { [mimeType]: [ext] },
-        }],
-      })
-      const writable = await handle.createWritable()
-      await writable.write(blob)
-      await writable.close()
-      return true
-    } catch (e) {
-      if (e?.name === 'AbortError') return false      // user cancel
-      // Quyền bị block hoặc lỗi khác → rơi xuống fallback <a download>
-      console.warn('[saveBlobToDesktop] showSaveFilePicker fail, fallback:', e)
-    }
-  }
-  // Fallback: dùng <a download>. Không control được thư mục — trình duyệt
-  // sẽ dùng download folder mặc định (hoặc hỏi nếu setting "Ask where to
-  // save" đang bật).
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = suggestedName
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
-  return true
+  return { bookings, fromMs, toMs }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -744,28 +706,17 @@ export function findTicketsMissingDraftInvoice(bookings) {
  * không phát hiện được — vì có thể user upload ảnh (jpg/png) chứ không chỉ
  * PDF, dùng đúng đuôi để file mở được.
  *
- * UX:
- *   - Chrome/Edge: showDirectoryPicker (startIn: desktop) — user chọn 1 thư
- *     mục 1 lần, tất cả file ghi silent vào đó. Trùng tên → tự thêm (2), (3).
- *   - Fallback: tuần tự <a download>, mỗi file cách nhau 250ms.
+ * ── 2026-09-25 v3: bỏ showDirectoryPicker, dùng <a download> tuần tự ──
+ * User đã chọn: "user tự chọn nơi lưu file" → dùng cơ chế download chuẩn
+ * của trình duyệt. Trình duyệt sẽ hỏi nơi lưu (nếu setting "Ask where to
+ * save" bật) hoặc lưu vào download folder mặc định.
+ *
+ * Lưu ý: Chrome sẽ hiện prompt "Site này đang tải nhiều file" ở file thứ 2
+ * — user allow 1 lần là các file sau download thẳng.
  */
 export async function downloadDraftInvoices(bookings, { onProgress } = {}) {
   const jobs = collectDraftInvoiceJobs(bookings)
   if (jobs.length === 0) throw new Error('Không có hóa đơn nháp nào để tải')
-
-  // Ưu tiên directory picker: 1 click chọn Desktop, sau đó ghi silent
-  let dirHandle = null
-  if (typeof window !== 'undefined' && window.showDirectoryPicker) {
-    try {
-      dirHandle = await window.showDirectoryPicker({
-        startIn: 'desktop',
-        mode: 'readwrite',
-      })
-    } catch (e) {
-      if (e?.name === 'AbortError') return { total: jobs.length, done: 0, cancelled: true }
-      console.warn('[downloadDraftInvoices] directory picker fail, fallback:', e)
-    }
-  }
 
   let done = 0
   const errors = []
@@ -775,26 +726,19 @@ export async function downloadDraftInvoices(bookings, { onProgress } = {}) {
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
       const blob = await resp.blob()
 
-      if (dirHandle) {
-        const name = await uniqueFileName(dirHandle, job.filename)
-        const fh = await dirHandle.getFileHandle(name, { create: true })
-        const w = await fh.createWritable()
-        await w.write(blob)
-        await w.close()
-      } else {
-        // Fallback tuần tự
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = job.filename
-        document.body.appendChild(a)
-        a.click()
-        a.remove()
-        setTimeout(() => URL.revokeObjectURL(url), 1000)
-        // Delay nhỏ giữa các file để browser xử lý (Chrome sẽ hỏi 1 lần
-        // "Site đang muốn tải nhiều file" ở file thứ 2 — user allow là xong)
-        await new Promise(r => setTimeout(r, 250))
-      }
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = job.filename
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+
+      // Delay nhỏ giữa các file để trình duyệt xử lý — nếu bấm liên tục
+      // Chrome có thể drop file sau.
+      await new Promise(r => setTimeout(r, 250))
+
       done++
     } catch (err) {
       console.warn('[Draft invoice download]', job.filename, err)
@@ -802,7 +746,7 @@ export async function downloadDraftInvoices(bookings, { onProgress } = {}) {
     }
     onProgress?.(done, jobs.length)
   }
-  return { total: jobs.length, done, cancelled: false, errors }
+  return { total: jobs.length, done, errors }
 }
 
 function collectDraftInvoiceJobs(bookings) {
@@ -858,24 +802,4 @@ function sanitizeFilename(name) {
     .replace(/\s+/g, ' ')             // gom whitespace
     .trim()
     .slice(0, 200)                    // giới hạn độ dài cho an toàn
-}
-
-/** Nếu file đã tồn tại trong dirHandle → thêm (2), (3)... */
-async function uniqueFileName(dirHandle, desired) {
-  const dot  = desired.lastIndexOf('.')
-  const stem = dot > 0 ? desired.slice(0, dot) : desired
-  const ext  = dot > 0 ? desired.slice(dot)    : ''
-  let name = desired
-  let i = 2
-  // Bounded loop để khỏi kẹt vô hạn nếu API lỗi kỳ dị
-  for (let guard = 0; guard < 1000; guard++) {
-    try {
-      await dirHandle.getFileHandle(name)     // ném nếu KHÔNG tồn tại
-      name = `${stem} (${i})${ext}`
-      i++
-    } catch {
-      return name
-    }
-  }
-  return name
 }
