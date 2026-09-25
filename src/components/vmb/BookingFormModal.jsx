@@ -118,7 +118,12 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
         setLoading(false)
       }
     })()
-  }, [isEdit, bookingId, onClose])
+    // KHÔNG đưa onClose vào deps: parent (TicketsTab) re-render mỗi giây do
+    // VmbPage tick countdown → onClose là arrow inline nên đổi ref mỗi giây,
+    // sẽ khiến effect này chạy lại và ghi đè state form (mất phần user đang gõ).
+    // onClose ở đây chỉ dùng trong nhánh lỗi fallback → dùng ref hơi cũ vẫn OK.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEdit, bookingId])
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const setTicket = (i, patch) => setForm(f => ({

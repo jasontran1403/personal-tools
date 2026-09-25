@@ -76,7 +76,13 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
         setLoading(false)
       }
     })()
-  }, [mode, id, onClose])
+    // KHÔNG đưa onClose vào deps: parent (PassengersTab) re-render mỗi giây do
+    // VmbPage tick countdown → onClose là arrow inline nên đổi ref mỗi giây,
+    // sẽ khiến effect này chạy lại → set loading=true → hiện "Đang tải…" →
+    // fetch → hiện form → 1 giây sau lặp lại → user không kịp sửa gì.
+    // onClose ở đây chỉ dùng trong nhánh lỗi fallback → dùng ref hơi cũ vẫn OK.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, id])
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }))
 
