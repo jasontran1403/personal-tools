@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import ConfirmModal from '../common/ConfirmModal'
+import Modal from '../common/Modal'
 import BookingFormModal from './BookingFormModal'
 import TicketFaceModal from './TicketFaceModal'
 import InvoiceManagerModal from './InvoiceManagerModal'
@@ -148,22 +149,78 @@ export default function TicketsTab() {
   const onSavedRefresh = () => { load(); loadTotals() }
 
   // ── 2026-09-20: Xuất báo cáo PDF theo filter ──────────────
+  // ── 2026-09-25: sau khi xuất xong, nếu có hóa đơn nháp → hỏi tải luôn ──
+  // ── 2026-09-25 (guard) ────────────────────────────────────
+  // Chỉ mời tải hóa đơn nháp khi:
+  //   G1: date range của báo cáo NẰM TRONG NGÀY HÔM NAY (fromMs & toMs đều
+  //       là hôm nay). Nếu chọn khoảng khác → không mời.
+  //   G2: MỌI VÉ trong các booking đã có hóa đơn nháp bao phủ. Nếu còn vé
+  //       chưa có → warning và không tải.
+  const [confirmDraftDl,   setConfirmDraftDl]   = useState(null) // { bookings, count }
+  const [warnMissingDraft, setWarnMissingDraft] = useState(null) // { missing: [...] }
+
   const handleExportPdf = async () => {
     setExporting(true)
     const tid = toast.loading('Đang tải dữ liệu và tạo PDF…')
     try {
       const mod = await import('../../lib/bookingsPdfExport')
-      await mod.exportBookingsReport(filterParams, {
+      const { bookings, saved, fromMs, toMs } = await mod.exportBookingsReport(filterParams, {
         onProgress: (loaded, total) => {
           toast.loading(`Đã tải ${loaded}/${total || '?'} booking…`, { id: tid })
         },
       })
+      if (!saved) {
+        // User cancel dialog Save → không toast success, không hỏi tải draft.
+        toast.dismiss(tid)
+        return
+      }
       toast.success('Đã tạo PDF', { id: tid })
+
+      // ── Guard 1: date range phải nằm trong hôm nay ──
+      if (!mod.isRangeWithinToday(fromMs, toMs)) return
+
+      // Không có hóa đơn nháp nào → không cần hỏi
+      const count = mod.countDraftInvoices(bookings)
+      if (count === 0) return
+
+      // ── Guard 2: mọi vé phải có hóa đơn nháp bao phủ ──
+      const missing = mod.findTicketsMissingDraftInvoice(bookings)
+      if (missing.length > 0) {
+        setWarnMissingDraft({ missing })
+        return
+      }
+
+      setConfirmDraftDl({ bookings, count })
     } catch (e) {
       console.error('[PDF export]', e)
       toast.error(e?.message || 'Xuất PDF thất bại', { id: tid })
     } finally {
       setExporting(false)
+    }
+  }
+
+  const handleDownloadDraftInvoices = async () => {
+    if (!confirmDraftDl) return
+    const { bookings, count } = confirmDraftDl
+    setConfirmDraftDl(null)
+    const tid = toast.loading(`Chuẩn bị tải ${count} hóa đơn nháp…`)
+    try {
+      const mod = await import('../../lib/bookingsPdfExport')
+      const { total, done, cancelled, errors } = await mod.downloadDraftInvoices(bookings, {
+        onProgress: (d, t) => toast.loading(`Đã tải ${d}/${t} hóa đơn nháp…`, { id: tid }),
+      })
+      if (cancelled) {
+        toast.dismiss(tid)
+        return
+      }
+      if (done === total) {
+        toast.success(`Đã tải ${done} hóa đơn nháp`, { id: tid })
+      } else {
+        toast.error(`Tải ${done}/${total} hóa đơn nháp — ${errors?.length || 0} file lỗi`, { id: tid })
+      }
+    } catch (e) {
+      console.error('[Draft invoice download]', e)
+      toast.error(e?.message || 'Tải hóa đơn nháp thất bại', { id: tid })
     }
   }
 
@@ -388,6 +445,57 @@ export default function TicketsTab() {
       {noteView && (
         <TicketNoteModal passengerName={noteView.passengerName} note={noteView.note}
           onClose={() => setNoteView(null)} />
+      )}
+      {warnMissingDraft && (
+        <Modal
+          open
+          onClose={() => setWarnMissingDraft(null)}
+          title="⚠️ Thiếu hóa đơn nháp"
+          size="md"
+          footer={
+            <div className="flex justify-end">
+              <button
+                type="button"
+                onClick={() => setWarnMissingDraft(null)}
+                className="px-4 py-2 text-sm font-semibold rounded-lg
+                           bg-amber-600 text-white hover:bg-amber-700">
+                Đã hiểu
+              </button>
+            </div>
+          }
+        >
+          <div className="text-sm text-gray-700 space-y-2">
+            <p>
+              Không tải hóa đơn nháp vì có <b>{warnMissingDraft.missing.length} vé</b> chưa
+              có hóa đơn nháp bao phủ. Vui lòng bổ sung trước khi tải:
+            </p>
+            <ul className="list-disc pl-5 space-y-1 max-h-72 overflow-y-auto">
+              {warnMissingDraft.missing.slice(0, 30).map((m) => (
+                <li key={`${m.bookingId}-${m.ticketId}`}>
+                  <span className="font-mono text-gray-500">{m.bookingCode}</span>
+                  {' — '}
+                  <b>{m.passengerName}</b>
+                </li>
+              ))}
+            </ul>
+            {warnMissingDraft.missing.length > 30 && (
+              <p className="text-xs text-gray-500 italic">
+                … và {warnMissingDraft.missing.length - 30} vé khác
+              </p>
+            )}
+          </div>
+        </Modal>
+      )}
+      {confirmDraftDl && (
+        <ConfirmModal
+          open
+          title="Tải hóa đơn nháp?"
+          message={`Có ${confirmDraftDl.count} hóa đơn nháp trong các booking vừa xuất báo cáo. Tải tất cả về Desktop?`}
+          confirmLabel="Tải tất cả"
+          cancelLabel="Bỏ qua"
+          onConfirm={handleDownloadDraftInvoices}
+          onCancel={() => setConfirmDraftDl(null)}
+        />
       )}
       {confirmDel && (
         <ConfirmModal

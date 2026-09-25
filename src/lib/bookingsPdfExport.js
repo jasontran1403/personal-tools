@@ -578,5 +578,304 @@ export async function exportBookingsReport(filterParams, { onProgress } = {}) {
 
   const filename = `bao-cao-ve-${fmtDate(fromMs || Date.now())}-${fmtDate(toMs || Date.now())}.pdf`
     .replace(/\//g, '-')
-  pdfMake.createPdf(docDefinition).download(filename)
+
+  // ── 2026-09-25: mặc định lưu ra Desktop, không hỏi từng lần ────────────
+  // pdfMake.createPdf(...).download() dùng <a download> → phụ thuộc setting
+  // "Ask where to save each file" của trình duyệt (Chrome). Thay bằng
+  // getBlob() rồi saveBlob() để dùng showSaveFilePicker (Chrome/Edge) —
+  // dialog mở SẴN ở thư mục Desktop, user chỉ cần Enter là xong.
+  // Fallback về <a download> cho Firefox/Safari (dùng download folder mặc
+  // định của trình duyệt).
+  const blob = await new Promise((resolve, reject) => {
+    try { pdfMake.createPdf(docDefinition).getBlob(b => resolve(b)) }
+    catch (e) { reject(e) }
+  })
+  const saved = await saveBlobToDesktop(blob, filename, 'application/pdf')
+
+  // Trả bookings + trạng thái save + date range để caller (TicketsTab) chain
+  // bước tiếp theo: (a) check date range có phải "trong ngày" không,
+  // (b) hỏi có tải hóa đơn nháp không.
+  return { bookings, saved, fromMs, toMs }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  File saving — showSaveFilePicker (startIn: desktop) với fallback
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Lưu 1 blob ra file. Ưu tiên showSaveFilePicker (Chrome/Edge) với dialog
+ * mở sẵn ở Desktop → user chỉ cần bấm Save.
+ *
+ * @returns {Promise<boolean>} true nếu đã lưu; false nếu user cancel.
+ */
+async function saveBlobToDesktop(blob, suggestedName, mimeType = 'application/octet-stream') {
+  if (typeof window !== 'undefined' && window.showSaveFilePicker) {
+    try {
+      const ext = suggestedName.slice(suggestedName.lastIndexOf('.'))
+      const handle = await window.showSaveFilePicker({
+        suggestedName,
+        startIn: 'desktop',
+        types: [{
+          description: mimeType === 'application/pdf' ? 'PDF' : 'File',
+          accept: { [mimeType]: [ext] },
+        }],
+      })
+      const writable = await handle.createWritable()
+      await writable.write(blob)
+      await writable.close()
+      return true
+    } catch (e) {
+      if (e?.name === 'AbortError') return false      // user cancel
+      // Quyền bị block hoặc lỗi khác → rơi xuống fallback <a download>
+      console.warn('[saveBlobToDesktop] showSaveFilePicker fail, fallback:', e)
+    }
+  }
+  // Fallback: dùng <a download>. Không control được thư mục — trình duyệt
+  // sẽ dùng download folder mặc định (hoặc hỏi nếu setting "Ask where to
+  // save" đang bật).
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = suggestedName
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  return true
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  Draft invoice batch download — 2026-09-25
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Đếm số hóa đơn nháp có file draftUrl trong danh sách bookings.
+ * Dùng để quyết định có hiện modal hỏi hay không (0 → không hỏi).
+ */
+export function countDraftInvoices(bookings) {
+  let n = 0
+  for (const b of bookings || []) {
+    for (const inv of b.invoices || []) if (inv.draftUrl) n++
+  }
+  return n
+}
+
+/**
+ * GUARD 1 — Chỉ mời tải hóa đơn nháp khi date range của báo cáo NẰM HOÀN
+ * TOÀN trong ngày hôm nay (local timezone). Cả 2 mốc phải cùng năm/tháng/
+ * ngày với hôm nay. Nếu 1 trong 2 null (không xác định) → false.
+ *
+ * Lý do: hóa đơn nháp là workflow trong ngày — chốt cuối ngày mới phát hành.
+ * Nếu report gộp cả tuần thì các booking cũ đã có hóa đơn ISSUED, không cần
+ * kèm draft.
+ */
+export function isRangeWithinToday(fromMs, toMs) {
+  if (!fromMs || !toMs) return false
+  const t = new Date()
+  const Y = t.getFullYear(), M = t.getMonth(), D = t.getDate()
+  const sameToday = (ms) => {
+    const dt = new Date(ms)
+    return dt.getFullYear() === Y && dt.getMonth() === M && dt.getDate() === D
+  }
+  return sameToday(fromMs) && sameToday(toMs)
+}
+
+/**
+ * GUARD 2 — Tìm các vé CHƯA có hóa đơn nháp bao phủ.
+ *
+ * Rule "bao phủ" (theo yêu cầu 2026-09-25):
+ *   Mỗi vé phải xuất hiện trong ít nhất 1 invoice có draftUrl. Invoice
+ *   ticketIds rỗng ([]) = "chung cả booking" → cover HẾT các vé của booking.
+ *   Invoice ticketIds có ID cụ thể → chỉ cover các vé có ID đó.
+ *
+ * Ví dụ user cung cấp:
+ *   - Booking 1 vé + 1 draft (bất kỳ scope nào)      → đủ.
+ *   - Booking 3 vé + 3 draft riêng cho từng vé       → đủ.
+ *   - Booking 3 vé + 1 draft chung 2 vé A,B          → THIẾU vé C.
+ *
+ * @returns {Array<{bookingId, bookingCode, ticketId, passengerName}>}
+ *   Rỗng nghĩa là mọi vé đều có hóa đơn nháp.
+ */
+export function findTicketsMissingDraftInvoice(bookings) {
+  const missing = []
+  for (const b of bookings || []) {
+    const invoices = b.invoices || []
+    const tickets  = b.tickets  || []
+    if (tickets.length === 0) continue
+
+    // Có ≥ 1 invoice booking-wide có draftUrl → cover TẤT CẢ vé của booking
+    const hasWideDraft = invoices.some(
+      inv => inv.draftUrl && (!inv.ticketIds || inv.ticketIds.length === 0)
+    )
+    if (hasWideDraft) continue
+
+    // Không có wide → cover đến đâu là do ticketIds cụ thể trong các invoice
+    // có draftUrl. Gom tất cả ID được cover.
+    const covered = new Set()
+    for (const inv of invoices) {
+      if (!inv.draftUrl) continue
+      for (const id of inv.ticketIds || []) covered.add(id)
+    }
+
+    for (const t of tickets) {
+      if (!covered.has(t.id)) {
+        missing.push({
+          bookingId: b.id,
+          bookingCode: b.bookingCode || `#${b.id}`,
+          ticketId: t.id,
+          passengerName: t.passengerName || `vé #${t.id}`,
+        })
+      }
+    }
+  }
+  return missing
+}
+
+/**
+ * Tải tất cả file hóa đơn nháp của các booking (draftUrl).
+ *
+ * Naming convention (theo yêu cầu 2026-09-25):
+ *   - Hóa đơn CHUNG cho booking (ticketIds rỗng) →
+ *       Draft-Invoice-<bookingCode>.<ext>
+ *   - Hóa đơn RIÊNG cho 1..N vé cụ thể →
+ *       Draft-Invoice-<tên hành khách của các vé đó>.<ext>
+ *
+ * Extension lấy từ file gốc (draftOriginal / draftUrl); mặc định .pdf nếu
+ * không phát hiện được — vì có thể user upload ảnh (jpg/png) chứ không chỉ
+ * PDF, dùng đúng đuôi để file mở được.
+ *
+ * UX:
+ *   - Chrome/Edge: showDirectoryPicker (startIn: desktop) — user chọn 1 thư
+ *     mục 1 lần, tất cả file ghi silent vào đó. Trùng tên → tự thêm (2), (3).
+ *   - Fallback: tuần tự <a download>, mỗi file cách nhau 250ms.
+ */
+export async function downloadDraftInvoices(bookings, { onProgress } = {}) {
+  const jobs = collectDraftInvoiceJobs(bookings)
+  if (jobs.length === 0) throw new Error('Không có hóa đơn nháp nào để tải')
+
+  // Ưu tiên directory picker: 1 click chọn Desktop, sau đó ghi silent
+  let dirHandle = null
+  if (typeof window !== 'undefined' && window.showDirectoryPicker) {
+    try {
+      dirHandle = await window.showDirectoryPicker({
+        startIn: 'desktop',
+        mode: 'readwrite',
+      })
+    } catch (e) {
+      if (e?.name === 'AbortError') return { total: jobs.length, done: 0, cancelled: true }
+      console.warn('[downloadDraftInvoices] directory picker fail, fallback:', e)
+    }
+  }
+
+  let done = 0
+  const errors = []
+  for (const job of jobs) {
+    try {
+      const resp = await fetch(job.url)
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+      const blob = await resp.blob()
+
+      if (dirHandle) {
+        const name = await uniqueFileName(dirHandle, job.filename)
+        const fh = await dirHandle.getFileHandle(name, { create: true })
+        const w = await fh.createWritable()
+        await w.write(blob)
+        await w.close()
+      } else {
+        // Fallback tuần tự
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = job.filename
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+        // Delay nhỏ giữa các file để browser xử lý (Chrome sẽ hỏi 1 lần
+        // "Site đang muốn tải nhiều file" ở file thứ 2 — user allow là xong)
+        await new Promise(r => setTimeout(r, 250))
+      }
+      done++
+    } catch (err) {
+      console.warn('[Draft invoice download]', job.filename, err)
+      errors.push({ filename: job.filename, error: err?.message || String(err) })
+    }
+    onProgress?.(done, jobs.length)
+  }
+  return { total: jobs.length, done, cancelled: false, errors }
+}
+
+function collectDraftInvoiceJobs(bookings) {
+  const jobs = []
+  for (const b of bookings || []) {
+    const invoices = b.invoices || []
+    const tickets  = b.tickets  || []
+    for (const inv of invoices) {
+      if (!inv.draftUrl) continue
+
+      const scopeIds = inv.ticketIds || []
+      const isBookingWide = scopeIds.length === 0
+
+      let baseName
+      if (isBookingWide) {
+        baseName = `Draft-Invoice-${b.bookingCode || `booking-${b.id}`}`
+      } else {
+        const names = scopeIds
+          .map(id => tickets.find(t => t.id === id)?.passengerName)
+          .filter(Boolean)
+        const joined = names.length > 0 ? names.join(', ') : `booking-${b.id}`
+        baseName = `Draft-Invoice-${joined}`
+      }
+
+      const ext = extensionOf(inv.draftOriginal) || extensionOf(inv.draftUrl) || '.pdf'
+      jobs.push({
+        url: resolveFileUrl(inv.draftUrl),
+        filename: sanitizeFilename(baseName) + ext,
+      })
+    }
+  }
+  return jobs
+}
+
+function extensionOf(u) {
+  if (!u) return null
+  const clean = u.split('?')[0].split('#')[0]
+  const m = clean.match(/\.([a-zA-Z0-9]{2,5})$/)
+  return m ? '.' + m[1].toLowerCase() : null
+}
+
+function resolveFileUrl(u) {
+  if (!u) return u
+  if (/^https?:\/\//i.test(u)) return u
+  const BASE = import.meta.env.VITE_API_URL || 'http://localhost:9009'
+  return BASE + (u.startsWith('/') ? u : '/' + u)
+}
+
+/** Bỏ ký tự cấm trong tên file trên Windows / macOS. */
+function sanitizeFilename(name) {
+  return name
+    .replace(/[\\/:*?"<>|]+/g, '_')   // ký tự cấm
+    .replace(/\s+/g, ' ')             // gom whitespace
+    .trim()
+    .slice(0, 200)                    // giới hạn độ dài cho an toàn
+}
+
+/** Nếu file đã tồn tại trong dirHandle → thêm (2), (3)... */
+async function uniqueFileName(dirHandle, desired) {
+  const dot  = desired.lastIndexOf('.')
+  const stem = dot > 0 ? desired.slice(0, dot) : desired
+  const ext  = dot > 0 ? desired.slice(dot)    : ''
+  let name = desired
+  let i = 2
+  // Bounded loop để khỏi kẹt vô hạn nếu API lỗi kỳ dị
+  for (let guard = 0; guard < 1000; guard++) {
+    try {
+      await dirHandle.getFileHandle(name)     // ném nếu KHÔNG tồn tại
+      name = `${stem} (${i})${ext}`
+      i++
+    } catch {
+      return name
+    }
+  }
+  return name
 }
