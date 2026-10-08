@@ -5,6 +5,7 @@ import PassengerFormModal from './PassengerFormModal'
 import MembershipCardsModal from './MembershipCardsModal'
 import CompaniesModal from './CompaniesModal'
 import IdPresentationModal from './IdPresentationModal'
+import CompanySearchSelect, { companyOptions } from '../common/CompanySearchSelect'
 import { listPassengers, listCompanies, deletePassenger } from '../../services/vmbApi'
 import { expiryStatus, monthsUntil, formatDateVn } from '../../lib/expiry'
 
@@ -73,6 +74,8 @@ export default function PassengersTab() {
     qTimer.current = setTimeout(() => { setPage(0); setQ(v) }, 300)
   }
 
+  const flatCompanies = useMemo(() => companyOptions(companies || []), [companies])
+
   const groups = useMemo(() => {
     if (companyId) return null
     const map = new Map()
@@ -102,17 +105,15 @@ export default function PassengersTab() {
           className="flex-1 min-w-0 px-3.5 py-2 rounded-lg border border-gray-300 bg-white text-sm
             focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none"
         />
-        <select
-          value={companyId}
-          onChange={e => { setPage(0); setCompanyId(e.target.value) }}
-          className="px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm min-w-[180px]
-            focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none"
-        >
-          <option value="">— Tất cả công ty —</option>
-          {companies.map(c => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </select>
+        <div className="min-w-[240px] sm:w-72">
+          <CompanySearchSelect
+            value={companyId ? Number(companyId) : null}
+            options={flatCompanies}
+            onChange={(id) => { setPage(0); setCompanyId(id == null ? '' : String(id)) }}
+            placeholder="— Tất cả công ty —"
+            noneLabel="— Tất cả công ty —"
+          />
+        </div>
         <button type="button" onClick={() => setShowCompanies(true)}
           className="px-3 py-2 rounded-lg bg-white border border-gray-300 text-sm text-gray-700
             hover:bg-gray-50 shrink-0 font-medium">
@@ -241,7 +242,6 @@ function PassengerList({ items, onEdit, onCards, onPresent, onDelete }) {
           <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 uppercase text-[10px]">
             <tr>
               <th className="text-left px-3 py-2 font-semibold">Họ tên</th>
-              <th className="text-center px-3 py-2 font-semibold">Thẻ thành viên</th>
               <th className="text-right px-3 py-2 font-semibold">Thao tác</th>
             </tr>
           </thead>
@@ -259,16 +259,15 @@ function PassengerList({ items, onEdit, onCards, onPresent, onDelete }) {
                   <td className="px-3 py-2">
                     <div className="font-semibold text-gray-900">{p.fullName}</div>
                   </td>
-                  <td className="px-3 py-2 text-center">
-                    <button type="button" onClick={() => onCards(p)}
-                      title="Thẻ thành viên"
-                      className="w-20 h-7 rounded-md bg-gray-100 hover:bg-blue-100 hover:text-blue-700
-                        text-xs font-bold flex items-center justify-center mx-auto">
-                      Xuất trình
-                    </button>
-                  </td>
+                  {/* 2026-10-08: Cột "Thẻ thành viên" (chỉ có 1 nút Xuất trình) được
+                      dời sang Thao tác dạng icon 💳 để gọn hàng, giảm số cột. */}
                   <td className="px-3 py-2">
                     <div className="flex items-center justify-end gap-1">
+                      <button type="button" onClick={() => onCards(p)}
+                        title="Thẻ thành viên — Xuất trình"
+                        className="w-7 h-7 rounded-md text-gray-600 hover:bg-blue-100 hover:text-blue-700 flex items-center justify-center">
+                        💳
+                      </button>
                       <button type="button" onClick={() => onPresent(p)}
                         title="Xuất trình giấy tờ (CCCD / Hộ chiếu)"
                         className="w-7 h-7 rounded-md text-gray-600 hover:bg-amber-100 hover:text-amber-700 flex items-center justify-center">

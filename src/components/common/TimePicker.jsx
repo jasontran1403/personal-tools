@@ -4,8 +4,9 @@ import { useEffect, useRef, useState } from 'react'
  * TimePicker — popup 2 cột (giờ / phút) scrollable, không dùng native
  * <input type="time">.
  *
- * Value / onChange dùng chuỗi "HH:mm" (24h, khớp native format). Giờ 00-23,
- * phút 00-59 (đủ mọi lịch bay).
+ * Value / onChange dùng chuỗi "HH:mm" (24h, khớp native format). Giờ 00-23.
+ * Phút CHỈ các bội số của 5 (00,05,10,…,55) — lịch bay hãng hàng không hầu
+ * như luôn khớp mốc 5 phút nên bỏ nhiễu các số lẻ cho user chọn nhanh hơn.
  *
  * Đặt cạnh DatePicker trong RouteInput — cùng phong cách button + popup
  * absolute → UX nhất quán.
@@ -102,7 +103,7 @@ export default function TimePicker({
               <div className="text-[10px] font-bold text-gray-400 uppercase text-center mb-1">Phút</div>
               <div ref={minColRef}
                 className="h-40 overflow-y-auto scrollbar-thin border border-gray-100 rounded-md">
-                {Array.from({ length: 60 }, (_, i) => pad(i)).map(mm => (
+                {Array.from({ length: 12 }, (_, i) => pad(i * 5)).map(mm => (
                   <button key={mm} type="button" data-v={mm}
                     onClick={() => setMin(mm)}
                     className={`w-full py-1 text-xs tabular-nums font-mono ${

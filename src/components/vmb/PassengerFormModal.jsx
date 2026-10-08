@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import Modal from '../common/Modal'
 import ConfirmModal from '../common/ConfirmModal'
 import ZoomablePreview from './ZoomablePreview'
+import DateInputVN from '../common/DateInputVN'
+import CompanySearchSelect, { companyOptions } from '../common/CompanySearchSelect'
 import {
   getPassenger, createPassenger, updatePassenger,
   upsertPassengerDocument, deletePassengerDocument,
@@ -85,6 +87,9 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
   }, [mode, id])
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }))
+
+  // Flatten tree công ty (có parent/branch) cho combobox search
+  const flatCompanies = useMemo(() => companyOptions(companies || []), [companies])
 
   // ── Submit nhân thân ──────────────────────────────────────
   const submit = async (e) => {
@@ -220,14 +225,13 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
                   </button>
                 </div>
                 {companyPickMode === 'existing' ? (
-                  <select value={form.companyId}
-                    onChange={e => setField('companyId', e.target.value)}
-                    className="input">
-                    <option value="">— Khách lẻ (mặc định) —</option>
-                    {companies.map(c => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </select>
+                  <CompanySearchSelect
+                    value={form.companyId ? Number(form.companyId) : null}
+                    options={flatCompanies}
+                    onChange={(id) => setField('companyId', id == null ? '' : String(id))}
+                    placeholder="— Khách lẻ (mặc định) —"
+                    noneLabel="— Khách lẻ (mặc định) —"
+                  />
                 ) : (
                   <input type="text" value={form.newCompanyName}
                     onChange={e => setField('newCompanyName', e.target.value)}
@@ -253,8 +257,7 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
               </div>
 
               <Field label="Ngày sinh">
-                <input type="date" value={form.dob}
-                  onChange={e => setField('dob', e.target.value)} className="input" />
+                <DateInputVN value={form.dob} onChange={v => setField('dob', v)} />
               </Field>
             </form>
 
@@ -364,12 +367,10 @@ function DocForm({ type, doc, setDoc, bufFile, setBufFile, onSave, onDelete, onP
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-3">
         <Field label="Ngày cấp">
-          <input type="date" value={doc.issueDate || ''}
-            onChange={e => setDocField('issueDate', e.target.value)} className="input" />
+          <DateInputVN value={doc.issueDate || ''} onChange={v => setDocField('issueDate', v)} />
         </Field>
         <Field label="Ngày hết hạn">
-          <input type="date" value={doc.expiryDate || ''}
-            onChange={e => setDocField('expiryDate', e.target.value)} className="input" />
+          <DateInputVN value={doc.expiryDate || ''} onChange={v => setDocField('expiryDate', v)} />
         </Field>
       </div>
 

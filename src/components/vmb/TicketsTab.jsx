@@ -765,12 +765,21 @@ function renderBookingRows(b, bIdx, {
                 <button type="button" onClick={() => onPresent(b)}
                   title="Xuất trình (Thông tin booking / Mặt vé / Hóa đơn)"
                   className="w-7 h-7 rounded-md bg-blue-50 hover:bg-blue-100 text-blue-700 flex items-center justify-center">
-                  📤
+                  {/* 👁 — xem/trình bày ra ngoài, phân biệt rõ với upload */}
+                  <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                    <circle cx="12" cy="12" r="3"/>
+                  </svg>
                 </button>
                 <button type="button" onClick={() => onUpload(b)}
                   title="Upload (Thông tin booking / Mặt vé / Hóa đơn)"
                   className="w-7 h-7 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-700 flex items-center justify-center">
-                  📥
+                  {/* ⬆ cloud-upload — khác hẳn con mắt ở trên */}
+                  <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="17 8 12 3 7 8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
                 </button>
                 <button type="button" onClick={onEdit}
                   title="Sửa booking"
@@ -1116,12 +1125,18 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
           {stLabel}
         </button>
         <button type="button" onClick={() => onPresent(b)}
-          className="text-[11px] px-2 py-1 rounded-md bg-blue-100 text-blue-700 font-semibold">
-          📤 Xuất trình
+          className="text-[11px] px-2 py-1 rounded-md bg-blue-100 text-blue-700 font-semibold inline-flex items-center gap-1">
+          <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+          </svg>
+          Xuất trình
         </button>
         <button type="button" onClick={() => onUpload(b)}
-          className="text-[11px] px-2 py-1 rounded-md bg-emerald-100 text-emerald-700 font-semibold">
-          📥 Upload
+          className="text-[11px] px-2 py-1 rounded-md bg-emerald-100 text-emerald-700 font-semibold inline-flex items-center gap-1">
+          <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+          </svg>
+          Upload
         </button>
         <div className="flex-1" />
         <span className="font-mono tabular-nums font-bold text-blue-700 text-sm">

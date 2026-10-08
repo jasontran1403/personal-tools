@@ -76,6 +76,13 @@ export default function RouteInput({ routeStr = '', segments = [], onChange }) {
             const cur = segments[i]
             const zone = zoneOf(seg.from)
             const wall = utcMsToLocalWall(cur?.departLocalMs, seg.from)
+            // minDate (chuỗi YYYY-MM-DD giờ sân bay đi) = ngày chặng trước đó
+            // nếu đã nhập. Giờ bay chặng N ≥ ngày khởi hành chặng N-1 để đảm
+            // bảo thứ tự time-line hợp lý.
+            const prevWall = i > 0 && segments[i - 1]?.departLocalMs
+              ? utcMsToLocalWall(segments[i - 1].departLocalMs, parsed.segments[i - 1].from)
+              : null
+            const minDateStr = prevWall?.date || ''
             return (
               <div key={i}
                 className="grid grid-cols-1 sm:grid-cols-[110px_1fr_1fr] gap-2 items-start
@@ -87,6 +94,7 @@ export default function RouteInput({ routeStr = '', segments = [], onChange }) {
                 </div>
                 <DatePicker
                   value={wall.date}
+                  minDate={minDateStr}
                   size="sm"
                   onChange={(newDate) => {
                     const ms = localWallToUtcMs(newDate || todayStr(), wall.time || '00:00', seg.from)

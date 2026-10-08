@@ -26,22 +26,28 @@ export default function DatePicker({
   disabled = false,
   className = '',
   size = 'md',   // 'sm' | 'md'
+  minDate = '',  // "YYYY-MM-DD" — cấm chọn trước ngày này + default view mở ở tháng của minDate
 }) {
   const [open, setOpen] = useState(false)
   const [yearMode, setYearMode] = useState(false)
 
-  // Ngày đang xem trên grid (không nhất thiết = ngày chọn)
-  const initial = parseISO(value) || new Date()
+  // Ngày đang xem trên grid: ưu tiên value → minDate → today.
+  // Nhờ vậy chặng bay 2 (minDate = chặng 1) mở ra đúng tháng chặng 1 thay vì
+  // tháng hiện tại.
+  const initial = parseISO(value) || parseISO(minDate) || new Date()
   const [viewYear, setViewYear] = useState(initial.getFullYear())
   const [viewMonth, setViewMonth] = useState(initial.getMonth())   // 0-11
 
   const boxRef = useRef(null)
 
-  // Sync khi value đổi bên ngoài
+  // Sync khi value / minDate đổi bên ngoài. Nếu value có → ưu tiên value.
+  // Không có value nhưng có minDate → mở ở tháng của minDate.
   useEffect(() => {
-    const p = parseISO(value)
+    const p = parseISO(value) || parseISO(minDate)
     if (p) { setViewYear(p.getFullYear()); setViewMonth(p.getMonth()) }
-  }, [value])
+  }, [value, minDate])
+
+  const minISO = minDate && /^\d{4}-\d{2}-\d{2}$/.test(minDate) ? minDate : ''
 
   // Đóng khi click ngoài / Esc
   useEffect(() => {
@@ -148,11 +154,15 @@ export default function DatePicker({
                   const isSelected = iso === selectedISO
                   const isToday    = iso === todayISO
                   const dim        = !c.inMonth
+                  const disabledDay = minISO && iso < minISO
                   return (
                     <button key={i} type="button"
+                      disabled={disabledDay}
                       onClick={() => pick(iso)}
                       className={`h-8 rounded-md text-xs tabular-nums transition
-                        ${isSelected
+                        ${disabledDay
+                          ? 'text-gray-300 line-through cursor-not-allowed'
+                          : isSelected
                             ? 'bg-blue-600 text-white font-bold'
                             : isToday
                               ? 'bg-blue-50 text-blue-700 font-semibold hover:bg-blue-100'
@@ -176,9 +186,9 @@ export default function DatePicker({
               Xóa
             </button>
             <button type="button"
-              onClick={() => pick(todayISO)}
+              onClick={() => pick(minISO && todayISO < minISO ? minISO : todayISO)}
               className="text-xs text-blue-600 hover:text-blue-800 font-semibold">
-              Hôm nay
+              {minISO && todayISO < minISO ? 'Ngày sớm nhất' : 'Hôm nay'}
             </button>
           </div>
         </div>
