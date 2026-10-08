@@ -1,0 +1,404 @@
+/*
+ * darkmode.css — Override toàn bộ Tailwind utility class trong dark mode.
+ *
+ * ── Chiến lược ─────────────────────────────────────────────
+ * Dự án đã có ~110 file dùng utility class trực tiếp (bg-white,
+ * text-gray-900, border-gray-200, …). Thay vì sửa tất cả thêm biến thể
+ * `dark:…`, ta remap các class phổ biến dưới selector `html.dark .class`
+ * về giá trị tối, dùng !important để thắng utility gốc.
+ *
+ * Hạn chế đã chấp nhận:
+ *   - Không bắt được `bg-white/80` (opacity suffix). Những chỗ dùng
+ *     backdrop-blur/80 vẫn hiển thị trắng mờ — hiếm, có thể patch lẻ sau.
+ *   - Không bắt được giá trị arbitrary `bg-[#fff]` — hiếm trong code.
+ *   - Ảnh / icon màu sẽ giữ nguyên (đúng ý).
+ *
+ * ── Palette tối ───────────────────────────────────────────
+ *   Dùng tông slate-900/800/700 làm bề mặt chính thay vì xám trung tính
+ *   (tránh "flat"). Chi tiết giá trị trong :root[data-theme-dark] bên dưới.
+ */
+
+html.dark {
+  color-scheme: dark;
+
+  /* Design tokens — có thể dùng cho component mới */
+  --surface-0:  #0b1220;   /* nền trang */
+  --surface-1:  #0f172a;   /* card */
+  --surface-2:  #1e293b;   /* nested card / input */
+  --surface-3:  #334155;   /* hover / border rõ */
+  --border-1:   #1f2937;
+  --border-2:   #334155;
+  --text-1:     #f1f5f9;
+  --text-2:     #cbd5e1;
+  --text-3:     #94a3b8;
+  --text-4:     #64748b;
+}
+
+html.dark,
+html.dark body {
+  background-color: var(--surface-0);
+  color: var(--text-2);
+}
+
+/* ─── Scrollbar ─────────────────────────────────────────── */
+
+html.dark ::-webkit-scrollbar-track { background-color: #0f172a !important; }
+html.dark ::-webkit-scrollbar-thumb { background-color: #334155 !important; }
+html.dark ::-webkit-scrollbar-thumb:hover { background-color: #475569 !important; }
+
+/* ─── Backgrounds — mức surface ────────────────────────── */
+
+html.dark .bg-white             { background-color: var(--surface-1) !important; }
+html.dark .bg-white\/80         { background-color: rgba(15,23,42,0.80) !important; }
+html.dark .bg-white\/90         { background-color: rgba(15,23,42,0.90) !important; }
+html.dark .bg-white\/70         { background-color: rgba(15,23,42,0.70) !important; }
+html.dark .bg-white\/60         { background-color: rgba(15,23,42,0.60) !important; }
+html.dark .bg-white\/50         { background-color: rgba(15,23,42,0.50) !important; }
+html.dark .bg-white\/40         { background-color: rgba(15,23,42,0.40) !important; }
+html.dark .bg-white\/30         { background-color: rgba(15,23,42,0.30) !important; }
+
+html.dark .bg-gray-50           { background-color: #0f172a !important; }
+html.dark .bg-gray-100          { background-color: #1f2937 !important; }
+html.dark .bg-gray-200          { background-color: #273345 !important; }
+html.dark .bg-gray-300          { background-color: #334155 !important; }
+
+html.dark .bg-slate-50          { background-color: #0f172a !important; }
+html.dark .bg-slate-100         { background-color: #1e293b !important; }
+html.dark .bg-slate-200         { background-color: #273345 !important; }
+html.dark .bg-slate-800         { background-color: #0b1220 !important; }
+html.dark .bg-slate-900         { background-color: #050912 !important; }
+
+html.dark .bg-neutral-50        { background-color: #0f172a !important; }
+html.dark .bg-neutral-100       { background-color: #1f2937 !important; }
+
+/* ─── Backgrounds mức status (soft tints) ──────────────── */
+
+html.dark .bg-blue-50           { background-color: rgba(59,130,246,0.14) !important; }
+html.dark .bg-blue-50\/50       { background-color: rgba(59,130,246,0.08) !important; }
+html.dark .bg-blue-50\/40       { background-color: rgba(59,130,246,0.07) !important; }
+html.dark .bg-blue-100          { background-color: rgba(59,130,246,0.22) !important; }
+
+html.dark .bg-indigo-50         { background-color: rgba(99,102,241,0.14) !important; }
+html.dark .bg-indigo-100        { background-color: rgba(99,102,241,0.22) !important; }
+
+html.dark .bg-emerald-50        { background-color: rgba(16,185,129,0.14) !important; }
+html.dark .bg-emerald-100       { background-color: rgba(16,185,129,0.22) !important; }
+html.dark .bg-green-50          { background-color: rgba(16,185,129,0.14) !important; }
+html.dark .bg-green-100         { background-color: rgba(16,185,129,0.22) !important; }
+
+html.dark .bg-amber-50          { background-color: rgba(245,158,11,0.14) !important; }
+html.dark .bg-amber-50\/50      { background-color: rgba(245,158,11,0.08) !important; }
+html.dark .bg-amber-100         { background-color: rgba(245,158,11,0.22) !important; }
+html.dark .bg-yellow-50         { background-color: rgba(245,158,11,0.14) !important; }
+html.dark .bg-yellow-100        { background-color: rgba(245,158,11,0.22) !important; }
+
+html.dark .bg-rose-50           { background-color: rgba(244,63,94,0.14) !important; }
+html.dark .bg-rose-100          { background-color: rgba(244,63,94,0.22) !important; }
+html.dark .bg-red-50            { background-color: rgba(244,63,94,0.14) !important; }
+html.dark .bg-red-100           { background-color: rgba(244,63,94,0.22) !important; }
+
+html.dark .bg-purple-50         { background-color: rgba(168,85,247,0.14) !important; }
+html.dark .bg-purple-100        { background-color: rgba(168,85,247,0.22) !important; }
+
+/* ─── Hover backgrounds ────────────────────────────────── */
+
+html.dark .hover\:bg-white:hover       { background-color: var(--surface-2) !important; }
+html.dark .hover\:bg-gray-50:hover     { background-color: #1f2937 !important; }
+html.dark .hover\:bg-gray-100:hover    { background-color: #273345 !important; }
+html.dark .hover\:bg-gray-200:hover    { background-color: #334155 !important; }
+html.dark .hover\:bg-slate-50:hover    { background-color: #1f2937 !important; }
+html.dark .hover\:bg-slate-100:hover   { background-color: #273345 !important; }
+
+html.dark .hover\:bg-blue-50:hover     { background-color: rgba(59,130,246,0.20) !important; }
+html.dark .hover\:bg-blue-100:hover    { background-color: rgba(59,130,246,0.30) !important; }
+html.dark .hover\:bg-emerald-50:hover  { background-color: rgba(16,185,129,0.20) !important; }
+html.dark .hover\:bg-emerald-100:hover { background-color: rgba(16,185,129,0.30) !important; }
+html.dark .hover\:bg-amber-50:hover    { background-color: rgba(245,158,11,0.20) !important; }
+html.dark .hover\:bg-amber-100:hover   { background-color: rgba(245,158,11,0.30) !important; }
+html.dark .hover\:bg-rose-50:hover     { background-color: rgba(244,63,94,0.20) !important; }
+html.dark .hover\:bg-rose-100:hover    { background-color: rgba(244,63,94,0.30) !important; }
+html.dark .hover\:bg-indigo-50:hover   { background-color: rgba(99,102,241,0.20) !important; }
+html.dark .hover\:bg-indigo-100:hover  { background-color: rgba(99,102,241,0.30) !important; }
+
+/* ─── Text colors ──────────────────────────────────────── */
+
+html.dark .text-black           { color: var(--text-1) !important; }
+html.dark .text-gray-900        { color: var(--text-1) !important; }
+html.dark .text-gray-800        { color: #e2e8f0 !important; }
+html.dark .text-gray-700        { color: var(--text-2) !important; }
+html.dark .text-gray-600        { color: var(--text-3) !important; }
+html.dark .text-gray-500        { color: var(--text-3) !important; }
+html.dark .text-gray-400        { color: var(--text-4) !important; }
+html.dark .text-gray-300        { color: #475569 !important; }
+
+html.dark .text-slate-900       { color: var(--text-1) !important; }
+html.dark .text-slate-800       { color: #e2e8f0 !important; }
+html.dark .text-slate-700       { color: var(--text-2) !important; }
+html.dark .text-slate-600       { color: var(--text-3) !important; }
+html.dark .text-slate-500       { color: var(--text-3) !important; }
+html.dark .text-slate-400       { color: var(--text-4) !important; }
+
+/* Placeholder */
+html.dark .placeholder\:text-gray-400::placeholder,
+html.dark input::placeholder,
+html.dark textarea::placeholder { color: #64748b !important; }
+
+/* Status text — ĐẬM hơn để tương phản trên nền tối (bỏ qua rose-700, blue-700… vì vẫn đọc ok) */
+html.dark .text-blue-700        { color: #93c5fd !important; }
+html.dark .text-blue-800        { color: #bfdbfe !important; }
+html.dark .text-blue-900        { color: #dbeafe !important; }
+html.dark .text-blue-600        { color: #60a5fa !important; }
+html.dark .text-indigo-700      { color: #a5b4fc !important; }
+html.dark .text-indigo-800      { color: #c7d2fe !important; }
+html.dark .text-emerald-700     { color: #6ee7b7 !important; }
+html.dark .text-emerald-800     { color: #a7f3d0 !important; }
+html.dark .text-green-700       { color: #6ee7b7 !important; }
+html.dark .text-green-800       { color: #a7f3d0 !important; }
+html.dark .text-amber-700       { color: #fcd34d !important; }
+html.dark .text-amber-800       { color: #fde68a !important; }
+html.dark .text-yellow-700      { color: #fcd34d !important; }
+html.dark .text-rose-700        { color: #fda4af !important; }
+html.dark .text-rose-800        { color: #fecdd3 !important; }
+html.dark .text-red-700         { color: #fda4af !important; }
+html.dark .text-purple-700      { color: #d8b4fe !important; }
+
+/* Hover text */
+html.dark .hover\:text-gray-900:hover   { color: var(--text-1) !important; }
+html.dark .hover\:text-gray-800:hover   { color: #e2e8f0 !important; }
+html.dark .hover\:text-gray-700:hover   { color: var(--text-2) !important; }
+html.dark .hover\:text-blue-700:hover   { color: #93c5fd !important; }
+html.dark .hover\:text-blue-800:hover   { color: #bfdbfe !important; }
+html.dark .hover\:text-emerald-700:hover{ color: #6ee7b7 !important; }
+html.dark .hover\:text-rose-700:hover   { color: #fda4af !important; }
+html.dark .hover\:text-amber-700:hover  { color: #fcd34d !important; }
+
+/* ─── Borders ──────────────────────────────────────────── */
+
+html.dark .border-white         { border-color: var(--border-2) !important; }
+html.dark .border-gray-100      { border-color: var(--border-1) !important; }
+html.dark .border-gray-200      { border-color: var(--border-2) !important; }
+html.dark .border-gray-300      { border-color: #475569 !important; }
+html.dark .border-slate-100     { border-color: var(--border-1) !important; }
+html.dark .border-slate-200     { border-color: var(--border-2) !important; }
+
+html.dark .border-blue-200      { border-color: rgba(59,130,246,0.40) !important; }
+html.dark .border-blue-300      { border-color: rgba(59,130,246,0.55) !important; }
+html.dark .border-emerald-200   { border-color: rgba(16,185,129,0.40) !important; }
+html.dark .border-amber-200     { border-color: rgba(245,158,11,0.40) !important; }
+html.dark .border-rose-200      { border-color: rgba(244,63,94,0.40) !important; }
+html.dark .border-rose-300      { border-color: rgba(244,63,94,0.55) !important; }
+html.dark .border-indigo-200    { border-color: rgba(99,102,241,0.40) !important; }
+
+html.dark .hover\:border-gray-300:hover { border-color: #475569 !important; }
+html.dark .hover\:border-gray-400:hover { border-color: #64748b !important; }
+
+/* Dividers */
+html.dark .divide-gray-100 > :not([hidden]) ~ :not([hidden]) { border-color: var(--border-1) !important; }
+html.dark .divide-gray-200 > :not([hidden]) ~ :not([hidden]) { border-color: var(--border-2) !important; }
+
+/* ─── Ring (focus) ─────────────────────────────────────── */
+
+html.dark .ring-gray-100 { --tw-ring-color: var(--border-1) !important; }
+html.dark .ring-gray-200 { --tw-ring-color: var(--border-2) !important; }
+html.dark .ring-blue-200 { --tw-ring-color: rgba(59,130,246,0.40) !important; }
+html.dark .ring-blue-300 { --tw-ring-color: rgba(59,130,246,0.55) !important; }
+html.dark .focus\:ring-blue-200:focus { --tw-ring-color: rgba(59,130,246,0.40) !important; }
+html.dark .focus\:ring-blue-500\/10:focus { --tw-ring-color: rgba(59,130,246,0.20) !important; }
+
+/* ─── Native form elements ─────────────────────────────── */
+
+html.dark input,
+html.dark textarea,
+html.dark select {
+  background-color: var(--surface-2) !important;
+  color: var(--text-1) !important;
+  border-color: var(--border-2);
+}
+
+/* Inputs type có bg trong style tag inline (type="date" / "time"…) ép lại */
+html.dark input[type="date"],
+html.dark input[type="time"],
+html.dark input[type="datetime-local"],
+html.dark input[type="number"],
+html.dark input[type="search"] {
+  color-scheme: dark;
+}
+
+html.dark select option { background-color: var(--surface-2); color: var(--text-1); }
+
+/* ─── Component shortcuts từ index.css ─────────────────── */
+
+html.dark .card {
+  background-color: var(--surface-1) !important;
+  border-color: var(--border-2) !important;
+}
+html.dark .btn-secondary {
+  background-color: var(--surface-2) !important;
+  color: var(--text-2) !important;
+  border-color: var(--border-2) !important;
+}
+html.dark .btn-ghost:hover { background-color: #273345 !important; }
+html.dark .input {
+  background-color: var(--surface-2) !important;
+  color: var(--text-1) !important;
+  border-color: var(--border-2) !important;
+}
+
+/* ─── Modals & overlays ────────────────────────────────── */
+
+html.dark .bg-black\/40        { background-color: rgba(0,0,0,0.65) !important; }
+html.dark .bg-black\/50        { background-color: rgba(0,0,0,0.70) !important; }
+html.dark .bg-black\/60        { background-color: rgba(0,0,0,0.75) !important; }
+
+/* ─── Shadow — làm nhẹ hơn trong dark (shadow trên nền tối ít tác dụng) ── */
+
+html.dark .shadow-sm   { box-shadow: 0 1px 2px rgba(0,0,0,0.4) !important; }
+html.dark .shadow      { box-shadow: 0 2px 6px rgba(0,0,0,0.4) !important; }
+html.dark .shadow-md   { box-shadow: 0 6px 18px rgba(0,0,0,0.5) !important; }
+html.dark .shadow-lg   { box-shadow: 0 10px 24px rgba(0,0,0,0.55) !important; }
+html.dark .shadow-xl   { box-shadow: 0 20px 40px rgba(0,0,0,0.6) !important; }
+html.dark .shadow-2xl  { box-shadow: 0 30px 60px rgba(0,0,0,0.7) !important; }
+
+/* ─── Gradients — giữ gradient trạng thái nhưng tối hơn ── */
+
+/* Các from-slate-50 / to-blue-50 (nền trang Vmb) */
+html.dark .from-slate-50 { --tw-gradient-from: #0b1220 var(--tw-gradient-from-position) !important; --tw-gradient-to: rgba(11,18,32,0) var(--tw-gradient-to-position) !important; --tw-gradient-stops: var(--tw-gradient-from), var(--tw-gradient-to) !important; }
+html.dark .to-blue-50    { --tw-gradient-to: #0b1a2e var(--tw-gradient-to-position) !important; }
+html.dark .from-blue-50  { --tw-gradient-from: #0b1a2e var(--tw-gradient-from-position) !important; --tw-gradient-to: rgba(11,26,46,0) var(--tw-gradient-to-position) !important; }
+html.dark .to-slate-50   { --tw-gradient-to: #0b1220 var(--tw-gradient-to-position) !important; }
+html.dark .from-slate-100 { --tw-gradient-from: #1e293b var(--tw-gradient-from-position) !important; --tw-gradient-to: rgba(30,41,59,0) var(--tw-gradient-to-position) !important; }
+html.dark .to-slate-100  { --tw-gradient-to: #1e293b var(--tw-gradient-to-position) !important; }
+html.dark .via-blue-50   { --tw-gradient-stops: var(--tw-gradient-from), #0b1a2e var(--tw-gradient-via-position), var(--tw-gradient-to) !important; }
+
+/* ─── Nested specific overrides ────────────────────────── */
+
+html.dark .bg-blue-50\/50 { background-color: rgba(59,130,246,0.08) !important; }
+html.dark .bg-white.border-amber-200\/50 { background-color: var(--surface-1) !important; }
+html.dark .bg-amber-50\/50 { background-color: rgba(245,158,11,0.08) !important; }
+
+/* ─── Caret trong input ────────────────────────────────── */
+
+html.dark input, html.dark textarea { caret-color: var(--text-1); }
+
+/* ─── Table striping / zebra ───────────────────────────── */
+
+html.dark .odd\:bg-gray-50:nth-child(odd) { background-color: #0f172a !important; }
+html.dark .even\:bg-gray-50:nth-child(even) { background-color: #0f172a !important; }
+
+/* ─── Backdrop blur nền trong suốt ─────────────────────── */
+
+html.dark .backdrop-blur-xl { backdrop-filter: blur(16px); background-color: rgba(11,18,32,0.70); }
+
+/* ═══════════════════════════════════════════════════════════
+ *  Patch 2 (2026-10-09) — các màu phụ còn sáng trong dark mode:
+ *    sky, violet, teal, pink, orange, fuchsia + nhiều biến thể
+ *    opacity.  Grep thẳng từ codebase để không bỏ sót class nào.
+ * ═══════════════════════════════════════════════════════════ */
+
+/* ─── Sky (dùng cho booking USD trong TicketsTab) ──────── */
+html.dark .bg-sky-50          { background-color: rgba(14,165,233,0.14) !important; }
+html.dark .bg-sky-50\/50      { background-color: rgba(14,165,233,0.08) !important; }
+html.dark .bg-sky-50\/60      { background-color: rgba(14,165,233,0.10) !important; }
+html.dark .bg-sky-100         { background-color: rgba(14,165,233,0.22) !important; }
+html.dark .border-sky-200     { border-color: rgba(14,165,233,0.40) !important; }
+html.dark .text-sky-700       { color: #7dd3fc !important; }
+
+/* ─── Violet (dùng cho dòng tiền USD ở BookingTotalsCard) ─ */
+html.dark .bg-violet-50       { background-color: rgba(139,92,246,0.14) !important; }
+html.dark .bg-violet-100      { background-color: rgba(139,92,246,0.22) !important; }
+html.dark .border-violet-200  { border-color: rgba(139,92,246,0.40) !important; }
+html.dark .text-violet-500    { color: #a78bfa !important; }
+html.dark .text-violet-700    { color: #c4b5fd !important; }
+html.dark .text-violet-800    { color: #ddd6fe !important; }
+
+/* ─── Teal ─────────────────────────────────────────────── */
+html.dark .bg-teal-50         { background-color: rgba(20,184,166,0.14) !important; }
+html.dark .bg-teal-50\/60     { background-color: rgba(20,184,166,0.10) !important; }
+html.dark .bg-teal-100        { background-color: rgba(20,184,166,0.22) !important; }
+html.dark .border-teal-200    { border-color: rgba(20,184,166,0.40) !important; }
+html.dark .border-teal-300    { border-color: rgba(20,184,166,0.55) !important; }
+html.dark .text-teal-600      { color: #5eead4 !important; }
+html.dark .text-teal-700      { color: #99f6e4 !important; }
+
+/* ─── Pink ─────────────────────────────────────────────── */
+html.dark .bg-pink-50         { background-color: rgba(236,72,153,0.14) !important; }
+html.dark .bg-pink-100        { background-color: rgba(236,72,153,0.22) !important; }
+html.dark .border-pink-200    { border-color: rgba(236,72,153,0.40) !important; }
+html.dark .text-pink-700      { color: #f9a8d4 !important; }
+
+/* ─── Orange ───────────────────────────────────────────── */
+html.dark .bg-orange-50       { background-color: rgba(249,115,22,0.14) !important; }
+html.dark .bg-orange-50\/60   { background-color: rgba(249,115,22,0.10) !important; }
+html.dark .bg-orange-100      { background-color: rgba(249,115,22,0.22) !important; }
+
+/* ─── Fuchsia ──────────────────────────────────────────── */
+html.dark .bg-fuchsia-50      { background-color: rgba(217,70,239,0.14) !important; }
+html.dark .bg-fuchsia-100     { background-color: rgba(217,70,239,0.22) !important; }
+html.dark .border-fuchsia-200 { border-color: rgba(217,70,239,0.40) !important; }
+html.dark .text-fuchsia-700   { color: #e9a8ff !important; }
+
+/* ─── Opacity variants còn thiếu của các color đã map ──── */
+
+/* amber */
+html.dark .bg-amber-50\/40    { background-color: rgba(245,158,11,0.06) !important; }
+html.dark .bg-amber-50\/60    { background-color: rgba(245,158,11,0.10) !important; }
+html.dark .bg-amber-500\/15   { background-color: rgba(245,158,11,0.15) !important; }
+html.dark .bg-amber-600\/90   { background-color: rgba(217,119,6,0.90) !important; }
+
+/* blue (soft) */
+html.dark .bg-blue-50\/20     { background-color: rgba(59,130,246,0.04) !important; }
+html.dark .bg-blue-50\/30     { background-color: rgba(59,130,246,0.05) !important; }
+html.dark .bg-blue-50\/60     { background-color: rgba(59,130,246,0.10) !important; }
+html.dark .bg-blue-50\/70     { background-color: rgba(59,130,246,0.12) !important; }
+
+/* blue solid (giữ nguyên vì nổi trên nền tối, không override — hiệu quả) */
+html.dark .bg-blue-300\/20    { background-color: rgba(147,197,253,0.08) !important; }
+html.dark .bg-blue-500\/20    { background-color: rgba(59,130,246,0.15) !important; }
+html.dark .bg-blue-600\/90    { background-color: rgba(37,99,235,0.90) !important; }
+
+/* emerald */
+html.dark .bg-emerald-50\/40  { background-color: rgba(16,185,129,0.07) !important; }
+
+/* gray — opacity rất thường để làm "glass" background */
+html.dark .bg-gray-50\/50     { background-color: rgba(15,23,42,0.50) !important; }
+html.dark .bg-gray-50\/60     { background-color: rgba(15,23,42,0.60) !important; }
+html.dark .bg-gray-50\/70     { background-color: rgba(15,23,42,0.70) !important; }
+html.dark .bg-gray-50\/95     { background-color: rgba(15,23,42,0.95) !important; }
+html.dark .bg-gray-100\/60    { background-color: rgba(31,41,55,0.60) !important; }
+html.dark .bg-gray-100\/70    { background-color: rgba(31,41,55,0.70) !important; }
+html.dark .bg-gray-600\/90    { background-color: rgba(75,85,99,0.90) !important; }
+
+/* indigo */
+html.dark .bg-indigo-300\/20  { background-color: rgba(165,180,252,0.08) !important; }
+
+/* purple */
+html.dark .bg-purple-500\/20  { background-color: rgba(168,85,247,0.15) !important; }
+html.dark .bg-purple-600\/90  { background-color: rgba(147,51,234,0.90) !important; }
+
+/* red (giống rose) */
+html.dark .bg-red-50\/50      { background-color: rgba(244,63,94,0.08) !important; }
+html.dark .bg-red-50\/60      { background-color: rgba(244,63,94,0.10) !important; }
+html.dark .bg-red-50\/80      { background-color: rgba(244,63,94,0.14) !important; }
+html.dark .bg-red-500\/15     { background-color: rgba(239,68,68,0.15) !important; }
+html.dark .bg-red-600\/90     { background-color: rgba(220,38,38,0.90) !important; }
+
+/* rose */
+html.dark .bg-rose-500\/20    { background-color: rgba(244,63,94,0.15) !important; }
+html.dark .bg-rose-600\/90    { background-color: rgba(225,29,72,0.90) !important; }
+
+/* yellow */
+html.dark .bg-yellow-50\/60   { background-color: rgba(245,158,11,0.10) !important; }
+
+/* ─── Fallback catch-all qua attribute selector cho sky/violet
+ *  (an toàn vì chỉ match class, không match style khác) ─── */
+
+html.dark [class~="bg-sky-50"]:not([class*="bg-sky-500"]):not([class*="bg-sky-50/"]) {
+  background-color: rgba(14,165,233,0.14) !important;
+}
+html.dark [class~="bg-violet-50"]:not([class*="bg-violet-500"]):not([class*="bg-violet-50/"]) {
+  background-color: rgba(139,92,246,0.14) !important;
+}
+
+/* ─── Fix các patch inline với style={{background:'#fff'}} ──
+ * (nếu phát hiện, user nên đổi sang className. CSS không thể bắt
+ * inline style trừ khi dùng data-attr. Thường rất ít chỗ.) */

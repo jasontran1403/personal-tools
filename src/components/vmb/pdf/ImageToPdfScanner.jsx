@@ -3,6 +3,7 @@ import toast from 'react-hot-toast'
 import { warpPerspective, removeShadow } from './imageProcess'
 import useContainerSize, { fitBox } from './useContainerSize'
 import ZoomBar from './ZoomBar'
+import FilePicker from './FilePicker'
 
 /**
  * ImageToPdfScanner — upload ảnh văn bản chụp nghiêng, có bóng → PDF A4 đẹp.
@@ -303,16 +304,14 @@ export default function ImageToPdfScanner() {
     setPreview(null)
   }
 
+  const hasImage = !!imgEl
+
   return (
-    <div className="bg-white rounded-2xl shadow border border-gray-100 p-3 sm:p-4">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b border-gray-100">
-        <input ref={fileInputRef} type="file" accept="image/*" capture="environment"
-          hidden onChange={e => onPick(e.target.files?.[0])} />
-        <button type="button" onClick={() => fileInputRef.current?.click()}
-          className="px-3 py-1.5 text-sm font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700">
-          📷 Chọn ảnh…
-        </button>
+    <div className="bg-white rounded-2xl shadow border border-gray-100 p-3 sm:p-4 flex flex-col"
+      style={{ height: 'calc(100dvh - 170px)', minHeight: 420 }}>
+      {/* Toolbar — chỉ render khi đã có ảnh */}
+      {hasImage && (
+      <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b border-gray-100 flex-none">
         {fileName && (
           <span className="text-xs text-gray-600 truncate max-w-[240px]" title={fileName}>
             🖼 {fileName}
@@ -405,32 +404,30 @@ export default function ImageToPdfScanner() {
           </>
         )}
       </div>
-
-      {!imgEl && (
-        <div className="py-16 text-center text-gray-400 text-sm">
-          <div className="text-4xl mb-2">📸</div>
-          <div>Chụp hoặc chọn 1 ảnh văn bản. Kéo 4 góc theo mép giấy để warp &amp; xoá bóng.</div>
-        </div>
       )}
 
-      {imgEl && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Panel trái: ảnh gốc + 4 handle. Viewport fit theo 100dvh trừ
-              header/tabs/toolbar (~ 230px).
-              ── Zoom = 1 (fit) → dùng CSS thuần (max-width/max-height) để
-                 ảnh tự fit, không cần đo viewport. Stage là inline-block
-                 bọc sát image → handles align đúng.
-              ── Zoom ≠ 1 → cần đo viewport × zoom. Dùng useContainerSize. */}
-          <div className="flex flex-col" style={{ minHeight: 0 }}>
-            <div className="flex items-center gap-2 mb-1">
+      {/* Content area */}
+      <div className="flex-1 min-h-0 flex flex-col">
+      {!hasImage ? (
+        <FilePicker
+          icon="📸"
+          title="Chụp hoặc chọn 1 ảnh văn bản"
+          description={'Kéo 4 góc theo mép giấy để warp phối cảnh.\nTự xoá bóng và làm phẳng vết nhăn → xuất PDF A4.'}
+          accept="image/*"
+          onPick={onPick}
+        />
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1 min-h-0">
+          {/* Panel trái — flex-1 min-h-0 cho viewport auto-fill */}
+          <div className="flex flex-col min-h-0">
+            <div className="flex items-center gap-2 mb-1 flex-none">
               <span className="text-xs font-semibold text-gray-700 flex-1">
                 Ảnh gốc · kéo 4 chấm theo mép giấy
               </span>
               <ZoomBar zoom={zoomSrc} onZoom={setZoomSrc} />
             </div>
             <div ref={vpSrcRef}
-              className="relative bg-slate-100 rounded-lg border border-gray-200 overflow-auto"
-              style={{ height: 'calc(100dvh - 230px)', minHeight: 300 }}>
+              className="relative bg-slate-100 rounded-lg border border-gray-200 overflow-auto flex-1 min-h-0">
               {zoomSrc === 1 ? (
                 /* Fit mode — CSS thuần, không depend vào đo đạc */
                 <div className="absolute inset-0 flex items-center justify-center p-2">
@@ -448,7 +445,7 @@ export default function ImageToPdfScanner() {
                       style={{
                         display: 'block',
                         maxWidth: '100%',
-                        maxHeight: 'calc(100dvh - 250px)',
+                        maxHeight: '100%',
                         width: 'auto', height: 'auto',
                         border: '1px solid #e5e7eb',
                       }}
@@ -487,7 +484,7 @@ export default function ImageToPdfScanner() {
                 </div>
               )}
             </div>
-            <div className="text-[10px] text-gray-500 mt-1">
+            <div className="text-[10px] text-gray-500 mt-1 flex-none">
               Mỗi chấm là 1 góc văn bản.
               {magnetic
                 ? ` Magnetic ON · ${Math.round(magneticAngle)}° — kéo 1 góc để scale, dùng ↶/↷ để nghiêng khung theo mép giấy.`
@@ -496,16 +493,15 @@ export default function ImageToPdfScanner() {
           </div>
 
           {/* Panel phải: preview */}
-          <div className="flex flex-col" style={{ minHeight: 0 }}>
-            <div className="flex items-center gap-2 mb-1">
+          <div className="flex flex-col min-h-0">
+            <div className="flex items-center gap-2 mb-1 flex-none">
               <span className="text-xs font-semibold text-gray-700 flex-1">
                 Kết quả (warp + xoá bóng + làm phẳng)
               </span>
               {preview && <ZoomBar zoom={zoomDst} onZoom={setZoomDst} />}
             </div>
             <div ref={vpDstRef}
-              className="relative bg-gray-50 rounded-lg border border-gray-200 overflow-auto"
-              style={{ height: 'calc(100dvh - 230px)', minHeight: 300 }}>
+              className="relative bg-gray-50 rounded-lg border border-gray-200 overflow-auto flex-1 min-h-0">
               {preview ? (
                 zoomDst === 1 ? (
                   <div className="absolute inset-0 flex items-center justify-center p-2">
@@ -513,7 +509,7 @@ export default function ImageToPdfScanner() {
                       style={{
                         display: 'block',
                         maxWidth: '100%',
-                        maxHeight: 'calc(100dvh - 250px)',
+                        maxHeight: '100%',
                         width: 'auto', height: 'auto',
                       }} />
                   </div>
@@ -535,13 +531,14 @@ export default function ImageToPdfScanner() {
               )}
             </div>
             {preview && (
-              <div className="text-[10px] text-gray-500 mt-1 tabular-nums">
+              <div className="text-[10px] text-gray-500 mt-1 tabular-nums flex-none">
                 Output: {preview.w} × {preview.h} px
               </div>
             )}
           </div>
         </div>
       )}
+      </div>
     </div>
   )
 }

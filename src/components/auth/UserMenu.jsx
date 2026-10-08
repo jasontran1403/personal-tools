@@ -5,6 +5,7 @@ import { useToolsAuth } from '../../hooks/useToolsAuth'
 import UserManagerModal from './UserManagerModal'
 import Modal from '../common/Modal'
 import { changePassword } from '../../services/toolsAuth'
+import ThemeToggle from '../../theme/ThemeToggle'
 
 export default function UserMenu() {
   const { auth, logout } = useToolsAuth()
@@ -42,6 +43,10 @@ export default function UserMenu() {
 
   return (
     <>
+      <div className="flex items-center gap-2">
+        {/* 2026-10-08: nút chuyển dark/light. Cycle Sáng → Tối → Theo máy */}
+        <ThemeToggle />
+
       <div className="relative" ref={boxRef}>
         <button
           type="button"
@@ -63,6 +68,7 @@ export default function UserMenu() {
             <path d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.06l3.71-3.83a.75.75 0 1 1 1.08 1.04l-4.25 4.39a.75.75 0 0 1-1.08 0L5.21 8.27a.75.75 0 0 1 .02-1.06Z"/>
           </svg>
         </button>
+      </div>
       </div>
 
       {showUsers && <UserManagerModal onClose={() => setShowUsers(false)} />}

@@ -584,13 +584,11 @@ function renderBookingRows(b, bIdx, {
   for (const g of groups) groupStartAt.set(g.firstIdxInSorted, g)
 
   return sortedTickets.map((t, tIdx) => {
-    // ── 2026-09-20: tint bg theo currency để tách biệt VND/USD ──
-    // - VND: nền trắng (mặc định).
-    // - USD: xanh nhạt (sky) để nhìn phát biết ngay đây là booking USD.
-    // - Selected: vàng nhạt (ưu tiên).
-    const rowBg = isSelected
-      ? 'bg-amber-50/60'
-      : (b.currency === 'USD' ? 'bg-sky-50/50' : 'bg-white')
+    // ── 2026-10-09: BỎ tint theo currency ──
+    //   Trước đây USD tint sky-50, nhưng mỗi dòng vẫn in rõ đơn vị
+    //   (VND/USD) ở cột giá nên tint thừa + nhiễu khi nhiều booking USD
+    //   liền nhau. Giờ tất cả cùng nền trắng; chỉ selected mới đổi màu.
+    const rowBg = isSelected ? 'bg-amber-50/60' : 'bg-white'
     const firstRow = tIdx === 0
     const lastRow  = tIdx === N - 1
     const cardBorder = `${firstRow ? 'border-t-2 border-t-gray-100' : ''} ${lastRow ? 'border-b-4 border-b-gray-100' : ''}`
@@ -1035,7 +1033,7 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
     <div className={`rounded-xl border shadow-sm p-3 relative ${
       isSelected
         ? 'bg-amber-50 border-amber-300'
-        : (b.currency === 'USD' ? 'bg-sky-50/60 border-sky-200' : 'bg-white border-gray-200')
+        : 'bg-white border-gray-200'
     }`}>
       <div className="flex items-start gap-2 mb-2">
         <input type="checkbox" checked={isSelected}

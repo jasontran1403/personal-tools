@@ -3,6 +3,7 @@ import toast from 'react-hot-toast'
 import { getPdfjs } from './pdfjsLoader'
 import useContainerSize from './useContainerSize'
 import ZoomBar from './ZoomBar'
+import FilePicker from './FilePicker'
 
 /**
  * PdfEditor — upload PDF → sửa (whiteout vùng + xoá trang) → lưu file mới.
@@ -190,75 +191,77 @@ export default function PdfEditor() {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
+  const hasFile = !!fileBuf
+
   return (
-    <div className="bg-white rounded-2xl shadow border border-gray-100 p-3 sm:p-4">
-      {/* Toolbar */}
-      <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b border-gray-100">
-        <input ref={fileInputRef} type="file" accept="application/pdf,.pdf"
-          hidden onChange={e => openFile(e.target.files?.[0])} />
-        <button type="button" onClick={() => fileInputRef.current?.click()}
-          className="px-3 py-1.5 text-sm font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700">
-          📂 Chọn PDF…
-        </button>
-        {fileName && (
-          <span className="text-xs text-gray-600 truncate max-w-[260px]" title={fileName}>
-            📄 {fileName}
-          </span>
-        )}
-        <div className="flex-1" />
-        {pages.length > 0 && (
-          <>
-            <span className="text-[11px] text-gray-500">
-              Giữ lại {pages.filter(p => !p.deleted).length}/{pages.length} trang
+    <div className="bg-white rounded-2xl shadow border border-gray-100 p-3 sm:p-4 flex flex-col"
+      style={{ height: 'calc(100dvh - 170px)', minHeight: 420 }}>
+      {/* Toolbar — chỉ render khi đã có file; chưa có file thì FilePicker
+          chiếm toàn bộ card. */}
+      {hasFile && (
+        <div className="flex flex-wrap items-center gap-2 mb-3 pb-3 border-b border-gray-100 flex-none">
+          {fileName && (
+            <span className="text-xs text-gray-600 truncate max-w-[260px]" title={fileName}>
+              📄 {fileName}
             </span>
-            <ZoomBar zoom={zoom} onZoom={setZoom} />
-            <button type="button" onClick={reset}
-              className="px-3 py-1.5 text-sm font-semibold rounded-lg text-gray-600 hover:bg-gray-100">
-              Huỷ
-            </button>
-            <button type="button" onClick={save} disabled={saving}
-              className="px-3 py-1.5 text-sm font-semibold rounded-lg bg-emerald-600 text-white
-                hover:bg-emerald-700 disabled:opacity-50">
-              {saving ? 'Đang lưu…' : '💾 Lưu PDF'}
-            </button>
-          </>
-        )}
-      </div>
+          )}
+          <div className="flex-1" />
+          {pages.length > 0 && (
+            <>
+              <span className="text-[11px] text-gray-500">
+                Giữ lại {pages.filter(p => !p.deleted).length}/{pages.length} trang
+              </span>
+              <ZoomBar zoom={zoom} onZoom={setZoom} />
+              <button type="button" onClick={reset}
+                className="px-3 py-1.5 text-sm font-semibold rounded-lg text-gray-600 hover:bg-gray-100">
+                Huỷ
+              </button>
+              <button type="button" onClick={save} disabled={saving}
+                className="px-3 py-1.5 text-sm font-semibold rounded-lg bg-emerald-600 text-white
+                  hover:bg-emerald-700 disabled:opacity-50">
+                {saving ? 'Đang lưu…' : '💾 Lưu PDF'}
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
-      {/* Viewport chính: cố định chiều cao = 100dvh - header-tabs-toolbar,
-          scroll dọc. Mỗi trang được render ở width = (viewportW - 32) * zoom
-          → zoom 1 đúng là fit page. */}
-      <div ref={vpRef}
-        className="relative bg-slate-50 rounded-lg border border-gray-200 overflow-auto"
-        style={{ height: 'calc(100dvh - 230px)', minHeight: 300 }}>
-        {!fileBuf && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-400 text-sm px-4 text-center">
-            <div className="text-4xl mb-2">📄</div>
-            <div>Chọn 1 file PDF để bắt đầu chỉnh sửa.</div>
-            <div className="mt-1 text-[11px]">Có thể vẽ hộp trắng che thông tin + xoá bớt trang. Mọi xử lý local.</div>
+      {/* Content area — flex-1 lấp phần còn lại. Khi chưa có file: FilePicker
+          full-fill. Khi có file: viewport scroll. */}
+      <div className="flex-1 min-h-0 flex flex-col">
+        {!hasFile ? (
+          <FilePicker
+            icon="📄"
+            title="Chọn 1 file PDF để bắt đầu chỉnh sửa"
+            description={'Có thể vẽ hộp trắng che thông tin + xoá bớt trang.\nMọi xử lý local.'}
+            accept="application/pdf,.pdf"
+            onPick={openFile}
+          />
+        ) : (
+          <div ref={vpRef}
+            className="relative bg-slate-50 rounded-lg border border-gray-200 overflow-auto flex-1 min-h-0">
+            {pages.length === 0 && (
+              <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm">
+                Đang render trang… ({renderedCount})
+              </div>
+            )}
+
+            {pages.length > 0 && (
+              <div className="p-4 space-y-4 flex flex-col items-center">
+                {pages.map(p => (
+                  <PageEditor key={p.index} page={p} renderWidth={pageRenderW}
+                    onToggleDelete={() => toggleDelete(p.index)}
+                    onAddRect={(r) => addRect(p.index, r)}
+                    onRemoveRect={(ri) => removeRect(p.index, ri)}
+                  />
+                ))}
+              </div>
+            )}
+
+            {busy && pages.length > 0 && (
+              <div className="text-center text-xs text-gray-400 mt-2">Đang render…</div>
+            )}
           </div>
-        )}
-
-        {fileBuf && pages.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-gray-400 text-sm">
-            Đang render trang… ({renderedCount})
-          </div>
-        )}
-
-        {pages.length > 0 && (
-          <div className="p-4 space-y-4 flex flex-col items-center">
-            {pages.map(p => (
-              <PageEditor key={p.index} page={p} renderWidth={pageRenderW}
-                onToggleDelete={() => toggleDelete(p.index)}
-                onAddRect={(r) => addRect(p.index, r)}
-                onRemoveRect={(ri) => removeRect(p.index, ri)}
-              />
-            ))}
-          </div>
-        )}
-
-        {busy && pages.length > 0 && (
-          <div className="text-center text-xs text-gray-400 mt-2">Đang render…</div>
         )}
       </div>
     </div>

@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@formulajs/formulajs": "^4.6.1",
+    "@imgly/background-removal": "^1.7.0",
     "axios": "^1.7.2",
     "docx": "^9.7.1",
     "highlight.js": "^11.11.1",

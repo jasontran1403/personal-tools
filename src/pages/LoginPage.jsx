@@ -3,6 +3,7 @@ import { useNavigate, useSearchParams } from 'react-router-dom'
 import toast from 'react-hot-toast'
 import { useToolsAuth } from '../hooks/useToolsAuth'
 import { rememberedToolsUsername } from '../services/toolsAuth'
+import ThemeToggle from '../theme/ThemeToggle'
 
 /**
  * Trang đăng nhập cho khu Tiện ích.
@@ -64,6 +65,11 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen flex items-center justify-center px-4 py-10
       bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 relative overflow-hidden">
+
+      {/* ThemeToggle góc trên-phải để kể cả chưa đăng nhập cũng chuyển được */}
+      <div className="absolute top-4 right-4 z-10">
+        <ThemeToggle />
+      </div>
 
       {/* Trang trí: 2 vòng gradient mờ chạy nền, không tương tác được */}
       <div aria-hidden className="absolute -top-32 -left-32 w-96 h-96 rounded-full bg-blue-300/20 blur-3xl" />

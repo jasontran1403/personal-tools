@@ -6,6 +6,9 @@ export default function BookingTotalsCard({ totals = [], loading = false }) {
   const cols = [
     { label: 'Thành tiền',   vnd: vnd.subTotal,    usd: usd.subTotal    },
     { label: 'Phí xuất vé',  vnd: vnd.issuanceFee, usd: usd.issuanceFee },
+    // 2026-10-09: bỏ cờ `hi` (bg-blue-50/50) cho đồng nhất với 2 card
+    //   còn lại. Vẫn phân biệt "Tổng booking" bằng chữ in đậm (c.hi
+    //   dưới dưới vẫn giữ cho font-bold / text-blue-800).
     { label: 'Tổng booking', vnd: vnd.grandTotal,  usd: usd.grandTotal, hi: true },
   ]
 
@@ -21,7 +24,7 @@ export default function BookingTotalsCard({ totals = [], loading = false }) {
       </div>
       <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-gray-100">
         {cols.map((c, i) => (
-          <div key={i} className={`p-3 ${c.hi ? 'bg-blue-50/50' : ''}`}>
+          <div key={i} className="p-3">
             <div className="text-[10px] font-bold text-gray-500 uppercase mb-1.5 text-right">
               {c.label}
             </div>
@@ -53,4 +56,3 @@ function emptyTotal(currency) {
     issuanceFee: '0', grandTotal: '0', ticketCount: 0,
   }
 }
-

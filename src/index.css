@@ -31,3 +31,16 @@
     @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold;
   }
 }
+
+/* ── react-hot-toast — đổi màu nền toast theo theme ──
+ * Toaster dùng inline style nên override qua class `tools-toast`.
+ * (truyền ở main.jsx) */
+.tools-toast {
+  background: #fff;
+  color: #0f172a;
+}
+html.dark .tools-toast {
+  background: #1e293b !important;
+  color: #f1f5f9 !important;
+  box-shadow: 0 10px 24px rgba(0,0,0,0.5) !important;
+}
