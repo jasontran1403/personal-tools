@@ -6,6 +6,7 @@ import TicketsTab   from '../components/vmb/TicketsTab'
 import PassengersTab from '../components/vmb/PassengersTab'
 import LookupTab    from '../components/vmb/LookupTab'
 import TodoTab      from '../components/vmb/TodoTab'
+import PdfTab       from '../components/vmb/pdf/PdfTab'
 import useTodayTaskStats from '../hooks/useTodayTaskStats'
 
 /**
@@ -26,6 +27,9 @@ const BASE_TABS = [
   { key: 'tickets',     label: 'Vé máy bay',      icon: '✈️' },
   { key: 'passengers',  label: 'Thông tin khách', icon: '👥' },
   { key: 'lookup',      label: 'Tra cứu',         icon: '🔎' },
+  // 2026-10-08: tab Pdf chèn trước Todo. Hai chức năng con: PDF editor
+  // (whiteout + xoá trang) và Scan ảnh → PDF (warp phối cảnh + xoá bóng).
+  { key: 'pdf',         label: 'Pdf',             icon: '📄' },
   { key: 'todo',        label: 'Todo',            icon: '📋' },
 ]
 
@@ -97,6 +101,7 @@ export default function VmbPage() {
         {tab === 'tickets'    && <TicketsTab />}
         {tab === 'passengers' && <PassengersTab />}
         {tab === 'lookup'     && <LookupTab />}
+        {tab === 'pdf'        && <PdfTab />}
         {tab === 'todo'       && <TodoTab onTasksChanged={refreshTaskStats} />}
       </main>
     </div>
