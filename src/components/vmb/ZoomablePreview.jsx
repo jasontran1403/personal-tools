@@ -81,10 +81,17 @@ export default function ZoomablePreview({ filePath, fileName, title, onClose, on
     ? 'flex flex-col w-full h-full bg-black/85'
     : 'fixed inset-0 z-[100] bg-black/85 flex flex-col'
 
+  // 2026-10-09: Với PDF, trình duyệt đã có toolbar zoom thật (render lại
+  // theo DPI thực) ngay trong iframe. Toolbar ngoài dùng CSS transform:
+  // scale() → chữ vỡ/nhòe khi zoom lên. Vì vậy ẩn toolbar ngoài khi là
+  // PDF — chỉ giữ cho ảnh (ảnh raster không có zoom native, cần CSS zoom).
+  const showOuterToolbar = !isPdf || !embedded
+
   return (
     <div className={wrapCls}
       onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
-      {/* Toolbar */}
+      {/* Toolbar — ẩn khi embedded + PDF (trùng với toolbar native của iframe) */}
+      {showOuterToolbar && (
       <div className="flex items-center gap-2 px-4 py-2 bg-black/60 text-white shrink-0 flex-wrap">
         {onBack && (
           <button onClick={onBack}
@@ -123,6 +130,7 @@ export default function ZoomablePreview({ filePath, fileName, title, onClose, on
             className="ml-2 w-8 h-8 rounded-md bg-white/10 hover:bg-white/20 text-lg font-bold">×</button>
         )}
       </div>
+      )}
 
       {/* Preview area */}
       <div className="flex-1 overflow-hidden flex items-center justify-center select-none"
@@ -130,19 +138,28 @@ export default function ZoomablePreview({ filePath, fileName, title, onClose, on
         {!src ? (
           <div className="text-white/60 text-sm">Không có file để hiển thị</div>
         ) : isPdf ? (
-          <div className="w-full h-full overflow-auto flex items-center justify-center p-4">
-            <div style={{
-              width: embedded ? '95%' : '80vw',
-              height: embedded ? '90%' : '85vh',
-              transform: `rotate(${rotate}deg) scale(${scale})`,
-              transformOrigin: 'center center',
-              transition: dragRef.current ? 'none' : 'transform 0.15s ease',
-            }}>
-              <iframe src={src} title={title}
-                className="w-full h-full bg-white rounded shadow-2xl"
-                style={{ border: 0 }} />
+          embedded ? (
+            // Embedded PDF: iframe chiếm 100% không cần wrapper CSS transform.
+            // Toolbar native của trình duyệt (bên trong iframe) lo zoom thật.
+            <iframe src={src} title={title}
+              className="w-full h-full bg-white"
+              style={{ border: 0 }} />
+          ) : (
+            // Full-screen PDF: giữ CSS transform cho rotate (dùng ít)
+            <div className="w-full h-full overflow-auto flex items-center justify-center p-4">
+              <div style={{
+                width: '80vw',
+                height: '85vh',
+                transform: `rotate(${rotate}deg) scale(${scale})`,
+                transformOrigin: 'center center',
+                transition: dragRef.current ? 'none' : 'transform 0.15s ease',
+              }}>
+                <iframe src={src} title={title}
+                  className="w-full h-full bg-white rounded shadow-2xl"
+                  style={{ border: 0 }} />
+              </div>
             </div>
-          </div>
+          )
         ) : (
           <img src={src} alt={title}
             draggable={false}

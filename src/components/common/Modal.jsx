@@ -24,6 +24,7 @@ const SIZE = {
   md:   'max-w-md',
   lg:   'max-w-2xl',
   xl:   'max-w-4xl',
+  huge: 'max-w-[96dvw]',
   full: 'max-w-[96vw]',
 }
 
@@ -64,11 +65,12 @@ export default function Modal({
       {/* Backdrop */}
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" aria-hidden />
 
-      {/* Panel */}
+      {/* Panel. Size huge mở rộng cả max-h để tận dụng viewport. */}
       <div
         ref={panelRef}
         className={`relative w-full ${SIZE[size] || SIZE.md} bg-white rounded-2xl shadow-2xl
-                    max-h-[92vh] flex flex-col overflow-hidden`}
+                    ${size === 'huge' ? 'max-h-[96dvh] h-[96dvh]' : 'max-h-[92vh]'}
+                    flex flex-col overflow-hidden`}
         onMouseDown={e => e.stopPropagation()}
       >
         {(title || onClose) && (

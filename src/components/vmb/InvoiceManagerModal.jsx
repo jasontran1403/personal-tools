@@ -3,6 +3,7 @@ import toast from 'react-hot-toast'
 import Modal from '../common/Modal'
 import Badge from '../common/Badge'
 import ConfirmModal from '../common/ConfirmModal'
+import VmbFilePreviewModal from './VmbFilePreviewModal'
 import {
   getBooking, createInvoice, updateInvoice, deleteInvoice,
   replaceInvoiceFile, deleteInvoiceFile,
@@ -34,6 +35,9 @@ export default function InvoiceManagerModal({ bookingId, onClose, onDirty }) {
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState(null)
   const [confirmDel, setConfirmDel] = useState(null)
+  // 2026-10-09: xem file inline (dùng ZoomablePreview trong Modal huge) thay
+  //             vì window.open tab mới.
+  const [previewFile, setPreviewFile] = useState(null)   // { url, name } hoặc null
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -143,7 +147,7 @@ export default function InvoiceManagerModal({ bookingId, onClose, onDirty }) {
                     ticketLookup={tickets}
                     onEdit={() => setEditing(inv)}
                     onDelete={() => setConfirmDel(inv)}
-                    onPreview={(p) => window.open(p.url, '_blank')}
+                    onPreview={(p) => setPreviewFile(p)}
                     onFileReplace={async (slot, file) => {
                       setBusy(true)
                       try {
@@ -182,8 +186,26 @@ export default function InvoiceManagerModal({ bookingId, onClose, onDirty }) {
           onCancel={() => setConfirmDel(null)}
         />
       )}
+
+      <VmbFilePreviewModal
+        open={!!previewFile}
+        onClose={() => setPreviewFile(null)}
+        filePath={relFromAbs(previewFile?.url)}
+        fileName={previewFile?.name}
+        title={previewFile?.name}
+      />
     </>
   )
+}
+
+// FilePreviewModal yêu cầu path tương đối (vmbFileUrl sẽ ghép lại). onPreview
+// được callers truyền url ABSOLUTE (đã qua vmbFileUrl) → cắt bỏ origin về
+// path tương đối "/vmb-files/…".
+function relFromAbs(absUrl) {
+  if (!absUrl) return ''
+  const idx = absUrl.indexOf('/vmb-files/')
+  if (idx === -1) return absUrl   // đã là relative sẵn
+  return absUrl.slice(idx)
 }
 
 // ─────────────────────────────────────────────────────────

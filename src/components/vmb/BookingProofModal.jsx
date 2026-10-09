@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import Modal from '../common/Modal'
+import VmbFilePreviewModal from './VmbFilePreviewModal'
 import { uploadBookingProof, deleteBookingProof } from '../../services/vmbApi'
-import { vmbFileUrl } from '../../services/api'
 
 /**
  * Modal quản lý file BẰNG CHỨNG của booking.
@@ -19,6 +19,8 @@ import { vmbFileUrl } from '../../services/api'
 export default function BookingProofModal({ open, booking, onClose, onChanged }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr]   = useState('')
+  // 2026-10-09: xem file inline bằng Modal + ZoomablePreview thay vì mở tab mới
+  const [previewFile, setPreviewFile] = useState(null)   // { url, name }
 
   // Chia file theo scope cho tiện render
   const { shared, perTicket } = useMemo(() => {
@@ -81,6 +83,7 @@ export default function BookingProofModal({ open, booking, onClose, onChanged })
           files={shared}
           onUpload={file => handleUpload(null, file)}
           onDelete={handleDelete}
+          onPreview={setPreviewFile}
           disabled={busy}
         />
 
@@ -93,6 +96,7 @@ export default function BookingProofModal({ open, booking, onClose, onChanged })
             files={perTicket.get(t.id) || []}
             onUpload={file => handleUpload(t.id, file)}
             onDelete={handleDelete}
+            onPreview={setPreviewFile}
             disabled={busy}
           />
         ))}
@@ -104,11 +108,19 @@ export default function BookingProofModal({ open, booking, onClose, onChanged })
           Đóng
         </button>
       </div>
+
+      <VmbFilePreviewModal
+        open={!!previewFile}
+        onClose={() => setPreviewFile(null)}
+        filePath={previewFile?.url}
+        fileName={previewFile?.name}
+        title={previewFile?.name}
+      />
     </Modal>
   )
 }
 
-function Section({ title, hint, files, onUpload, onDelete, disabled }) {
+function Section({ title, hint, files, onUpload, onDelete, onPreview, disabled }) {
   const inputRef = useRef(null)
 
   return (
@@ -140,10 +152,10 @@ function Section({ title, hint, files, onUpload, onDelete, disabled }) {
               <span className="text-[11px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
                 {contentTypeIcon(f.contentType)}
               </span>
-              <a href={vmbFileUrl(f.url)} target="_blank" rel="noopener noreferrer"
-                className="flex-1 text-xs text-blue-700 hover:underline truncate">
+              <button type="button" onClick={() => onPreview({ url: f.url, name: f.originalName || f.url })}
+                className="flex-1 text-xs text-blue-700 hover:underline truncate text-left">
                 {f.originalName || f.url}
-              </a>
+              </button>
               <span className="text-[10px] text-gray-400">{formatSize(f.sizeBytes)}</span>
               <button onClick={() => onDelete(f.id)} disabled={disabled}
                 title="Xóa file này"

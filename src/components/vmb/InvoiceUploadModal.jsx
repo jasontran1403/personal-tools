@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import Modal from '../common/Modal'
+import VmbFilePreviewModal from './VmbFilePreviewModal'
 import { createInvoice, deleteInvoice } from '../../services/vmbApi'
-import { vmbFileUrl } from '../../services/api'
 
 /**
  * Upload hóa đơn — flow đơn giản, chỉ 2 loại: DRAFT hoặc ISSUED.
@@ -38,6 +38,8 @@ export default function InvoiceUploadModal({ open, booking, onClose, onChanged }
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr]   = useState('')
+  // 2026-10-09: preview inline bằng ZoomablePreview thay vì mở tab mới
+  const [previewFile, setPreviewFile] = useState(null)   // { url, name }
   const fileRef = useRef(null)
 
   // Đổi kind → reset selection (semantic khác nhau giữa 2 mode)
@@ -189,6 +191,7 @@ export default function InvoiceUploadModal({ open, booking, onClose, onChanged }
         busy={busy}
         onDelete={removeInvoice}
         onDeleteAll={removeAllOfKind}
+        onPreview={setPreviewFile}
       />
 
       {/* ─ Áp cho khách hàng ──────────────────────────────────────── */}
@@ -270,6 +273,14 @@ export default function InvoiceUploadModal({ open, booking, onClose, onChanged }
           {busy ? 'Đang tải…' : '📥 Upload'}
         </button>
       </div>
+
+      <VmbFilePreviewModal
+        open={!!previewFile}
+        onClose={() => setPreviewFile(null)}
+        filePath={previewFile?.url}
+        fileName={previewFile?.name}
+        title={previewFile?.name}
+      />
     </Modal>
   )
 }
@@ -408,7 +419,7 @@ function SelectableRow({ group, booking, checked, onToggle }) {
 //  EXISTING INVOICES PANEL
 // ══════════════════════════════════════════════════════════════
 
-function ExistingInvoicesPanel({ invoices, kindLabel, booking, busy, onDelete, onDeleteAll }) {
+function ExistingInvoicesPanel({ invoices, kindLabel, booking, busy, onDelete, onDeleteAll, onPreview }) {
   if (invoices.length === 0) {
     return (
       <div className="mb-3 p-2 rounded-md bg-gray-50 border border-gray-200 text-[11px] text-gray-500 italic">
@@ -431,14 +442,14 @@ function ExistingInvoicesPanel({ invoices, kindLabel, booking, busy, onDelete, o
       <div className="p-2 space-y-1.5">
         {invoices.map(inv => (
           <ExistingInvoiceRow key={inv.id} inv={inv} booking={booking}
-            busy={busy} onDelete={() => onDelete(inv.id)} />
+            busy={busy} onDelete={() => onDelete(inv.id)} onPreview={onPreview} />
         ))}
       </div>
     </div>
   )
 }
 
-function ExistingInvoiceRow({ inv, booking, busy, onDelete }) {
+function ExistingInvoiceRow({ inv, booking, busy, onDelete, onPreview }) {
   const ids = inv.ticketIds || []
   const isBookingWide = ids.length === 0
   const scopeLabel = isBookingWide
@@ -466,11 +477,12 @@ function ExistingInvoiceRow({ inv, booking, busy, onDelete }) {
             <span className="text-[10px] italic text-gray-400 px-2 py-0.5">Chưa có file</span>
           ) : (
             files.map((f, i) => (
-              <a key={i} href={vmbFileUrl(f.url)} target="_blank" rel="noopener noreferrer"
+              <button key={i} type="button"
+                onClick={() => onPreview?.({ url: f.url, name: f.name || f.label })}
                 title="Click để xem trước file"
                 className={`text-[10px] font-bold px-2 py-0.5 rounded transition ${f.color}`}>
                 {f.label}
-              </a>
+              </button>
             ))
           )}
           <button type="button" onClick={onDelete} disabled={busy}

@@ -95,7 +95,7 @@ export default function IdPresentationModal({ passenger, onClose }) {
   const remaining = remainingTime(doc?.expiryDate)
 
   return (
-    <Modal open onClose={onClose} title={`${docLabel} — ${passenger?.fullName || ''}`} size="xl" closeOnBackdrop
+    <Modal open onClose={onClose} title={`${docLabel} — ${passenger?.fullName || ''}`} size="huge" closeOnBackdrop
       footer={
         <div className="flex justify-between items-center w-full">
           {hasCccd && hasPp ? (
@@ -109,10 +109,14 @@ export default function IdPresentationModal({ passenger, onClose }) {
         </div>
       }
     >
-      <div className="grid grid-cols-1 lg:grid-cols-5 gap-4">
-        {/* Panel trái: preview */}
-        <div className="lg:col-span-3">
-          <div className="rounded-xl overflow-hidden border border-gray-200 bg-gray-100" style={{ height: '60vh' }}>
+      {/* h-full để grid lấp đầy chiều cao modal body (modal `huge` = 96dvh).
+          Mobile stack → preview min-h-[50vh], panel phải height tự nhiên.
+          Desktop (lg) → grid 2 cột, cả 2 panel h-full; panel phải overflow
+          internal nếu field dài. */}
+      <div className="flex flex-col lg:grid lg:grid-cols-5 gap-4 h-full min-h-0">
+        {/* Panel trái: preview — lấp đầy chiều cao */}
+        <div className="lg:col-span-3 min-h-[50vh] lg:min-h-0 lg:h-full">
+          <div className="rounded-xl overflow-hidden border border-gray-200 bg-gray-100 w-full h-full">
             {hasFile ? (
               <ZoomablePreview
                 filePath={doc.fileUrl}
@@ -130,7 +134,7 @@ export default function IdPresentationModal({ passenger, onClose }) {
         </div>
 
         {/* Panel phải: các field click-to-copy */}
-        <div className="lg:col-span-2 space-y-2">
+        <div className="lg:col-span-2 space-y-2 lg:h-full lg:overflow-y-auto lg:pr-1">
           <div className="text-xs font-bold text-gray-600 uppercase tracking-wide mb-1">
             Thông tin — bấm để copy
           </div>

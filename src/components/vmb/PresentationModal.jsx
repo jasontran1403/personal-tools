@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import Modal from '../common/Modal'
+import VmbFilePreviewModal from './VmbFilePreviewModal'
 import { vmbFileUrl } from '../../services/api'
 
 /**
@@ -27,6 +28,8 @@ import { vmbFileUrl } from '../../services/api'
  */
 export default function PresentationModal({ open, booking, onClose }) {
   const [option, setOption] = useState(null) // null | 'proof' | 'face' | 'invoice'
+  // 2026-10-09: preview inline bằng ZoomablePreview thay vì mở tab mới
+  const [previewFile, setPreviewFile] = useState(null)   // { url, name }
 
   if (!open || !booking) return null
 
@@ -47,6 +50,7 @@ export default function PresentationModal({ open, booking, onClose }) {
           booking={booking}
           cap={cap}
           onBack={back}
+          onPreview={setPreviewFile}
         />
       )}
 
@@ -58,6 +62,14 @@ export default function PresentationModal({ open, booking, onClose }) {
           </button>
         </div>
       )}
+
+      <VmbFilePreviewModal
+        open={!!previewFile}
+        onClose={() => setPreviewFile(null)}
+        filePath={previewFile?.url}
+        fileName={previewFile?.name}
+        title={previewFile?.name}
+      />
     </Modal>
   )
 }
@@ -122,7 +134,7 @@ function OptionGrid({ cap, onPick }) {
 //  OPTION DETAIL — hoặc auto-download (1 group) hoặc list groups
 // ══════════════════════════════════════════════════════════════
 
-function OptionDetail({ option, booking, cap, onBack }) {
+function OptionDetail({ option, booking, cap, onBack, onPreview }) {
   const info = cap[option]
 
   if (!info.available) {
@@ -147,7 +159,7 @@ function OptionDetail({ option, booking, cap, onBack }) {
       )}
       {info.groups.map((g, i) => (
         <GroupBlock key={i} option={option} booking={booking} group={g} index={i + 1}
-                    showIndex={info.groupCount > 1} />
+                    showIndex={info.groupCount > 1} onPreview={onPreview} />
       ))}
       <div className="pt-1">
         <button onClick={onBack} className="px-3 py-2 rounded-md bg-gray-100 hover:bg-gray-200 text-sm">
@@ -163,7 +175,7 @@ function OptionDetail({ option, booking, cap, onBack }) {
  * bên dưới. Mỗi file có preview inline (ảnh) hoặc icon (PDF/khác), tên gốc,
  * badge nhãn (Nháp / Đã PH …) nếu là hóa đơn, và 2 nút Xem trước + Tải.
  */
-function GroupBlock({ option, booking, group, index, showIndex }) {
+function GroupBlock({ option, booking, group, index, showIndex, onPreview }) {
   const isAllBooking = group.passengers.length === (booking.tickets?.length || 0)
   const passengersLabel = isAllBooking
     ? 'Toàn bộ booking'
@@ -191,7 +203,7 @@ function GroupBlock({ option, booking, group, index, showIndex }) {
 
       <div className="space-y-1.5">
         {group.files.map((f, i) => (
-          <FileRow key={i} file={f} option={option} booking={booking} group={group} indexInGroup={i} />
+          <FileRow key={i} file={f} option={option} booking={booking} group={group} indexInGroup={i} onPreview={onPreview} />
         ))}
       </div>
     </div>
@@ -202,16 +214,17 @@ function GroupBlock({ option, booking, group, index, showIndex }) {
  * Một dòng file: preview thumbnail (ảnh) / icon (PDF), tên + label,
  * và 2 nút xem trước / tải.
  */
-function FileRow({ file, option, booking, group, indexInGroup }) {
+function FileRow({ file, option, booking, group, indexInGroup, onPreview }) {
   const absUrl = vmbFileUrl(file.url)
   const isImage = isImageFile(file.originalName, file.url)
+  const previewPayload = { url: file.url, name: file.originalName || file.url.split('/').pop() }
 
   return (
     <div className="flex items-center gap-2 p-2 rounded-md bg-gray-50 hover:bg-gray-100 border border-gray-200">
       {/* Thumbnail / icon */}
-      <a href={absUrl} target="_blank" rel="noopener noreferrer"
+      <button type="button" onClick={() => onPreview?.(previewPayload)}
          className="flex-shrink-0"
-         title="Mở trong tab mới">
+         title="Xem trước">
         {isImage ? (
           <img src={absUrl} alt={file.originalName || 'file'}
                className="w-12 h-12 rounded object-cover border border-gray-300 bg-white" />
@@ -220,7 +233,7 @@ function FileRow({ file, option, booking, group, indexInGroup }) {
             📄
           </div>
         )}
-      </a>
+      </button>
 
       {/* Meta */}
       <div className="flex-1 min-w-0">
@@ -237,11 +250,11 @@ function FileRow({ file, option, booking, group, indexInGroup }) {
 
       {/* Actions */}
       <div className="flex flex-col sm:flex-row gap-1 flex-shrink-0">
-        <a href={absUrl} target="_blank" rel="noopener noreferrer"
+        <button type="button" onClick={() => onPreview?.(previewPayload)}
           className="px-2 py-1 rounded-md bg-white hover:bg-gray-100 border border-gray-300 text-[11px] font-semibold text-gray-700 flex items-center justify-center gap-1"
-          title="Xem trong tab mới">
+          title="Xem trước">
           👁 <span className="hidden sm:inline">Xem</span>
-        </a>
+        </button>
         <button onClick={() => downloadSingle(option, booking, group, file, indexInGroup)}
           className="px-2 py-1 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-[11px] font-semibold flex items-center gap-1"
           title="Tải với tên theo quy ước">
