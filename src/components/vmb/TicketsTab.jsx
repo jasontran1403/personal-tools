@@ -12,7 +12,8 @@ import BookingTotalsCard from './BookingTotalsCard'
 import PaymentModal from './PaymentModal'
 import BatchPaymentModal from './BatchPaymentModal'
 import DateRangePicker from '../common/DateRangePicker'
-import { listBookings, deleteBooking, totalsBookings } from '../../services/vmbApi'
+import CompanySearchSelect, { companyOptions } from '../common/CompanySearchSelect'
+import { listBookings, deleteBooking, totalsBookings, listCompanies } from '../../services/vmbApi'
 import { parseAmount, formatMoney, sumAmounts, toVnd } from '../../lib/money'
 import { primaryDeparture } from '../../lib/countdown'
 import { formatDepart } from '../../lib/airportTz'
@@ -44,6 +45,13 @@ export default function TicketsTab() {
   const [q, setQ]                 = useState('')
   const [fromSale, setFromSale]   = useState('')
   const [toSale, setToSale]       = useState('')
+  // ── 2026-10-09: Filter theo công ty ──
+  // null = Tất cả (mặc định). Số = id công ty.
+  // List công ty lấy từ listCompanies (dùng chung với tab Thông tin khách).
+  // Filter áp dụng client-side: giữ booking nếu có ÍT NHẤT 1 vé có companyId
+  // trùng; các số liệu ở card tổng sẽ tính lại từ các vé khớp filter.
+  const [companyId, setCompanyId]   = useState(null)
+  const [companies, setCompanies]   = useState([])
   const [page, setPage]           = useState(0)
   const [totalPages, setTotalPages] = useState(1)
   const [total, setTotal]         = useState(0)
@@ -103,14 +111,63 @@ export default function TicketsTab() {
   useEffect(() => { load() }, [load])
   useEffect(() => { loadTotals() }, [loadTotals])
 
+  // Load danh sách công ty 1 lần cho dropdown filter
+  useEffect(() => {
+    let cancel = false
+    listCompanies()
+      .then(res => { if (!cancel) setCompanies(res.data?.data || []) })
+      .catch(() => { /* silent — filter vẫn work với 0 công ty */ })
+    return () => { cancel = true }
+  }, [])
+
+  const flatCompanies = useMemo(() => companyOptions(companies || []), [companies])
+
+  // ── Filter client-side theo companyId ─────────────────────
+  // Booking match nếu có ≥1 vé có companyId trùng với filter.
+  const filteredRows = useMemo(() => {
+    if (companyId == null) return rows
+    return rows.filter(b => (b.tickets || []).some(t => t.companyId === companyId))
+  }, [rows, companyId])
+
+  // ── Totals: khi có filter công ty thì tính lại từ các vé khớp filter.
+  //    Khi không có filter thì dùng totals từ BE (tổng toàn hệ thống theo
+  //    q + date range).
+  const displayTotals = useMemo(() => {
+    if (companyId == null) return totals
+    const agg = {
+      VND: { subTotal: 0, issuanceFee: 0, grandTotal: 0, ticketCount: 0 },
+      USD: { subTotal: 0, issuanceFee: 0, grandTotal: 0, ticketCount: 0 },
+    }
+    for (const b of filteredRows) {
+      const cur = b.currency === 'USD' ? 'USD' : 'VND'
+      for (const t of (b.tickets || [])) {
+        if (t.companyId !== companyId) continue
+        const feesTotal   = sumTicketFees(t.fees)
+        const subTotal    = sumAmounts(t.basePrice, t.collectionFee, feesTotal)
+        const issuanceFee = parseAmount(t.issuanceFee) || 0
+        agg[cur].subTotal    += subTotal
+        agg[cur].issuanceFee += issuanceFee
+        agg[cur].grandTotal  += subTotal + issuanceFee
+        agg[cur].ticketCount += 1
+      }
+    }
+    return ['VND', 'USD'].map(c => ({
+      currency: c,
+      subTotal:    formatMoney(agg[c].subTotal,    c, { withUnit: false }),
+      issuanceFee: formatMoney(agg[c].issuanceFee, c, { withUnit: false }),
+      grandTotal:  formatMoney(agg[c].grandTotal,  c, { withUnit: false }),
+      ticketCount: agg[c].ticketCount,
+    }))
+  }, [companyId, filteredRows, totals])
+
   useEffect(() => {
     setSelectedIds(prev => {
-      const valid = new Set(rows.map(r => r.id))
+      const valid = new Set(filteredRows.map(r => r.id))
       const next = new Set()
       for (const id of prev) if (valid.has(id)) next.add(id)
       return next
     })
-  }, [rows])
+  }, [filteredRows])
 
   const qTimer = useRef(null)
   const onSearch = (v) => {
@@ -127,18 +184,18 @@ export default function TicketsTab() {
   }
   const toggleAllOnPage = () => {
     setSelectedIds(prev => {
-      const allSelected = rows.length > 0 && rows.every(r => prev.has(r.id))
+      const allSelected = filteredRows.length > 0 && filteredRows.every(r => prev.has(r.id))
       const next = new Set(prev)
-      if (allSelected) rows.forEach(r => next.delete(r.id))
-      else            rows.forEach(r => next.add(r.id))
+      if (allSelected) filteredRows.forEach(r => next.delete(r.id))
+      else            filteredRows.forEach(r => next.add(r.id))
       return next
     })
   }
   const clearSelection = () => setSelectedIds(new Set())
 
   const selectedBookings = useMemo(
-    () => rows.filter(r => selectedIds.has(r.id)),
-    [rows, selectedIds]
+    () => filteredRows.filter(r => selectedIds.has(r.id)),
+    [filteredRows, selectedIds]
   )
 
   const onBatchPay = () => {
@@ -230,6 +287,17 @@ export default function TicketsTab() {
           className="flex-1 min-w-0 px-3.5 py-2 rounded-lg border border-gray-300 bg-white text-sm
             focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none" />
 
+        {/* 2026-10-09: Filter theo công ty — mặc định "Tất cả" (null) */}
+        <div className="w-full lg:w-64 shrink-0">
+          <CompanySearchSelect
+            value={companyId}
+            options={flatCompanies}
+            onChange={(id) => setCompanyId(id)}
+            placeholder="— Tất cả công ty —"
+            noneLabel="— Tất cả công ty —"
+          />
+        </div>
+
         <div className="flex gap-2 items-center shrink-0">
           <span className="text-xs text-gray-500 font-semibold hidden lg:inline">Ngày bán:</span>
           <div className="w-72">
@@ -278,7 +346,7 @@ export default function TicketsTab() {
         </div>
       )}
 
-      <BookingTotalsCard totals={totals} loading={totalsLoading} />
+      <BookingTotalsCard totals={displayTotals} loading={totalsLoading && companyId == null} />
 
       {/* Desktop table */}
       <div className="hidden lg:block bg-white rounded-2xl shadow border border-gray-100 overflow-hidden">
@@ -305,7 +373,7 @@ export default function TicketsTab() {
               <tr>
                 <Th center>
                   <input type="checkbox"
-                    checked={rows.length > 0 && rows.every(r => selectedIds.has(r.id))}
+                    checked={filteredRows.length > 0 && filteredRows.every(r => selectedIds.has(r.id))}
                     onChange={toggleAllOnPage}
                     className="rounded" />
                 </Th>
@@ -328,12 +396,12 @@ export default function TicketsTab() {
             <tbody>
               {loading ? (
                 <tr><td colSpan={15} className="text-center py-10 text-gray-400">Đang tải…</td></tr>
-              ) : rows.length === 0 ? (
+              ) : filteredRows.length === 0 ? (
                 <tr><td colSpan={15} className="text-center py-14 text-gray-400">
-                  {q || fromSale || toSale ? 'Không tìm thấy vé phù hợp' : 'Chưa có booking nào. Bấm "Thêm booking" để tạo.'}
+                  {q || fromSale || toSale || companyId != null ? 'Không tìm thấy vé phù hợp' : 'Chưa có booking nào. Bấm "Thêm booking" để tạo.'}
                 </td></tr>
               ) : (
-                rows.map((b, bIdx) => renderBookingRows(b, bIdx, {
+                filteredRows.map((b, bIdx) => renderBookingRows(b, bIdx, {
                   page, nowTick,
                   isSelected: selectedIds.has(b.id),
                   onToggleSelect: toggleSelect,
@@ -358,12 +426,12 @@ export default function TicketsTab() {
       <div className="lg:hidden space-y-2">
         {loading ? (
           <div className="text-center py-10 text-gray-400 text-sm">Đang tải…</div>
-        ) : rows.length === 0 ? (
+        ) : filteredRows.length === 0 ? (
           <div className="text-center py-14 text-gray-400 text-sm">
-            {q || fromSale || toSale ? 'Không tìm thấy vé phù hợp' : 'Chưa có booking nào.'}
+            {q || fromSale || toSale || companyId != null ? 'Không tìm thấy vé phù hợp' : 'Chưa có booking nào.'}
           </div>
         ) : (
-          rows.map(b => (
+          filteredRows.map(b => (
             <MobileBookingCard key={b.id} booking={b} nowTick={nowTick}
               isSelected={selectedIds.has(b.id)}
               onToggleSelect={toggleSelect}
