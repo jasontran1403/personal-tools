@@ -299,7 +299,6 @@ export default function TicketsTab() {
         </div>
 
         <div className="flex gap-2 items-center shrink-0">
-          <span className="text-xs text-gray-500 font-semibold hidden lg:inline">Ngày bán:</span>
           <div className="w-72">
             <DateRangePicker
               value={{ from: fromSale, to: toSale }}
