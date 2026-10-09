@@ -1,6 +1,31 @@
 import { useEffect, useRef } from 'react'
 
 /**
+ * ── 2026-10-09: Fix "trang bị kẹt không scroll được" ──────────
+ * Trước đây mỗi Modal tự lưu `document.body.style.overflow` cũ rồi set
+ * 'hidden', khi unmount thì khôi phục. Khi 2 modal lồng nhau (ví dụ
+ * UploadOptionsModal mở ConfirmModal con), modal thứ hai lưu nhầm giá trị
+ * đang là 'hidden' làm "giá trị cũ" → đóng xong body kẹt 'hidden' vĩnh viễn,
+ * phải F5 mới hết. Chuyển sang reference-count toàn cục: chỉ khóa khi modal
+ * đầu tiên mở, chỉ mở khóa khi modal cuối cùng đóng.
+ */
+let __modalLockCount = 0
+let __prevBodyOverflow = ''
+function acquireBodyScrollLock() {
+  if (__modalLockCount === 0) {
+    __prevBodyOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+  }
+  __modalLockCount++
+}
+function releaseBodyScrollLock() {
+  __modalLockCount = Math.max(0, __modalLockCount - 1)
+  if (__modalLockCount === 0) {
+    document.body.style.overflow = __prevBodyOverflow
+  }
+}
+
+/**
  * Modal chung — panel trắng ở giữa, backdrop tối mờ ở sau.
  *
  * Dùng cho: form user, form vé, thẻ thành viên, xem preview file... — bất cứ
@@ -38,19 +63,27 @@ export default function Modal({
   children,
 }) {
   const panelRef = useRef(null)
+  // Lưu callback mới nhất vào ref để effect KHÔNG phụ thuộc vào identity
+  // của onClose / closeOnBackdrop (chúng đổi mỗi lần parent re-render,
+  // khiến effect bị unmount–remount liên tục → hở khe khóa body overflow).
+  const onCloseRef = useRef(onClose)
+  const closeOnBackdropRef = useRef(closeOnBackdrop)
+  useEffect(() => { onCloseRef.current = onClose }, [onClose])
+  useEffect(() => { closeOnBackdropRef.current = closeOnBackdrop }, [closeOnBackdrop])
 
-  // Esc để đóng, khoá scroll trang khi mở
+  // Esc để đóng, khoá scroll trang khi mở (chỉ chạy khi `open` đổi)
   useEffect(() => {
     if (!open) return
-    const onKey = e => { if (e.key === 'Escape' && closeOnBackdrop) onClose?.() }
+    const onKey = e => {
+      if (e.key === 'Escape' && closeOnBackdropRef.current) onCloseRef.current?.()
+    }
     document.addEventListener('keydown', onKey)
-    const prevOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+    acquireBodyScrollLock()
     return () => {
       document.removeEventListener('keydown', onKey)
-      document.body.style.overflow = prevOverflow
+      releaseBodyScrollLock()
     }
-  }, [open, closeOnBackdrop, onClose])
+  }, [open])
 
   if (!open) return null
 
