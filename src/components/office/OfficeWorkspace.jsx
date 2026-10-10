@@ -1,11 +1,12 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import SheetEditor from './SheetEditor'
 import DocEditor from './DocEditor'
 import { readWorkbook, writeWorkbook, writeCsv, emptySheet } from '../../lib/sheetIO'
 import { readDocx, writeDocx, exportPdfViaPrint } from '../../lib/docxIO'
-import { saveBlobAs, uploadFile } from '../../services/filesApi'
+import { saveBlobAs, uploadFile, listFiles, fetchFileBuffer, fileUrl } from '../../services/filesApi'
 import { SkeletonSheet, SkeletonDoc } from '../common/Skeleton'
 import { extOf, fmtSize } from '../files/fileKind'
+import Modal from '../common/Modal'
 
 /**
  * Trang Office — mở bảng tính và tài liệu ngay trên trình duyệt.
@@ -20,6 +21,34 @@ import { extOf, fmtSize } from '../files/fileKind'
  */
 
 const ACCEPT = '.xlsx,.xls,.xlsm,.csv,.tsv,.docx'
+const ACCEPT_EXTS = ['xlsx', 'xls', 'xlsm', 'csv', 'tsv', 'docx']
+
+/** 2026-10-10: Kiểm tra DataTransfer có ít nhất 1 file với extension hợp lệ. */
+function dragHasAcceptable(dt) {
+  if (!dt) return { any: false, allOk: false }
+  // dt.items có cả filename trong một số trình duyệt; items chỉ cho MIME type khi drag,
+  // name đọc được qua getAsFile() nhưng drag event chưa cho phép. Dùng mime-type suy ra.
+  const items = dt.items ? Array.from(dt.items).filter(i => i.kind === 'file') : []
+  if (items.length === 0) return { any: false, allOk: false }
+  // Khi drag, chỉ có `type` (mime). Chúng ta coi là OK nếu mime hợp lệ hoặc trống (unknown).
+  // Kiểm tra chặt khi drop (lúc có `name`).
+  const okMime = (t) =>
+       t === ''  // nhiều trình duyệt báo type rỗng cho .csv/.xlsx → coi là chưa biết, cho qua
+    || t === 'text/csv'
+    || t === 'text/tab-separated-values'
+    || t === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    || t === 'application/vnd.ms-excel'
+    || t === 'application/vnd.ms-excel.sheet.macroenabled.12'
+    || t === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  const anyOk = items.some(i => okMime(i.type))
+  return { any: true, allOk: anyOk }
+}
+
+/** Sau khi drop, kiểm tra chặt bằng extension của file name. */
+function isAcceptableFile(file) {
+  if (!file) return false
+  return ACCEPT_EXTS.includes(extOf(file.name))
+}
 
 export default function OfficeWorkspace({ onNotify }) {
   const [doc, setDoc] = useState(null)
@@ -28,6 +57,12 @@ export default function OfficeWorkspace({ onNotify }) {
   const [savingTo, setSaving] = useState(false)
   const [showExport, setExport] = useState(false)
   const [warnings, setWarn] = useState([])
+
+  // ── 2026-10-10: Drag-and-drop state ──
+  const [dragState, setDragState] = useState(null) // null | 'accept' | 'reject'
+  const dragDepthRef = useRef(0)
+  // ── 2026-10-10: Modal chọn file (từ máy / từ kho Tệp) ──
+  const [showPicker, setShowPicker] = useState(false)
 
   const inputRef = useRef(null)
 
@@ -140,23 +175,65 @@ export default function OfficeWorkspace({ onNotify }) {
   // ── Màn hình chọn tệp ───────────────────────────────────────────
 
   if (!doc && !loading) {
+    // Visual theo trạng thái drag
+    const dropCls =
+        dragState === 'accept'
+          ? 'border-emerald-500 bg-emerald-50 ring-4 ring-emerald-200'
+      : dragState === 'reject'
+          ? 'border-rose-500 bg-rose-50 ring-4 ring-rose-200'
+      : 'border-gray-200 hover:border-blue-400'
+    const dropIcon = dragState === 'reject' ? '🚫' : dragState === 'accept' ? '📥' : '📂'
+    const dropTitle = dragState === 'reject'
+          ? 'Loại tệp không hỗ trợ'
+      : dragState === 'accept'
+          ? 'Thả vào đây để mở'
+          : 'Chọn tệp Excel hoặc Word'
+    const dropHint = dragState === 'reject'
+          ? 'Chỉ nhận .xlsx · .xls · .csv · .tsv · .docx'
+      : dragState === 'accept'
+          ? 'Nhả chuột để mở tệp'
+          : '.xlsx · .xls · .csv · .docx — kéo thả vào đây hoặc click để chọn'
+
     return (
       <div className="py-6 sm:py-10">
         <div className="mx-auto w-full max-w-2xl">
           <button
-            onClick={() => inputRef.current?.click()}
-            onDragOver={e => e.preventDefault()}
+            onClick={() => setShowPicker(true)}
+            onDragEnter={e => {
+              e.preventDefault()
+              dragDepthRef.current++
+              const { any, allOk } = dragHasAcceptable(e.dataTransfer)
+              if (any) setDragState(allOk ? 'accept' : 'reject')
+            }}
+            onDragOver={e => { e.preventDefault() }}
+            onDragLeave={e => {
+              e.preventDefault()
+              dragDepthRef.current = Math.max(0, dragDepthRef.current - 1)
+              if (dragDepthRef.current === 0) setDragState(null)
+            }}
             onDrop={e => {
               e.preventDefault()
-              if (e.dataTransfer.files?.[0]) openFile(e.dataTransfer.files[0])
+              dragDepthRef.current = 0
+              setDragState(null)
+              const file = e.dataTransfer.files?.[0]
+              if (!file) return
+              if (!isAcceptableFile(file)) {
+                onNotify?.(`Loại tệp .${extOf(file.name)} không hỗ trợ. Chỉ nhận ${ACCEPT_EXTS.map(x => '.' + x).join(', ')}.`, false)
+                return
+              }
+              openFile(file)
             }}
-            className="w-full bg-white border-2 border-dashed border-gray-200 rounded-2xl
-              py-14 px-6 text-center hover:border-blue-400 transition-colors">
-            <div className="text-4xl mb-3">📂</div>
-            <p className="font-semibold text-gray-700">Chọn tệp Excel hoặc Word</p>
-            <p className="text-xs text-gray-400 mt-1.5">
-              .xlsx · .xls · .csv · .docx — hoặc kéo thả vào đây
-            </p>
+            className={`w-full bg-white border-2 border-dashed rounded-2xl
+              py-14 px-6 text-center transition-all ${dropCls}`}>
+            <div className="text-4xl mb-3">{dropIcon}</div>
+            <p className={`font-semibold ${
+              dragState === 'reject' ? 'text-rose-700'
+              : dragState === 'accept' ? 'text-emerald-700'
+              : 'text-gray-700'
+            }`}>{dropTitle}</p>
+            <p className={`text-xs mt-1.5 ${
+              dragState === 'reject' ? 'text-rose-600' : 'text-gray-400'
+            }`}>{dropHint}</p>
           </button>
           <input ref={inputRef} type="file" hidden accept={ACCEPT}
             onChange={e => { if (e.target.files?.[0]) openFile(e.target.files[0]); e.target.value = '' }} />
@@ -188,6 +265,49 @@ export default function OfficeWorkspace({ onNotify }) {
             </ul>
           </div>
         </div>
+
+        {/* 2026-10-10: Modal chọn nguồn file */}
+        {showPicker && (
+          <FilePickerModal
+            onClose={() => setShowPicker(false)}
+            onPickDevice={() => { setShowPicker(false); inputRef.current?.click() }}
+            onPickFromLibrary={async (asset) => {
+              setShowPicker(false)
+              setLoading(true)
+              setWarn([])
+              try {
+                const ext = extOf(asset.originalName)
+                const buffer = await fetchFileBuffer(asset.id, fileUrl(asset.storedPath || asset.url))
+                const isSheet = ['xlsx', 'xls', 'xlsm', 'csv', 'tsv'].includes(ext)
+                const isDoc   = ext === 'docx'
+                if (!isSheet && !isDoc) {
+                  onNotify?.('Chỉ mở được Excel (.xlsx, .csv) và Word (.docx)', false)
+                  return
+                }
+                if (isSheet) {
+                  const sheets = readWorkbook(buffer, ext)
+                  setDoc({
+                    mode: 'sheet', fileName: asset.originalName, ext, size: asset.sizeBytes || 0,
+                    sheets: sheets.length ? sheets : [emptySheet()],
+                    tab: 0, dirty: false,
+                  })
+                } else {
+                  const { html, warnings: w } = await readDocx(buffer)
+                  setWarn(w)
+                  setDoc({
+                    mode: 'doc', fileName: asset.originalName, ext, size: asset.sizeBytes || 0,
+                    html, dirty: false,
+                  })
+                }
+              } catch (e) {
+                onNotify?.(e.message || 'Không mở được tệp từ kho.', false)
+              } finally {
+                setLoading(false)
+              }
+            }}
+            onNotify={onNotify}
+          />
+        )}
       </div>
     )
   }
@@ -328,4 +448,100 @@ function ExportItem({ onClick, title, note }) {
       <p className="text-[11px] text-gray-400 leading-snug">{note}</p>
     </button>
   )
+}
+
+/**
+ * ── 2026-10-10 ──────────────────────────────────────────────
+ * Modal chọn nguồn file để mở trong Office:
+ *   1) Từ máy  → gọi onPickDevice() → parent trigger input file
+ *   2) Từ kho Tệp → list files Office có extension hợp lệ, click chọn 1 file
+ */
+function FilePickerModal({ onClose, onPickDevice, onPickFromLibrary, onNotify }) {
+  const [tab, setTab] = useState('menu') // 'menu' | 'library'
+  const [files, setFiles] = useState([])
+  const [loadingFiles, setLoadingFiles] = useState(false)
+  const [q, setQ] = useState('')
+
+  useEffect(() => {
+    if (tab !== 'library') return
+    let cancel = false
+    setLoadingFiles(true)
+    listFiles(0, 100, { exts: ACCEPT_EXTS, q: q.trim() || undefined })
+      .then(d => {
+        if (cancel) return
+        setFiles(d?.content || d?.items || d || [])
+      })
+      .catch(e => { if (!cancel) onNotify?.(e.message || 'Không tải được danh sách tệp', false) })
+      .finally(() => { if (!cancel) setLoadingFiles(false) })
+    return () => { cancel = true }
+  }, [tab, q, onNotify])
+
+  return (
+    <Modal open onClose={onClose} title="Mở tệp" size="lg">
+      {tab === 'menu' && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button onClick={onPickDevice}
+            className="p-5 rounded-xl border-2 border-gray-200 hover:border-blue-400 hover:bg-blue-50/40 transition text-left">
+            <div className="text-3xl mb-2">💻</div>
+            <div className="font-bold text-gray-900">Từ máy của bạn</div>
+            <div className="text-xs text-gray-500 mt-1">
+              Chọn file .xlsx, .xls, .csv, .docx trên máy. File không bị tải lên server.
+            </div>
+          </button>
+          <button onClick={() => setTab('library')}
+            className="p-5 rounded-xl border-2 border-gray-200 hover:border-emerald-400 hover:bg-emerald-50/40 transition text-left">
+            <div className="text-3xl mb-2">📁</div>
+            <div className="font-bold text-gray-900">Từ kho Tệp</div>
+            <div className="text-xs text-gray-500 mt-1">
+              Chọn file đã lưu trong tab Tệp của hệ thống.
+            </div>
+          </button>
+        </div>
+      )}
+
+      {tab === 'library' && (
+        <div>
+          <div className="flex items-center gap-2 mb-3">
+            <button onClick={() => setTab('menu')}
+              className="px-2 py-1 rounded text-xs text-gray-600 hover:bg-gray-100">← Quay lại</button>
+            <input value={q} onChange={e => setQ(e.target.value)}
+              placeholder="Tìm theo tên tệp…"
+              className="flex-1 px-3 py-1.5 rounded-md border border-gray-300 bg-white text-sm outline-none focus:border-blue-500" />
+          </div>
+          <div className="max-h-[60dvh] overflow-auto border border-gray-200 rounded-lg divide-y divide-gray-100">
+            {loadingFiles ? (
+              <div className="p-6 text-center text-sm text-gray-400">Đang tải…</div>
+            ) : files.length === 0 ? (
+              <div className="p-6 text-center text-sm text-gray-400">
+                Không có tệp Office nào trong kho{q ? ' khớp tìm kiếm' : ''}.
+              </div>
+            ) : files.map(f => (
+              <button key={f.id} onClick={() => onPickFromLibrary(f)}
+                className="w-full flex items-center gap-3 px-3 py-2 hover:bg-blue-50 text-left transition">
+                <span className="text-xl">{iconForExt(extOf(f.originalName || f.name))}</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium text-gray-900 truncate">
+                    {f.originalName || f.name}
+                  </div>
+                  <div className="text-[11px] text-gray-400">
+                    {f.sizeBytes ? fmtSize(f.sizeBytes) : ''}
+                    {f.createdAt && ` · ${new Date(f.createdAt).toLocaleString('vi-VN')}`}
+                  </div>
+                </div>
+                <span className="text-[10px] uppercase font-bold text-gray-400">
+                  {extOf(f.originalName || f.name)}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </Modal>
+  )
+}
+
+function iconForExt(ext) {
+  if (['xlsx', 'xls', 'xlsm', 'csv', 'tsv'].includes(ext)) return '📊'
+  if (ext === 'docx') return '📝'
+  return '📄'
 }
