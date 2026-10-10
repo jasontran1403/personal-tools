@@ -2,10 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import UploadModal from '../components/media/UploadModal'
 import MediaGallery, { TAB_BAR_HEIGHT, toDateInput } from "../components/media/MediaGallery"
 import DateRangePicker from '../components/DateRangePicker'
-import FilesBrowser from '../components/files/FilesBrowser'
-import OfficeWorkspace from '../components/office/OfficeWorkspace'
 import WatermarkEditor from '../components/media/WatermarkEditor'
-import TodoBoard from '../components/todo/TodoBoard'
 import AlbumDropdown from '../components/media/AlbumDropdown'
 import { SkeletonStyles } from '../components/common/Skeleton'
 import UserMenu from '../components/auth/UserMenu'
@@ -21,12 +18,9 @@ import UserMenu from '../components/auth/UserMenu'
 const TABS = [
   { key: 'library', icon: '🖼️', label: 'Hình ảnh' },
   { key: 'watermark', icon: '💧', label: 'Watermark' },
-  { key: 'files', icon: '📁', label: 'Tệp' },
-  { key: 'office', icon: '📊', label: 'Office' },
-  { key: 'todo', icon: '✅', label: 'Todo' },
 ]
 
-const FULL_BLEED = new Set(['office', 'watermark', 'todo'])
+const FULL_BLEED = new Set(['watermark'])
 
 const GRANS = [
   { key: 'year', label: 'Năm' },
@@ -238,16 +232,9 @@ export default function MediaPage() {
           />
         )}
 
-        {tab === 'files' && <FilesBrowser onNotify={notify} />}
-        {tab === 'office' && <OfficeWorkspace onNotify={notify} />}
         {tab === 'watermark' && (
           <div className="pt-3">
             <WatermarkEditor onSaved={handleSaved} onNotify={notify} />
-          </div>
-        )}
-        {tab === 'todo' && (
-          <div className="pt-3">
-            <TodoBoard onNotify={notify} />
           </div>
         )}
       </div>

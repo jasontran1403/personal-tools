@@ -242,7 +242,13 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <Field label="Họ tên" span={2}>
                   <input type="text" value={form.fullName}
-                    onChange={e => setField('fullName', e.target.value)}
+                    onChange={e => setField('fullName', formatPaxName(e.target.value))}
+                    onPaste={e => {
+                      // 2026-10-10: KUWABATA/YOSHIRO → KUWABATA YOSHIRO
+                      e.preventDefault()
+                      const raw = (e.clipboardData || window.clipboardData).getData('text')
+                      setField('fullName', formatPaxName(raw))
+                    }}
                     placeholder="NGUYEN VAN A" className="input uppercase" />
                 </Field>
                 <Field label="Giới tính">
@@ -459,4 +465,16 @@ function extractFields(d) {
     issueDate:   d.issueDate   || '',
     expiryDate:  d.expiryDate  || '',
   }
+}
+/**
+ * ── 2026-10-10 ─────────────────────────────────────────
+ * Chuẩn hóa họ tên khách: "/" → space, gộp space, trim.
+ * Ví dụ: "KUWABATA/YOSHIRO" → "KUWABATA YOSHIRO"
+ */
+function formatPaxName(raw) {
+  if (!raw) return ''
+  return String(raw)
+    .replace(/\//g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^\s+/, '')
 }

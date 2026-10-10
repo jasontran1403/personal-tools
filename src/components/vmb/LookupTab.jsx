@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import ConfirmModal from '../common/ConfirmModal'
 import LookupFormModal from './LookupFormModal'
 import TotpModal from './TotpModal'
-import { listLookup, deleteLookup } from '../../services/vmbApi'
+import { listLookup, deleteLookup, reorderLookup } from '../../services/vmbApi'
 import { copyText } from '../../lib/clipboard'
 
 /**
@@ -68,10 +68,59 @@ export default function LookupTab() {
   const plainRows   = rows.filter(r => r.type === 'PLAIN')
   const accountRows = rows.filter(r => r.type === 'ACCOUNT')
 
+  // ── 2026-10-10: Drag-and-drop reorder cho PLAIN ──────────────
+  // State local reflect thứ tự sau khi kéo thả, patch BE bất đồng bộ.
+  // Khi search đang có kết quả thì không drag (không chắc user muốn reorder
+  // trong view đã lọc), và nếu đang filter type ACCOUNT thì không áp dụng.
+  const [dragId, setDragId] = useState(null)
+  const [overId, setOverId] = useState(null)
+  const [localPlainOrder, setLocalPlainOrder] = useState(null)
+
+  // Reset local order khi rows load lại (search / page)
+  useEffect(() => { setLocalPlainOrder(null) }, [rows])
+
+  const displayPlain = useMemo(() => {
+    if (!localPlainOrder) return plainRows
+    const byId = new Map(plainRows.map(r => [r.id, r]))
+    const out = []
+    for (const id of localPlainOrder) {
+      const r = byId.get(id)
+      if (r) { out.push(r); byId.delete(id) }
+    }
+    // Mục mới không nằm trong order cũ → đẩy xuống cuối
+    for (const r of byId.values()) out.push(r)
+    return out
+  }, [plainRows, localPlainOrder])
+
+  const onDragStart = (id) => setDragId(id)
+  const onDragOver  = (id, e) => { e.preventDefault(); if (id !== overId) setOverId(id) }
+  const onDragEnd   = () => { setDragId(null); setOverId(null) }
+  const onDrop      = async (targetId, e) => {
+    e.preventDefault()
+    const src = dragId
+    setDragId(null); setOverId(null)
+    if (!src || src === targetId) return
+    const curr = displayPlain.map(r => r.id)
+    const from = curr.indexOf(src)
+    const to   = curr.indexOf(targetId)
+    if (from < 0 || to < 0) return
+    const next = [...curr]
+    next.splice(from, 1)
+    next.splice(to, 0, src)
+    setLocalPlainOrder(next)
+    try {
+      await reorderLookup(next)
+      // Không reload để giữ UX mượt — thứ tự đã visible local.
+    } catch (e) {
+      toast.error('Lưu thứ tự thất bại')
+    }
+  }
+
   return (
-    <div className="w-full">
+    // 2026-10-10: Layout flex column — toolbar + Pagination shrink-0, nội dung scroll trong.
+    <div className="w-full h-full flex flex-col">
       {/* Toolbar */}
-      <div className="flex flex-col sm:flex-row gap-2 mb-3">
+      <div className="shrink-0 flex flex-col sm:flex-row gap-2 mb-3">
         <input
           defaultValue={q}
           onChange={e => onSearch(e.target.value)}
@@ -99,6 +148,8 @@ export default function LookupTab() {
         </button>
       </div>
 
+      {/* 2026-10-10: Wrapper flex-1 overflow-auto để chỉ nội dung cuộn, toolbar đứng yên. */}
+      <div className="flex-1 min-h-0 overflow-auto">
       {loading ? (
         <div className="bg-white rounded-2xl shadow border border-gray-100 py-16 text-center text-gray-400 text-sm">
           Đang tải…
@@ -116,9 +167,25 @@ export default function LookupTab() {
                 <span className="text-xs font-bold text-gray-700 uppercase">📄 Thông tin ({plainRows.length})</span>
               </div>
               <div className="divide-y divide-gray-100">
-                {plainRows.map(r => (
-                  <div key={r.id} className="p-3 hover:bg-blue-50/40 group">
+                {displayPlain.map(r => (
+                  <div key={r.id}
+                    draggable
+                    onDragStart={() => onDragStart(r.id)}
+                    onDragOver={(e) => onDragOver(r.id, e)}
+                    onDrop={(e) => onDrop(r.id, e)}
+                    onDragEnd={onDragEnd}
+                    className={`p-3 group ${
+                      dragId === r.id
+                        ? 'opacity-40'
+                        : overId === r.id && dragId
+                          ? 'bg-blue-100 border-l-4 border-blue-500'
+                          : 'hover:bg-blue-50/40'
+                    }`}
+                    title="Kéo-thả để sắp xếp lại thứ tự">
                     <div className="flex items-start gap-2">
+                      {/* Handle drag */}
+                      <span className="shrink-0 text-gray-300 cursor-grab active:cursor-grabbing select-none pt-0.5"
+                        title="Kéo để sắp xếp">⋮⋮</span>
                       <div className="flex-1 min-w-0">
                         <button type="button" onClick={() => doCopy(r.keyword, 'từ khóa')}
                           className="text-left font-bold text-gray-900 hover:text-blue-700 text-sm cursor-copy">
@@ -166,6 +233,7 @@ export default function LookupTab() {
       )}
 
       <Pagination page={page} totalPages={totalPages} total={total} onPage={setPage} />
+      </div>{/* /flex-1 overflow-auto */}
 
       {form && (
         <LookupFormModal

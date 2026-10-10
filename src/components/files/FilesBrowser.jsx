@@ -29,7 +29,11 @@ import DateRangePicker from '../DateRangePicker'
  */
 
 const TAB_BAR_HEIGHT = 44
-const TOOLBAR_TOP = TAB_BAR_HEIGHT
+// 2026-10-10: Đặt về 0 vì FilesBrowser giờ chỉ dùng trong VmbPage, nơi main
+// là scroll container riêng, không có tab bar sticky ở trên cùng của chính nó
+// (tab bar nằm trong <header> ở ngoài main). Giữ 44 sẽ đẩy toolbar xuống 44px
+// và chèn lên dòng file đầu tiên.
+const TOOLBAR_TOP = 0
 
 const SORTS = [
   { key: 'createdAt-desc', label: 'Mới nhất trước',      sort: 'createdAt', dir: 'desc' },
@@ -396,8 +400,9 @@ export default function FilesBrowser({ onNotify }) {
         )}
       </div>
 
-      {/* Danh sách */}
-      <div className="pt-3">
+      {/* Danh sách — pt-4 đẩy xuống dưới sticky toolbar (toolbar cao ~52px
+          nhưng đã chiếm chỗ trong flow; pt-4 chỉ là gap thẩm mỹ). */}
+      <div className="pt-4">
         {loading ? (
           <SkeletonFileRows rows={8} />
         ) : items.length === 0 ? (

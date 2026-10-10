@@ -22,9 +22,18 @@ import { parseAmount, formatMoney, sumAmounts } from '../../lib/money'
  * Nút 📎 mở ZoomablePreview full-screen (đồng bộ với mọi chỗ khác trong khu VMB)
  * thay vì window.open tab mới. Trải nghiệm nhất quán, không phải nhảy tab.
  */
+// 2026-10-10: Fix tính total — booking có fees (phí đổi vé/hoàn/dịch vụ…)
+// phải cộng vào total, chứ không chỉ basePrice + collectionFee + issuanceFee.
+// Trước đây dùng cột t.serviceFee (đã bỏ) → luôn ra 0 → MAX bị hụt khi là
+// booking đổi vé. Giờ cộng Σ t.fees[].amount.
+function sumTicketFees(fees) {
+  if (!fees || fees.length === 0) return 0
+  return sumAmounts(...fees.map(f => f.amount || 0))
+}
+
 export default function PaymentModal({ booking, onClose, onSaved }) {
   const total = sumAmounts(...(booking.tickets || []).map(t =>
-    sumAmounts(t.basePrice, t.collectionFee, t.serviceFee, t.issuanceFee)))
+    sumAmounts(t.basePrice, t.collectionFee, sumTicketFees(t.fees), t.issuanceFee)))
   const paidNum = parseAmount(booking.paidAmount) || 0
   const remain = Math.max(0, total - paidNum)
 

@@ -96,8 +96,9 @@ export default function PassengersTab() {
   }
 
   return (
-    <div className="w-full">
-      <div className="flex flex-col sm:flex-row gap-2 mb-3">
+    // 2026-10-10: Layout flex column — toolbar fixed, danh sách khách cuộn.
+    <div className="w-full h-full flex flex-col">
+      <div className="shrink-0 flex flex-col sm:flex-row gap-2 mb-3">
         <input
           defaultValue={q}
           onChange={e => onSearch(e.target.value)}
@@ -126,6 +127,8 @@ export default function PassengersTab() {
         </button>
       </div>
 
+      {/* 2026-10-10: Wrapper flex-1 overflow-auto để chỉ danh sách khách cuộn. */}
+      <div className="flex-1 min-h-0 overflow-auto">
       {loading ? (
         <div className="bg-white rounded-2xl shadow border border-gray-100 py-16 text-center text-gray-400 text-sm">
           Đang tải…
@@ -175,6 +178,7 @@ export default function PassengersTab() {
       )}
 
       <Pagination page={page} totalPages={totalPages} total={total} onPage={setPage} />
+      </div>{/* /flex-1 overflow-auto */}
 
       {form && (
         <PassengerFormModal

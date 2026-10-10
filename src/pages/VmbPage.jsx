@@ -1,5 +1,6 @@
 import { useSearchParams, Link } from 'react-router-dom'
 import { useMemo } from 'react'
+import toast from 'react-hot-toast'
 import Tabs from '../components/common/Tabs'
 import UserMenu from '../components/auth/UserMenu'
 import TicketsTab   from '../components/vmb/TicketsTab'
@@ -7,6 +8,8 @@ import PassengersTab from '../components/vmb/PassengersTab'
 import LookupTab    from '../components/vmb/LookupTab'
 import TodoTab      from '../components/vmb/TodoTab'
 import PdfTab       from '../components/vmb/pdf/PdfTab'
+import OfficeWorkspace from '../components/office/OfficeWorkspace'
+import FilesBrowser    from '../components/files/FilesBrowser'
 import useTodayTaskStats from '../hooks/useTodayTaskStats'
 
 /**
@@ -30,6 +33,8 @@ const BASE_TABS = [
   // 2026-10-08: tab Pdf chèn trước Todo. Hai chức năng con: PDF editor
   // (whiteout + xoá trang) và Scan ảnh → PDF (warp phối cảnh + xoá bóng).
   { key: 'pdf',         label: 'Pdf',             icon: '📄' },
+  { key: 'office',      label: 'Office',          icon: '📊' },
+  { key: 'files',       label: 'Tệp',             icon: '📁' },
   { key: 'todo',        label: 'Todo',            icon: '📋' },
 ]
 
@@ -61,11 +66,13 @@ export default function VmbPage() {
   }), [pendingCount, countdownLabel])
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50">
+    // 2026-10-10: Đổi min-h-screen → h-dvh + overflow-hidden + flex column
+    // để các tab tự quản lý scroll (toolbar/filter fixed, chỉ bảng cuộn).
+    <div className="h-dvh overflow-hidden flex flex-col bg-gradient-to-br from-slate-50 to-blue-50">
       {/* Không mount Toaster ở đây — main.jsx đã có global Toaster */}
 
       {/* Header */}
-      <header className="sticky top-0 z-30 bg-white/80 backdrop-blur-xl border-b border-white/40 shadow-sm">
+      <header className="shrink-0 z-30 bg-white/80 backdrop-blur-xl border-b border-white/40 shadow-sm">
         <div className="w-full px-3 sm:px-4 py-2 flex items-center gap-3">
           <div className="flex items-center gap-2">
             <span className="w-9 h-9 rounded-xl bg-gradient-to-br from-blue-600 to-indigo-600
@@ -96,12 +103,16 @@ export default function VmbPage() {
         </div>
       </header>
 
-      {/* Nội dung theo tab — full width, padding hẹp */}
-      <main className="w-full px-2 sm:px-3 py-3">
+      {/* Nội dung theo tab — flex-1 overflow-hidden để tab tự scroll.
+          Tabs cần fixed toolbar sẽ dùng `h-full flex flex-col` + bên trong
+          toolbar `shrink-0` và vùng cuộn `flex-1 overflow-auto`. */}
+      <main className="flex-1 overflow-hidden w-full px-2 sm:px-3 py-3">
         {tab === 'tickets'    && <TicketsTab />}
         {tab === 'passengers' && <PassengersTab />}
         {tab === 'lookup'     && <LookupTab />}
         {tab === 'pdf'        && <PdfTab />}
+        {tab === 'office'     && <OfficeWorkspace onNotify={(msg, ok=true) => (ok ? toast.success(msg) : toast.error(msg))} />}
+        {tab === 'files'      && <FilesBrowser    onNotify={(msg, ok=true) => (ok ? toast.success(msg) : toast.error(msg))} />}
         {tab === 'todo'       && <TodoTab onTasksChanged={refreshTaskStats} />}
       </main>
     </div>

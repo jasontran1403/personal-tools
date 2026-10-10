@@ -446,7 +446,13 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
                       <Field label="Tên khách hàng">
                         <input type="text" value={t.passengerName}
-                          onChange={e => setTicket(i, { passengerName: e.target.value })}
+                          onChange={e => setTicket(i, { passengerName: formatPaxName(e.target.value) })}
+                          onPaste={e => {
+                            // 2026-10-10: KUWABATA/YOSHIRO → KUWABATA YOSHIRO
+                            e.preventDefault()
+                            const raw = (e.clipboardData || window.clipboardData).getData('text')
+                            setTicket(i, { passengerName: formatPaxName(raw) })
+                          }}
                           className="input" placeholder="NGUYEN VAN A" />
                       </Field>
                       <Field label="Số vé">
@@ -559,3 +565,18 @@ function Field({ label, span, children }) {
 
 // companyOptions đã được tách sang ../common/CompanySearchSelect (export cùng
 // file với component), import ở trên.
+
+/**
+ * ── 2026-10-10 ─────────────────────────────────────────
+ * Chuẩn hóa tên khách: đổi "/" thành khoảng trắng, gộp nhiều space thành 1,
+ * trim 2 đầu. Dùng cho cả onChange (gõ) và onPaste (dán).
+ * Ví dụ: "KUWABATA/YOSHIRO" → "KUWABATA YOSHIRO"
+ *       "NGUYEN  VAN /  A" → "NGUYEN VAN A"
+ */
+function formatPaxName(raw) {
+  if (!raw) return ''
+  return String(raw)
+    .replace(/\//g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^\s+/, '')
+}

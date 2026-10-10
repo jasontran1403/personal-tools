@@ -45,6 +45,9 @@ export default function TicketsTab() {
   const [q, setQ]                 = useState('')
   const [fromSale, setFromSale]   = useState('')
   const [toSale, setToSale]       = useState('')
+  // 2026-10-10: Filter trạng thái thanh toán. '' = tất cả, 'PAID' = đã thanh toán,
+  // 'UNPAID' = chưa thanh toán (gồm cả PARTIAL).
+  const [paymentStatus, setPaymentStatus] = useState('')
   // ── 2026-10-09: Filter theo công ty ──
   // null = Tất cả (mặc định). Số = id công ty.
   // List công ty lấy từ listCompanies (dùng chung với tab Thông tin khách).
@@ -78,11 +81,12 @@ export default function TicketsTab() {
 
   const filterParams = useMemo(() => {
     const p = {}
-    if (q)        p.q = q
-    if (fromSale) p.fromSale = new Date(fromSale + 'T00:00:00').getTime()
-    if (toSale)   p.toSale   = new Date(toSale + 'T23:59:59').getTime()
+    if (q)             p.q = q
+    if (fromSale)      p.fromSale = new Date(fromSale + 'T00:00:00').getTime()
+    if (toSale)        p.toSale   = new Date(toSale + 'T23:59:59').getTime()
+    if (paymentStatus) p.paymentStatus = paymentStatus
     return p
-  }, [q, fromSale, toSale])
+  }, [q, fromSale, toSale, paymentStatus])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -175,7 +179,12 @@ export default function TicketsTab() {
     qTimer.current = setTimeout(() => { setPage(0); setQ(v) }, 300)
   }
 
+  // 2026-10-10: Chặn chọn booking đã PAID (không có gì để thu nữa).
+  const isPaidBooking = (b) => (b?.paymentStatus === 'PAID')
+
   const toggleSelect = (id) => {
+    const b = filteredRows.find(r => r.id === id)
+    if (b && isPaidBooking(b)) return // bỏ qua — booking đã thanh toán xong
     setSelectedIds(prev => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id); else next.add(id)
@@ -183,18 +192,21 @@ export default function TicketsTab() {
     })
   }
   const toggleAllOnPage = () => {
+    // Chỉ áp lên các booking CHƯA PAID (bỏ qua đã thanh toán).
+    const selectable = filteredRows.filter(r => !isPaidBooking(r))
     setSelectedIds(prev => {
-      const allSelected = filteredRows.length > 0 && filteredRows.every(r => prev.has(r.id))
+      const allSelected = selectable.length > 0 && selectable.every(r => prev.has(r.id))
       const next = new Set(prev)
-      if (allSelected) filteredRows.forEach(r => next.delete(r.id))
-      else            filteredRows.forEach(r => next.add(r.id))
+      if (allSelected) selectable.forEach(r => next.delete(r.id))
+      else             selectable.forEach(r => next.add(r.id))
       return next
     })
   }
   const clearSelection = () => setSelectedIds(new Set())
 
+  // 2026-10-10: Lọc bỏ booking PAID khỏi danh sách batch (phòng khi state cũ còn id của booking vừa đổi).
   const selectedBookings = useMemo(
-    () => filteredRows.filter(r => selectedIds.has(r.id)),
+    () => filteredRows.filter(r => selectedIds.has(r.id) && r.paymentStatus !== 'PAID'),
     [filteredRows, selectedIds]
   )
 
@@ -278,12 +290,15 @@ export default function TicketsTab() {
   const openUpload      = (b) => setUploadFor(b)
 
   return (
-    <div className="w-full">
-      <div className="flex flex-col lg:flex-row gap-2 mb-3">
+    // 2026-10-10: Layout flex column — toolbar + totals shrink-0, bảng flex-1 overflow-auto.
+    // VmbPage container đã `overflow-hidden`, tab này tự quản lý scroll để các ô
+    // search/filter/nút chức năng + card tổng tiền NẰM YÊN, chỉ các dòng cuộn.
+    <div className="w-full h-full flex flex-col">
+      <div className="shrink-0 flex flex-col lg:flex-row gap-2 mb-3">
         <input
           defaultValue={q}
           onChange={e => onSearch(e.target.value)}
-          placeholder="Tìm theo mã booking, số vé, tên khách, hành trình…"
+          placeholder="Tìm theo mã booking, số vé, tên khách, hành trình, số hóa đơn…"
           className="flex-1 min-w-0 px-3.5 py-2 rounded-lg border border-gray-300 bg-white text-sm
             focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none" />
 
@@ -299,7 +314,6 @@ export default function TicketsTab() {
         </div>
 
         <div className="flex gap-2 items-center shrink-0">
-          <span className="text-xs text-gray-500 font-semibold hidden lg:inline">Ngày bán:</span>
           <div className="w-72">
             <DateRangePicker
               value={{ from: fromSale, to: toSale }}
@@ -311,6 +325,21 @@ export default function TicketsTab() {
               placeholder="Chọn khoảng ngày bán"
             />
           </div>
+        </div>
+
+        {/* 2026-10-10: Filter trạng thái thanh toán */}
+        <div className="flex gap-1 shrink-0 p-0.5 rounded-lg bg-gray-100">
+          {[
+            { k: '',       lbl: 'Tất cả' },
+            { k: 'UNPAID', lbl: 'Chưa thanh toán' },
+            { k: 'PAID',   lbl: 'Đã thanh toán' },
+          ].map(t => (
+            <button key={t.k} type="button"
+              onClick={() => { setPage(0); setPaymentStatus(t.k) }}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap ${
+                paymentStatus === t.k ? 'bg-white shadow text-blue-700' : 'text-gray-600 hover:text-gray-900'
+              }`}>{t.lbl}</button>
+          ))}
         </div>
 
         <button type="button" onClick={handleExportPdf} disabled={exporting}
@@ -346,11 +375,13 @@ export default function TicketsTab() {
         </div>
       )}
 
-      <BookingTotalsCard totals={displayTotals} loading={totalsLoading && companyId == null} />
+      <div className="shrink-0">
+        <BookingTotalsCard totals={displayTotals} loading={totalsLoading && companyId == null} />
+      </div>
 
-      {/* Desktop table */}
-      <div className="hidden lg:block bg-white rounded-2xl shadow border border-gray-100 overflow-hidden">
-        <div className="overflow-x-auto">
+      {/* Desktop table — chiếm phần còn lại, cuộn trong khung bảng */}
+      <div className="hidden lg:flex flex-1 min-h-0 bg-white rounded-2xl shadow border border-gray-100 overflow-hidden flex-col">
+        <div className="flex-1 overflow-auto">
           <table className="w-full text-xs border-collapse table-fixed">
             <colgroup>
               <col style={{ width: 32 }} />
@@ -369,13 +400,18 @@ export default function TicketsTab() {
               <col style={{ width: 140 }} />
               <col style={{ width: 140 }} />
             </colgroup>
-            <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 uppercase text-[10px]">
+            <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 uppercase text-[10px] sticky top-0 z-10">
               <tr>
                 <Th center>
-                  <input type="checkbox"
-                    checked={filteredRows.length > 0 && filteredRows.every(r => selectedIds.has(r.id))}
-                    onChange={toggleAllOnPage}
-                    className="rounded" />
+                  {(() => {
+                    const selectable = filteredRows.filter(r => !isPaidBooking(r))
+                    const allSel = selectable.length > 0 && selectable.every(r => selectedIds.has(r.id))
+                    return <input type="checkbox"
+                      checked={allSel}
+                      onChange={toggleAllOnPage}
+                      disabled={selectable.length === 0}
+                      className="rounded disabled:opacity-30" />
+                  })()}
                 </Th>
                 <Th>Loại / hãng</Th>
                 <Th>Công ty</Th>
@@ -422,8 +458,8 @@ export default function TicketsTab() {
         <Pagination page={page} totalPages={totalPages} total={total} onPage={setPage} />
       </div>
 
-      {/* Mobile cards */}
-      <div className="lg:hidden space-y-2">
+      {/* Mobile cards — flex-1 overflow-auto */}
+      <div className="lg:hidden flex-1 min-h-0 overflow-auto space-y-2">
         {loading ? (
           <div className="text-center py-10 text-gray-400 text-sm">Đang tải…</div>
         ) : filteredRows.length === 0 ? (
@@ -612,19 +648,94 @@ function ThR({ children }) {
  * (null companyId) cũng merge.
  */
 function groupTicketsByCompany(tickets) {
-  const buckets = new Map()   // key → { key, keyLabel, tickets: [] }
-  for (const t of tickets || []) {
+  const buckets = new Map()   // key → { key, origIdx (first appearance), tickets: [{t, origIdx}] }
+  const list = tickets || []
+  for (let i = 0; i < list.length; i++) {
+    const t = list[i]
     const key = t.companyId == null ? 'none' : `c${t.companyId}`
     if (!buckets.has(key)) buckets.set(key, { key, tickets: [] })
-    buckets.get(key).tickets.push(t)
+    buckets.get(key).tickets.push({ t, origIdx: i })
   }
+
+  // ── 2026-10-10: sort trong mỗi group theo ticketNumber ASC. ──
+  // Vé không có số vé → đẩy xuống cuối, giữ thứ tự add (origIdx).
+  // Hiển thị theo yêu cầu user:
+  //   BUI HONG PHAT (…740) đứng trước KUWABATA (…741), …
+  //   nếu không có số thì giữ thứ tự khi tạo.
+  for (const b of buckets.values()) {
+    b.tickets.sort((a, bb) => {
+      const an = (a.t.ticketNumber || '').trim()
+      const bn = (bb.t.ticketNumber || '').trim()
+      const aEmpty = an === ''
+      const bEmpty = bn === ''
+      if (aEmpty && bEmpty) return a.origIdx - bb.origIdx
+      if (aEmpty) return 1
+      if (bEmpty) return -1
+      // Số vé thường toàn số/chữ — so sánh dạng chuỗi là đủ (cùng độ dài).
+      // Nếu có khác độ dài, so numeric cho ổn định.
+      if (an.length === bn.length) return an < bn ? -1 : an > bn ? 1 : 0
+      const na = Number(an), nb = Number(bn)
+      if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb
+      return an < bn ? -1 : an > bn ? 1 : 0
+    })
+  }
+
   const groups = []
   const sortedTickets = []
   for (const b of buckets.values()) {
-    groups.push({ key: b.key, size: b.tickets.length, firstIdxInSorted: sortedTickets.length })
-    for (const t of b.tickets) sortedTickets.push(t)
+    groups.push({
+      key: b.key,
+      size: b.tickets.length,
+      firstIdxInSorted: sortedTickets.length,
+      ticketIds: b.tickets.map(x => x.t.id),
+    })
+    for (const x of b.tickets) sortedTickets.push(x.t)
   }
   return { sortedTickets, groups }
+}
+
+/**
+ * ── 2026-10-10 ──────────────────────────────────────────────
+ * Hiển thị số hóa đơn ISSUED/ADJUSTED áp cho ticketIds trong group hiện tại.
+ *
+ * Logic:
+ *   - Lấy các invoice ISSUED/ADJUSTED của booking.
+ *   - Mỗi invoice.ticketIds (nếu empty = chung cả booking → coi như áp cho MỌI vé).
+ *   - Lọc những invoice có giao với ticketIds của group.
+ *   - Nếu tất cả vé trong group dùng CHUNG 1 hóa đơn → hiển thị 1 số.
+ *   - Nếu nhiều invoice khác nhau áp lên các cặp vé → hiển thị tất cả, phân cách dấu phẩy.
+ */
+function InvoiceNumbersForGroup({ booking, ticketIds }) {
+  const invs = (booking.invoices || []).filter(i => i.status === 'ISSUED' || i.status === 'ADJUSTED')
+  if (invs.length === 0) return null
+  const idSet = new Set(ticketIds || [])
+  const bookingTicketIds = new Set((booking.tickets || []).map(t => t.id))
+  const numbersSet = new Set()
+  for (const inv of invs) {
+    if (!inv.invoiceNumbers) continue
+    const invIds = (inv.ticketIds && inv.ticketIds.length > 0)
+      ? inv.ticketIds
+      : [...bookingTicketIds] // empty = chung cả booking
+    const overlap = invIds.some(id => idSet.has(id))
+    if (!overlap) continue
+    // Tách & trim
+    inv.invoiceNumbers.split(',').forEach(n => {
+      const t = n.trim()
+      if (t) numbersSet.add(t)
+    })
+  }
+  if (numbersSet.size === 0) return null
+  const sorted = [...numbersSet].sort((a, b) => {
+    const na = Number(a), nb = Number(b)
+    if (Number.isFinite(na) && Number.isFinite(nb)) return na - nb
+    return a.localeCompare(b)
+  })
+  return (
+    <div className="mt-1 text-[10px] text-gray-600 font-mono tabular-nums leading-tight break-words"
+      title="Số hóa đơn đã phát hành">
+      🧾 {sorted.join(', ')}
+    </div>
+  )
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -672,10 +783,13 @@ function renderBookingRows(b, bIdx, {
           className={`${rowBg} ${cardBorder} hover:bg-blue-50/40 transition-colors align-middle`}>
         {firstRow && (
           <td className="px-2 py-2 text-center align-middle" rowSpan={N}>
+            {/* 2026-10-10: Booking đã PAID không được chọn để thu batch. */}
             <input type="checkbox"
               checked={isSelected}
+              disabled={b.paymentStatus === 'PAID'}
               onChange={() => onToggleSelect(b.id)}
-              className="rounded cursor-pointer" />
+              title={b.paymentStatus === 'PAID' ? 'Booking đã thanh toán xong — không cần thu' : undefined}
+              className="rounded cursor-pointer disabled:cursor-not-allowed disabled:opacity-30" />
           </td>
         )}
 
@@ -698,9 +812,10 @@ function renderBookingRows(b, bIdx, {
 
         {/* Công ty — chỉ render ở dòng đầu group, rowspan = group size */}
         {groupInfo && (
-          <td className="px-2 py-2 align-middle truncate border-l border-gray-100"
+          <td className="px-2 py-2 align-middle border-l border-gray-100"
               rowSpan={groupInfo.size}>
             <CompanyLabel short={t.companyShortName} full={t.companyName} />
+            <InvoiceNumbersForGroup booking={b} ticketIds={groupInfo.ticketIds || sortedTickets.slice(tIdx, tIdx + groupInfo.size).map(x => x.id)} />
           </td>
         )}
 
@@ -709,17 +824,18 @@ function renderBookingRows(b, bIdx, {
           <div className="font-medium text-gray-900 truncate leading-tight">
             {t.passengerName || '—'}
           </div>
-          {/* ── 2026-09-20: click-to-copy số vé, không format ── */}
+          {/* ── 2026-10-10: click-to-copy — "{route} - {ticketNumber}{kindSuffix}" ── */}
           <button type="button"
             onClick={() => {
               if (!t.ticketNumber) return
-              navigator.clipboard.writeText(t.ticketNumber)
-                .then(() => toast.success(`Đã copy: ${t.ticketNumber}`))
+              const text = buildIdCopyString(b.segments, t.ticketNumber, b.kind)
+              navigator.clipboard.writeText(text)
+                .then(() => toast.success(`Đã copy: ${text}`))
                 .catch(() => toast.error('Không copy được'))
             }}
             disabled={!t.ticketNumber}
             title={t.ticketNumber
-              ? (hasFace ? 'Vé đã có mặt vé — click để copy số vé' : 'Click để copy số vé')
+              ? `Click để copy: ${buildIdCopyString(b.segments, t.ticketNumber, b.kind)}`
               : 'Vé chưa có số'}
             className="font-mono text-[10px] text-gray-500 truncate leading-tight mt-0.5 block text-left w-full hover:text-blue-700 hover:underline cursor-copy disabled:cursor-default disabled:hover:no-underline">
             {t.ticketNumber || ''}
@@ -727,18 +843,21 @@ function renderBookingRows(b, bIdx, {
           </button>
         </td>
 
-        {/* Booking — click để copy mã booking (không mở modal xuất trình nữa) */}
+        {/* Booking — 2026-10-10 click copy "{route} - {bookingCode}{kindSuffix}" */}
         {firstRow && (
           <td className="px-2 py-2 align-middle" rowSpan={N}>
             <button type="button"
               onClick={() => {
                 if (!b.bookingCode) return
-                navigator.clipboard.writeText(b.bookingCode)
-                  .then(() => toast.success(`Đã copy: ${b.bookingCode}`))
+                const text = buildIdCopyString(b.segments, b.bookingCode, b.kind)
+                navigator.clipboard.writeText(text)
+                  .then(() => toast.success(`Đã copy: ${text}`))
                   .catch(() => toast.error('Không copy được'))
               }}
               disabled={!b.bookingCode}
-              title={b.bookingCode ? 'Click để copy mã booking' : 'Chưa có mã'}
+              title={b.bookingCode
+                ? `Click để copy: ${buildIdCopyString(b.segments, b.bookingCode, b.kind)}`
+                : 'Chưa có mã'}
               className="block w-full text-left font-mono text-[11px] font-bold text-gray-900 hover:text-blue-700 hover:underline truncate cursor-copy disabled:cursor-default">
               {b.bookingCode || '—'}
               {b.sharedTicketFace && b.bookingFace && <span className="ml-1 text-emerald-600">📎</span>}
@@ -776,8 +895,29 @@ function renderBookingRows(b, bIdx, {
           </td>
         )}
 
-        <TdMoneyPair value1={t.basePrice} value2={t.collectionFee} currency={b.currency} exchangeRate={b.exchangeRate} bold1 />
-        <TdInvoiceAndFees withCollection={withCollection} fees={t.fees} currency={b.currency} exchangeRate={b.exchangeRate} />
+        <TdMoneyPair
+          value1={t.basePrice}
+          value2={t.collectionFee}
+          currency={b.currency}
+          exchangeRate={b.exchangeRate}
+          bold1
+          // 2026-10-10: Vé đầu tiên trong booking → click phí thu hộ sẽ copy
+          // TỔNG phí thu hộ của mọi vé trong booking (user tiện gộp vào 1 bút toán).
+          value2OverrideSum={
+            // Vé đầu tiên hiển thị trong booking (sau sort theo số vé) → gộp tổng
+            // phí thu hộ của mọi vé cùng booking vào ô này.
+            tIdx === 0
+              ? sumAmounts(...(b.tickets || []).map(x => x.collectionFee || 0))
+              : null
+          }
+        />
+        <TdInvoiceAndFees
+          withCollection={withCollection} fees={t.fees}
+          currency={b.currency} exchangeRate={b.exchangeRate}
+          segments={b.segments}
+          ticketNumber={t.ticketNumber}
+          bookingCode={b.bookingCode}
+        />
         <TdMoney value={subTotal} currency={b.currency} exchangeRate={b.exchangeRate} bold />
         <TdMoney value={t.issuanceFee} currency={b.currency} exchangeRate={b.exchangeRate} muted />
         <TdMoney value={sellPrice} currency={b.currency} exchangeRate={b.exchangeRate} bold />
@@ -889,10 +1029,15 @@ function PaymentCell({ booking, bookingTotal, onPay }) {
   const paid = parseAmount(booking.paidAmount) || 0
   const remain = Math.max(0, bookingTotal - paid)
 
+  // 2026-10-10: 3 trạng thái mới:
+  //   PAID    → "Đã thanh toán" (xanh)
+  //   PARTIAL → "Đã thu: <paid>" (vàng) — dòng dưới hiện "còn <remain>"
+  //   UNPAID  → "Chưa thanh toán" (đỏ)
+  const paidStr = formatMoney(paid, booking.currency, { withUnit: false })
   const badge =
-      st === 'PAID'    ? { cls: 'bg-green-100 text-green-700', label: 'Đã thu' }
-    : st === 'PARTIAL' ? { cls: 'bg-amber-100 text-amber-700', label: 'Thu 1 phần' }
-    :                    { cls: 'bg-rose-100 text-rose-700',   label: 'Chưa thu' }
+      st === 'PAID'    ? { cls: 'bg-green-100 text-green-700', label: 'Đã thanh toán' }
+    : st === 'PARTIAL' ? { cls: 'bg-amber-100 text-amber-700', label: `Đã thu: ${paidStr}` }
+    :                    { cls: 'bg-rose-100 text-rose-700',   label: 'Chưa thanh toán' }
 
   return (
     <button type="button" onClick={() => onPay(booking)}
@@ -956,7 +1101,7 @@ function TdMoney({ value, currency, exchangeRate, bold, muted }) {
   )
 }
 
-function TdMoneyPair({ value1, value2, currency, exchangeRate, bold1 }) {
+function TdMoneyPair({ value1, value2, currency, exchangeRate, bold1, value2OverrideSum }) {
   const n1 = typeof value1 === 'number' ? value1 : parseAmount(value1)
   const n2 = typeof value2 === 'number' ? value2 : parseAmount(value2)
   const cls1 =
@@ -965,6 +1110,10 @@ function TdMoneyPair({ value1, value2, currency, exchangeRate, bold1 }) {
     : 'text-gray-700'
   const clickable1 = Number.isFinite(n1) && n1 !== 0
   const clickable2 = Number.isFinite(n2) && n2 !== 0
+  // 2026-10-10: Nếu có override (vé đầu tiên) → click vào collection fee copy tổng
+  // của cả booking thay vì chỉ số của riêng vé.
+  const hasSumOverride = value2OverrideSum != null && Number.isFinite(value2OverrideSum) && value2OverrideSum !== 0
+  const copyValueForSecond = hasSumOverride ? value2OverrideSum : n2
   return (
     <td className="px-2 py-2 text-left font-mono tabular-nums align-middle">
       <button type="button"
@@ -975,15 +1124,20 @@ function TdMoneyPair({ value1, value2, currency, exchangeRate, bold1 }) {
         {formatMoney(n1, currency, { withUnit: false })}
       </button>
       <button type="button"
-        onClick={clickable2 ? () => copyMoneyAsClipboard(n2, currency, exchangeRate) : undefined}
+        onClick={clickable2 ? () => copyMoneyAsClipboard(copyValueForSecond, currency, exchangeRate) : undefined}
         disabled={!clickable2}
-        title={clickable2 ? (currency === 'USD' ? 'Click để copy (quy đổi VND)' : 'Click để copy') : undefined}
-        className={`text-[10px] text-gray-400 text-left block ${clickable2 ? 'hover:bg-blue-50 hover:text-blue-700 rounded px-1 -mx-1 cursor-copy' : ''}`}>
+        title={clickable2
+          ? (hasSumOverride
+              ? `Click để copy TỔNG phí thu hộ cả booking: ${formatMoney(value2OverrideSum, currency, { withUnit: false })}`
+              : (currency === 'USD' ? 'Click để copy (quy đổi VND)' : 'Click để copy'))
+          : undefined}
+        className={`text-[10px] text-left block ${hasSumOverride ? 'text-blue-600 font-semibold' : 'text-gray-400'} ${clickable2 ? 'hover:bg-blue-50 hover:text-blue-700 rounded px-1 -mx-1 cursor-copy' : ''}`}>
         {Number.isFinite(n2) && n2 !== 0 ? formatMoney(n2, currency, { withUnit: false }) : '—'}
       </button>
     </td>
   )
 }
+
 
 /**
  * Cột "Giá trên vé / phí" — hiển thị withCollection ở trên, list phí phát sinh
@@ -1018,7 +1172,7 @@ function titleCaseVi(str) {
     .join('')
 }
 
-function TdInvoiceAndFees({ withCollection, fees, currency, exchangeRate }) {
+function TdInvoiceAndFees({ withCollection, fees, currency, exchangeRate, segments, ticketNumber, bookingCode }) {
   const n1 = typeof withCollection === 'number' ? withCollection : parseAmount(withCollection)
   const clickable1 = Number.isFinite(n1) && n1 !== 0
   const feesList = Array.isArray(fees) ? fees : []
@@ -1040,16 +1194,18 @@ function TdInvoiceAndFees({ withCollection, fees, currency, exchangeRate }) {
             const canCopy = Number.isFinite(amt) && amt !== 0
             const label = f.feeTypeLabel || f.feeType
             const labelTitleCase = titleCaseVi(label)
+            // 2026-10-10: copy "{route} - {ticketNumber || bookingCode} (feeLabel)"
+            const copyText = buildFeeCopyString(segments, ticketNumber, bookingCode, labelTitleCase)
             const copyLabel = () => {
-              navigator.clipboard.writeText(labelTitleCase)
-                .then(() => toast.success(`Đã copy: ${labelTitleCase}`))
+              navigator.clipboard.writeText(copyText)
+                .then(() => toast.success(`Đã copy: ${copyText}`))
                 .catch(() => toast.error('Không copy được'))
             }
             return (
               <div key={i} className="flex items-center gap-2 text-[10px]">
                 <button type="button"
                   onClick={copyLabel}
-                  title={`Click để copy: "${labelTitleCase}"`}
+                  title={`Click để copy: "${copyText}"`}
                   className="text-gray-600 truncate text-left hover:bg-blue-50 hover:text-blue-700 rounded px-1 -mx-1 cursor-copy">
                   {label}
                 </button>
@@ -1089,10 +1245,11 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
       st === 'PAID'    ? 'bg-green-100 text-green-700'
     : st === 'PARTIAL' ? 'bg-amber-100 text-amber-700'
     :                    'bg-rose-100 text-rose-700'
+  // 2026-10-10: cập nhật labels
   const stLabel =
-      st === 'PAID'    ? 'Đã thu'
-    : st === 'PARTIAL' ? 'Thu 1 phần'
-    :                    'Chưa thu'
+      st === 'PAID'    ? 'Đã thanh toán'
+    : st === 'PARTIAL' ? `Đã thu: ${formatMoney(parseAmount(b.paidAmount) || 0, b.currency, { withUnit: false })}`
+    :                    'Chưa thanh toán'
 
   // Mobile cũng group theo company cho nhất quán
   const { sortedTickets } = groupTicketsByCompany(b.tickets || [])
@@ -1120,12 +1277,15 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
             <button type="button"
               onClick={() => {
                 if (!b.bookingCode) return
-                navigator.clipboard.writeText(b.bookingCode)
-                  .then(() => toast.success(`Đã copy: ${b.bookingCode}`))
+                const text = buildIdCopyString(b.segments, b.bookingCode, b.kind)
+                navigator.clipboard.writeText(text)
+                  .then(() => toast.success(`Đã copy: ${text}`))
                   .catch(() => toast.error('Không copy được'))
               }}
               disabled={!b.bookingCode}
-              title="Click để copy mã booking"
+              title={b.bookingCode
+                ? `Click để copy: ${buildIdCopyString(b.segments, b.bookingCode, b.kind)}`
+                : 'Chưa có mã'}
               className="font-mono text-xs font-bold text-gray-900 hover:text-blue-700 hover:underline cursor-copy disabled:cursor-default">
               {b.bookingCode || '—'}
               {b.sharedTicketFace && b.bookingFace && <span className="ml-1 text-emerald-600">📎</span>}
@@ -1161,6 +1321,7 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
                     <CompanyLabel short={t.companyShortName} full={t.companyName} />
                     <span className="text-sm font-semibold text-gray-900 truncate">{t.passengerName || '—'}</span>
                   </div>
+                  <InvoiceNumbersForGroup booking={b} ticketIds={[t.id]} />
                   <div className="font-mono text-[10px] text-gray-500 truncate"
                     title={hasFace ? 'Vé này đã có mặt vé' : 'Vé chưa có mặt vé'}>
                     {t.ticketNumber || 'chưa có số vé'}
@@ -1269,7 +1430,7 @@ function formatDateTimeShort(ms) {
  * VD: [{HAN,NRT}, {NRT,HAN}] → "HANNRTHAN"
  *     [{HAN,NRT}, {HKG,HAN}] → "HANNRTHKGHAN"  (route gãy — vẫn concat đủ mã)
  */
-function routeConcat(segments) {
+function routeCodes(segments) {
   if (!segments || segments.length === 0) return ''
   const codes = []
   for (const s of segments) {
@@ -1277,4 +1438,50 @@ function routeConcat(segments) {
     if (codes[codes.length - 1] !== s.toCode) codes.push(s.toCode)
   }
   return codes.join('')
+}
+
+/**
+ * 2026-10-10: click hành trình → copy "SGNCGKSGN - " (có hậu tố - để user
+ * paste tiếp). Giữ cho ô Hành trình.
+ */
+function routeConcat(segments) {
+  const r = routeCodes(segments)
+  return r ? r + ' - ' : ''
+}
+
+/**
+ * 2026-10-10: Hậu tố loại giao dịch cho string copy từ booking.
+ *   EXCHANGE → " (Phí Đổi Vé)"
+ *   REFUND   → " (Phí Hoàn Vé)"
+ *   NEW / SERVICE → ""
+ */
+function kindCopySuffix(kind) {
+  if (kind === 'EXCHANGE') return ' (Phí Đổi Vé)'
+  if (kind === 'REFUND')   return ' (Phí Hoàn Vé)'
+  return ''
+}
+
+/**
+ * 2026-10-10: Build chuỗi copy chuẩn cho mã booking / số vé.
+ *   "{route} - {id}{kindSuffix}"
+ * Route trống → "{id}{kindSuffix}" (fallback khi booking chưa có segment).
+ */
+function buildIdCopyString(segments, id, kind) {
+  const r = routeCodes(segments)
+  const suffix = kindCopySuffix(kind)
+  if (!r) return `${id}${suffix}`
+  return `${r} - ${id}${suffix}`
+}
+
+/**
+ * 2026-10-10: Build chuỗi copy cho dòng phí dịch vụ.
+ *   "{route} - {ticketNumber || bookingCode} ({feeLabelTitleCase})"
+ * KHÔNG áp dụng kindSuffix (fee label đã là identifier riêng).
+ */
+function buildFeeCopyString(segments, ticketNumber, bookingCode, feeLabelTitleCase) {
+  const r = routeCodes(segments)
+  const id = (ticketNumber && ticketNumber.trim()) || bookingCode || ''
+  const feePart = `(${feeLabelTitleCase})`
+  if (!r) return id ? `${id} ${feePart}` : feePart
+  return id ? `${r} - ${id} ${feePart}` : `${r} - ${feePart}`
 }

@@ -101,10 +101,11 @@ export const setTicketPaid = (ticketId, status) =>
  * @param opts.ticketIds    number[]  — empty [] = chung cả booking
  * @param opts.draftFile / issuedFile / adjustmentFile / adjustmentRecordFile : File
  */
-export const createInvoice = (bookingId, { status, note, ticketIds = [], ...files } = {}) => {
+export const createInvoice = (bookingId, { status, note, invoiceNumbers, ticketIds = [], ...files } = {}) => {
   const fd = new FormData()
   fd.append('status', status)
   if (note) fd.append('note', note)
+  if (invoiceNumbers) fd.append('invoiceNumbers', invoiceNumbers)
   for (const tid of ticketIds) fd.append('ticketIds', String(tid))
   for (const [k, v] of Object.entries(files)) {
     if (v instanceof File) fd.append(k, v)
@@ -120,10 +121,11 @@ export const createInvoice = (bookingId, { status, note, ticketIds = [], ...file
  *   - Truyền {clearTicketIds: true} để đổi thành "chung cả booking" (empty).
  *   - Không truyền cả hai → giữ nguyên ticket scope hiện tại.
  */
-export const updateInvoice = (invoiceId, { status, note, ticketIds, clearTicketIds, ...files } = {}) => {
+export const updateInvoice = (invoiceId, { status, note, invoiceNumbers, ticketIds, clearTicketIds, ...files } = {}) => {
   const fd = new FormData()
   if (status) fd.append('status', status)
   if (note != null) fd.append('note', note)
+  if (invoiceNumbers != null) fd.append('invoiceNumbers', invoiceNumbers)
   if (clearTicketIds) fd.append('clearTicketIds', '1')
   else if (Array.isArray(ticketIds)) {
     for (const tid of ticketIds) fd.append('ticketIds', String(tid))
@@ -211,6 +213,10 @@ export const updateLookup = (id, body) =>
 
 export const deleteLookup = (id) =>
   api.delete(`/api/tools/vmb/lookup/${id}`)
+
+// 2026-10-10: Lưu thứ tự sau drag-and-drop ở tab Tra cứu.
+export const reorderLookup = (ids) =>
+  api.post('/api/tools/vmb/lookup/reorder', { ids })
 
 export const revealLookupPassword = (id, code) =>
   api.post(`/api/tools/vmb/lookup/${id}/reveal`, { code })

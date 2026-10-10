@@ -2,19 +2,31 @@ import { useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import Modal from '../common/Modal'
 import { batchPay } from '../../services/vmbApi'
-import { parseAmount, formatMoney, sumAmounts } from '../../lib/money'
+import { parseAmount, formatMoney, sumAmounts, toVnd } from '../../lib/money'
 
 /**
+ * ── 2026-10-10 rework ─────────────────────────────────────────
  * Thu batch nhiều booking.
  *
- * ── Quy tắc ─────────────────────────────────────────────
- * - Danh sách booking đã chọn hiển thị bảng: mã / khách / còn lại
- * - Tổng "cần thu" = Σ số còn lại của TẤT CẢ booking
- * - BE tự thu ĐỦ mỗi booking (số còn lại → mỗi booking); user không nhập số
- *   riêng cho từng cái (nếu muốn thì thu lẻ từng cái qua PaymentModal)
- * - Booking đã PAID sẽ bị BE skip, cảnh báo mờ trên UI
- * - Ảnh biên nhận optional nhưng khuyến khích — 1 ảnh dùng chung cho N record
- * - Chỉ hoạt động khi tất cả cùng currency (mixed VND+USD không cộng được)
+ * Modal luôn hiển thị giữa màn hình (Modal common). max-h = 80dvh, bảng
+ * breakdown cuộn trong khung bảng.
+ *
+ * Bảng breakdown:
+ *   - Mỗi booking expand ra các vé con, mỗi vé 1 dòng.
+ *   - Số tiền hiển thị QUY ĐỔI VND (nếu booking là USD, nhân với exchangeRate
+ *     của chính booking đó).
+ *   - Cột: Booking | Khách / Vé | Số tiền (VND).
+ *   - Bỏ cột "Đã thu / Sẽ thu".
+ *   - Dòng cuối = tổng VND của mọi vé/booking đã chọn.
+ *
+ * Booking đã PAID không nằm trong list truyền vào (parent đã lọc).
+ *
+ * ── Quy tắc BE giữ nguyên ─────────────────────────────────
+ * - BE thu ĐỦ số còn lại của mỗi booking.
+ * - Mỗi booking vẫn phải cùng currency với chính nó (không gộp sang 1 PaymentIO).
+ *   Nhưng vì FE giờ chỉ hiển thị VND quy đổi, user không cần quan tâm.
+ * - Có cảnh báo nếu các booking khác currency (vì BE vẫn tạo payment theo
+ *   currency của từng booking) — hiển thị warning mềm, vẫn cho submit.
  */
 export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
   const [note, setNote] = useState('')
@@ -22,49 +34,61 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
   const [busy, setBusy] = useState(false)
   const fileInputRef = useRef(null)
 
-  // Tính info từng booking
-  const rows = useMemo(() => bookings.map(b => {
-    const total = sumAmounts(...(b.tickets || []).map(t =>
-      sumAmounts(t.basePrice, t.collectionFee, t.serviceFee, t.issuanceFee)))
-    const paid = parseAmount(b.paidAmount) || 0
-    const remain = Math.max(0, total - paid)
+  const sumTicketFees = (fees) => (!fees || fees.length === 0)
+    ? 0 : sumAmounts(...fees.map(f => f.amount || 0))
+
+  // Build breakdown: mỗi booking → list dòng vé. Số tiền quy đổi VND.
+  const rowsByBooking = useMemo(() => bookings.map(b => {
+    const tickets = (b.tickets || []).map(t => {
+      const amtOrig = sumAmounts(
+        t.basePrice,
+        t.collectionFee,
+        sumTicketFees(t.fees),
+        t.issuanceFee,
+      )
+      const amtVnd = toVnd(amtOrig, b.currency, b.exchangeRate)
+      return {
+        id: t.id,
+        passengerName: t.passengerName || '(chưa có tên)',
+        ticketNumber: t.ticketNumber || '',
+        amtOrig,
+        amtVnd: Number.isFinite(amtVnd) ? amtVnd : amtOrig, // fallback nếu rate thiếu
+      }
+    })
+    const totalOrig = sumAmounts(...tickets.map(x => x.amtOrig))
+    const totalVnd  = tickets.reduce((s, x) => s + (Number.isFinite(x.amtVnd) ? x.amtVnd : 0), 0)
+    const paidNum   = parseAmount(b.paidAmount) || 0
+    const remainOrig = Math.max(0, totalOrig - paidNum)
     return {
-      id: b.id, code: b.bookingCode || '—',
-      passengerNames: (b.tickets || []).map(t => t.passengerName).filter(Boolean).slice(0, 2).join(', '),
+      id: b.id,
+      code: b.bookingCode || '—',
       currency: b.currency,
-      total, paid, remain,
-      willPay: remain > 0,
+      exchangeRate: b.exchangeRate,
+      tickets,
+      totalOrig,
+      totalVnd,
+      remainOrig,
+      willPay: remainOrig > 0, // dù BE skip PAID, parent cũng không gửi vào nữa.
     }
   }), [bookings])
 
-  // Detect mixed currency
-  const currencies = new Set(rows.map(r => r.currency))
+  // Tổng cộng VND (gộp cả USD đã quy đổi).
+  const grandTotalVnd = useMemo(
+    () => rowsByBooking.reduce((s, r) => s + r.totalVnd, 0),
+    [rowsByBooking]
+  )
+
+  const currencies = new Set(rowsByBooking.map(r => r.currency))
   const mixedCurrency = currencies.size > 1
 
-  // Group tổng theo currency (để hiển thị)
-  const totalsByCurrency = useMemo(() => {
-    const acc = new Map()
-    for (const r of rows) {
-      if (!r.willPay) continue
-      const cur = acc.get(r.currency) || { willPay: 0, count: 0 }
-      cur.willPay += r.remain
-      cur.count += 1
-      acc.set(r.currency, cur)
-    }
-    return acc
-  }, [rows])
-
-  const willPayCount = rows.filter(r => r.willPay).length
-  const skippedCount = rows.length - willPayCount
+  const willPayCount = rowsByBooking.filter(r => r.willPay).length
 
   const submit = async (e) => {
     e.preventDefault()
-    if (mixedCurrency) return toast.error('Không thể thu batch khi các booking khác đơn vị tiền.')
-    if (willPayCount === 0) return toast.error('Tất cả booking đã thu đủ.')
-
+    if (willPayCount === 0) return toast.error('Không có booking nào cần thu.')
     setBusy(true)
     try {
-      const bookingIds = rows.filter(r => r.willPay).map(r => r.id)
+      const bookingIds = rowsByBooking.filter(r => r.willPay).map(r => r.id)
       await batchPay({ bookingIds, note, file })
       toast.success(`Đã ghi nhận cho ${bookingIds.length} booking`)
       onSaved?.()
@@ -82,14 +106,14 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
       footer={
         <div className="flex items-center gap-2">
           <div className="flex-1 text-[11px] text-gray-500">
-            {willPayCount} booking sẽ thu · {skippedCount > 0 && <span className="text-amber-600">{skippedCount} bỏ qua</span>}
+            {willPayCount} booking sẽ thu
           </div>
           <button type="button" onClick={onClose} disabled={busy}
             className="px-4 py-2 text-sm rounded-lg text-gray-600 hover:bg-gray-200 disabled:opacity-50">
             Hủy
           </button>
           <button type="submit" form="batch-pay-form"
-            disabled={busy || willPayCount === 0 || mixedCurrency}
+            disabled={busy || willPayCount === 0}
             className="px-4 py-2 text-sm font-semibold rounded-lg bg-blue-600 text-white
               hover:bg-blue-700 disabled:opacity-50">
             {busy ? 'Đang ghi…' : `Thu đủ ${willPayCount} booking`}
@@ -97,59 +121,57 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
         </div>
       }>
 
-      {mixedCurrency && (
-        <div className="mb-3 p-3 rounded-lg bg-rose-50 border border-rose-200 text-xs text-rose-800">
-          ⚠ Các booking đã chọn dùng <b>khác đơn vị tiền</b> (VND + USD). Không thể thu batch —
-          bỏ chọn để chỉ giữ 1 loại tiền, hoặc thu lẻ từng cái.
-        </div>
-      )}
+      {/* ── Khung breakdown — scroll trong bảng, max-h 80dvh (toàn modal) ── */}
+      <div className="flex flex-col gap-3" style={{ maxHeight: '80dvh' }}>
+        {mixedCurrency && (
+          <div className="shrink-0 p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
+            ℹ Các booking có <b>đơn vị tiền khác nhau</b> (VND + USD). Mỗi booking vẫn
+            thu theo đơn vị gốc; cột bên dưới hiển thị QUY ĐỔI VND để bạn tổng hợp.
+          </div>
+        )}
 
-      {/* Bảng tổng theo currency */}
-      {!mixedCurrency && totalsByCurrency.size > 0 && (
-        <div className="mb-3 grid grid-cols-1 gap-2">
-          {[...totalsByCurrency.entries()].map(([cur, sum]) => (
-            <div key={cur} className="p-3 rounded-xl bg-blue-50 border border-blue-200 flex items-baseline gap-2">
-              <span className="text-xs font-bold text-blue-700 uppercase">Sẽ thu</span>
-              <span className="font-mono tabular-nums text-lg font-bold text-blue-900">
-                {formatMoney(sum.willPay, cur)}
-              </span>
-              <span className="text-[10px] text-blue-600">({sum.count} booking)</span>
-            </div>
-          ))}
+        <div className="shrink-0 p-3 rounded-xl bg-blue-50 border border-blue-200 flex items-baseline gap-2">
+          <span className="text-xs font-bold text-blue-700 uppercase">Tổng cần thu (VND)</span>
+          <span className="font-mono tabular-nums text-lg font-bold text-blue-900">
+            {formatMoney(grandTotalVnd, 'VND')}
+          </span>
+          <span className="text-[10px] text-blue-600">({willPayCount} booking)</span>
         </div>
-      )}
 
-      {/* Danh sách booking */}
-      <div className="border border-gray-200 rounded-xl overflow-hidden mb-4">
-        <table className="w-full text-xs">
-          <thead className="bg-gray-50 text-gray-600 text-[10px] uppercase">
-            <tr>
-              <th className="text-left px-3 py-2 font-semibold">Booking</th>
-              <th className="text-left px-3 py-2 font-semibold">Khách</th>
-              <th className="text-right px-3 py-2 font-semibold">Tổng</th>
-              <th className="text-right px-3 py-2 font-semibold">Đã thu</th>
-              <th className="text-right px-3 py-2 font-semibold">Sẽ thu</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {rows.map(r => (
-              <tr key={r.id} className={r.willPay ? '' : 'opacity-40 bg-gray-50'}>
-                <td className="px-3 py-2 font-mono font-bold">{r.code}</td>
-                <td className="px-3 py-2 truncate max-w-[160px]">{r.passengerNames}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums">{formatMoney(r.total, r.currency, { withUnit: false })}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums text-green-700">{formatMoney(r.paid, r.currency, { withUnit: false })}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums font-bold">
-                  {r.willPay
-                    ? <span className="text-rose-700">{formatMoney(r.remain, r.currency, { withUnit: false })}</span>
-                    : <span className="text-gray-400 italic text-[10px]">(đã đủ)</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        {/* Bảng — scroll RIÊNG trong khung này, header dính */}
+        <div className="flex-1 min-h-0 border border-gray-200 rounded-xl overflow-hidden flex flex-col">
+          <div className="flex-1 overflow-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50 text-gray-600 text-[10px] uppercase sticky top-0 z-10">
+                <tr>
+                  <th className="text-left px-3 py-2 font-semibold">Booking</th>
+                  <th className="text-left px-3 py-2 font-semibold">Khách / Vé</th>
+                  <th className="text-right px-3 py-2 font-semibold">Số tiền (VND)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rowsByBooking.map(b => (
+                  <BookingBlock key={b.id} booking={b} />
+                ))}
+              </tbody>
+              {/* Dòng tổng dính dưới cùng — bg-blue-50 có override cho darkmode
+                   (xem src/theme/darkmode.css), tránh dùng alpha /95 vì chưa có mapping. */}
+              <tfoot className="sticky bottom-0 z-10 bg-blue-50 border-t-2 border-blue-300">
+                <tr>
+                  <td colSpan={2} className="px-3 py-2 text-right text-[11px] font-bold text-blue-900 uppercase">
+                    Tổng cộng
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono tabular-nums font-bold text-blue-900 text-sm">
+                    {formatMoney(grandTotalVnd, 'VND')}
+                  </td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+        </div>
       </div>
 
-      <form id="batch-pay-form" onSubmit={submit} className="space-y-3">
+      <form id="batch-pay-form" onSubmit={submit} className="mt-4 space-y-3">
         <div>
           <label className="text-[11px] font-semibold text-gray-600 mb-1 block">
             Ghi chú (chung cho cả batch)
@@ -201,5 +223,56 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
         }
       `}</style>
     </Modal>
+  )
+}
+
+/**
+ * 1 booking + list vé con. Hiển thị:
+ *   Dòng header booking (nền xám nhạt): mã, số tiền gốc (nếu USD → kèm quy đổi VND)
+ *   Các dòng vé: indented, tên khách + số vé, số tiền VND
+ */
+function BookingBlock({ booking }) {
+  const b = booking
+  const isUsd = b.currency === 'USD'
+  return (
+    <>
+      <tr className="bg-slate-100 border-t border-slate-200">
+        <td className="px-3 py-1.5 font-mono font-bold text-gray-900">{b.code}</td>
+        <td className="px-3 py-1.5 text-[10px] text-gray-500">
+          {isUsd ? (
+            <>USD · 1 USD = {formatMoney(parseAmount(b.exchangeRate) || 0, 'VND', { withUnit: false })}</>
+          ) : 'VND'}
+          <span className="mx-1">·</span>
+          {b.tickets.length} vé
+        </td>
+        <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs font-bold text-gray-900">
+          {formatMoney(b.totalVnd, 'VND')}
+          {isUsd && (
+            <div className="text-[10px] font-normal text-gray-500">
+              = {formatMoney(b.totalOrig, 'USD')}
+            </div>
+          )}
+        </td>
+      </tr>
+      {b.tickets.map(t => (
+        <tr key={t.id} className="border-t border-gray-100 hover:bg-blue-50/40">
+          <td className="px-3 py-1.5"></td>
+          <td className="px-3 py-1.5">
+            <div className="text-xs text-gray-800 truncate">{t.passengerName}</div>
+            {t.ticketNumber && (
+              <div className="font-mono text-[10px] text-gray-400 truncate">{t.ticketNumber}</div>
+            )}
+          </td>
+          <td className="px-3 py-1.5 text-right font-mono tabular-nums text-xs text-gray-700">
+            {formatMoney(t.amtVnd, 'VND', { withUnit: false })}
+            {isUsd && t.amtOrig > 0 && (
+              <div className="text-[10px] text-gray-400">
+                {formatMoney(t.amtOrig, 'USD', { withUnit: false })} USD
+              </div>
+            )}
+          </td>
+        </tr>
+      ))}
+    </>
   )
 }

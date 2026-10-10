@@ -39,15 +39,27 @@ export default function BookingProofModal({ open, booking, onClose, onChanged })
 
   if (!open || !booking) return null
 
-  const handleUpload = async (ticketId, file) => {
-    if (!file) return
+  // 2026-10-10: Upload nhiều file 1 lần — chạy tuần tự để BE nhận và hiển
+  // thị tiến trình nếu lỗi file nào. Chỉ reload sau khi xong hết.
+  const handleUpload = async (ticketId, files) => {
+    const list = Array.from(files || [])
+    if (list.length === 0) return
     setErr(''); setBusy(true)
+    let failCount = 0
     try {
-      const res = await uploadBookingProof(booking.id, file, ticketId)
-      if (res.data?.error) setErr(res.data.message || 'Upload thất bại')
-      else onChanged && onChanged()
-    } catch (e) {
-      setErr(e.message || 'Upload thất bại')
+      for (const file of list) {
+        try {
+          const res = await uploadBookingProof(booking.id, file, ticketId)
+          if (res.data?.error) {
+            failCount++
+            setErr(res.data.message || 'Upload thất bại')
+          }
+        } catch (e) {
+          failCount++
+          setErr(e.message || 'Upload thất bại')
+        }
+      }
+      if (failCount < list.length) onChanged && onChanged()
     } finally {
       setBusy(false)
     }
@@ -81,7 +93,7 @@ export default function BookingProofModal({ open, booking, onClose, onChanged })
           title="Chung cả booking"
           hint="Upload file dùng chung cho mọi hành khách (VD: ảnh mail xác nhận đặt chỗ)."
           files={shared}
-          onUpload={file => handleUpload(null, file)}
+          onUpload={files => handleUpload(null, files)}
           onDelete={handleDelete}
           onPreview={setPreviewFile}
           disabled={busy}
@@ -94,7 +106,7 @@ export default function BookingProofModal({ open, booking, onClose, onChanged })
             title={`Riêng khách: ${t.passengerName || '(chưa có tên)'} ${t.ticketNumber ? `— ${t.ticketNumber}` : ''}`}
             hint="Chỉ áp dụng cho vé của khách này."
             files={perTicket.get(t.id) || []}
-            onUpload={file => handleUpload(t.id, file)}
+            onUpload={files => handleUpload(t.id, files)}
             onDelete={handleDelete}
             onPreview={setPreviewFile}
             disabled={busy}
@@ -130,10 +142,11 @@ function Section({ title, hint, files, onUpload, onDelete, onPreview, disabled }
           <div className="text-sm font-bold text-gray-800">{title}</div>
           <div className="text-[11px] text-gray-500">{hint}</div>
         </div>
-        <input ref={inputRef} type="file" accept="image/*,application/pdf" className="hidden"
+        {/* 2026-10-10: multiple = chọn nhiều ảnh 1 lần */}
+        <input ref={inputRef} type="file" accept="image/*,application/pdf" multiple className="hidden"
           onChange={e => {
-            const f = e.target.files?.[0]
-            if (f) onUpload(f)
+            const files = e.target.files
+            if (files && files.length > 0) onUpload(files)
             e.target.value = ''
           }} />
         <button type="button" onClick={() => inputRef.current?.click()}

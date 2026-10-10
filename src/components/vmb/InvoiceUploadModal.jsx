@@ -36,6 +36,8 @@ export default function InvoiceUploadModal({ open, booking, onClose, onChanged }
   const [selectedGroupIds, setSelectedGroupIds] = useState(() => new Set())
   const [file, setFile] = useState(null)
   const [note, setNote] = useState('')
+  // 2026-10-10: Số hóa đơn (bắt buộc khi upload ISSUED)
+  const [invoiceNumbers, setInvoiceNumbers] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr]   = useState('')
   // 2026-10-09: preview inline bằng ZoomablePreview thay vì mở tab mới
@@ -117,9 +119,14 @@ export default function InvoiceUploadModal({ open, booking, onClose, onChanged }
     setErr('')
     if (flatSelectedTicketIds.length === 0) { setErr('Chọn ít nhất 1 khách hàng.'); return }
     if (!file)                              { setErr('Chưa chọn file.'); return }
+    if (kind === 'ISSUED' && !invoiceNumbers.trim()) {
+      setErr('Hóa đơn đã phát hành bắt buộc nhập số hóa đơn.')
+      return
+    }
     setBusy(true)
     try {
       const payload = { status: kind, note, ticketIds: flatSelectedTicketIds }
+      if (invoiceNumbers.trim()) payload.invoiceNumbers = invoiceNumbers.trim()
       if (kind === 'DRAFT')  payload.draftFile  = file
       if (kind === 'ISSUED') payload.issuedFile = file
 
@@ -249,6 +256,22 @@ export default function InvoiceUploadModal({ open, booking, onClose, onChanged }
           {file ? `📎 ${file.name}` : '+ Chọn file'}
         </button>
       </div>
+
+      {/* ─ Số hóa đơn (bắt buộc khi ISSUED) ────────────────────────── */}
+      {kind === 'ISSUED' && (
+        <div className="mb-3">
+          <div className="text-[11px] font-semibold text-gray-600 mb-1">
+            Số hóa đơn <span className="text-rose-600">*</span>
+            <span className="text-[10px] text-gray-400 font-normal ml-1">
+              (nhiều số phân cách bằng dấu phẩy, VD: 142, 143, 144)
+            </span>
+          </div>
+          <input type="text" value={invoiceNumbers}
+            onChange={e => setInvoiceNumbers(e.target.value)}
+            placeholder="VD: 142 hoặc 142, 143, 144"
+            className="w-full px-2 py-1.5 rounded-md border border-gray-300 bg-white text-sm outline-none focus:border-blue-500" />
+        </div>
+      )}
 
       {/* ─ Note ───────────────────────────────────────────────────── */}
       <div className="mb-3">
