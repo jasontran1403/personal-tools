@@ -245,7 +245,9 @@ function InputView({ code, onCodeChange, remaining, busy, inputRef, onSubmit }) 
 function ShownView({ entry, password, autoHideSec, onCopy, onDone }) {
   return (
     <div>
-      <div className="p-4 rounded-xl bg-gradient-to-br from-green-50 to-emerald-50 border border-green-200 mb-3">
+      {/* 2026-10-10: Bỏ bg-gradient (không có mapping dark) → dùng bg-emerald-50
+           (đã có mapping sang nền xanh tối trong dark mode) để chữ không bị chìm. */}
+      <div className="p-4 rounded-xl bg-emerald-50 border border-green-200 mb-3">
         <div className="text-[10px] font-bold text-green-700 uppercase mb-1">Tài khoản</div>
         <div className="font-mono text-sm text-gray-900 mb-3">{entry.loginUsername}</div>
         <div className="text-[10px] font-bold text-green-700 uppercase mb-1">Mật khẩu</div>
