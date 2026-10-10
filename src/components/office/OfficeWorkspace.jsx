@@ -462,19 +462,28 @@ function FilePickerModal({ onClose, onPickDevice, onPickFromLibrary, onNotify })
   const [loadingFiles, setLoadingFiles] = useState(false)
   const [q, setQ] = useState('')
 
+  // 2026-10-10: onNotify là inline arrow từ parent (VmbPage re-render liên tục
+  // vì countdown tick 1s) → identity đổi mỗi tick, khiến useEffect fire liên
+  // tục và gọi listFiles vô hạn. Lưu vào ref để effect chỉ chạy khi tab/q đổi.
+  const notifyRef = useRef(onNotify)
+  useEffect(() => { notifyRef.current = onNotify }, [onNotify])
+
+  // Debounce ô search 300ms để khỏi gọi API theo từng ký tự.
   useEffect(() => {
     if (tab !== 'library') return
     let cancel = false
-    setLoadingFiles(true)
-    listFiles(0, 100, { exts: ACCEPT_EXTS, q: q.trim() || undefined })
-      .then(d => {
-        if (cancel) return
-        setFiles(d?.content || d?.items || d || [])
-      })
-      .catch(e => { if (!cancel) onNotify?.(e.message || 'Không tải được danh sách tệp', false) })
-      .finally(() => { if (!cancel) setLoadingFiles(false) })
-    return () => { cancel = true }
-  }, [tab, q, onNotify])
+    const timer = setTimeout(() => {
+      setLoadingFiles(true)
+      listFiles(0, 100, { exts: ACCEPT_EXTS, q: q.trim() || undefined })
+        .then(d => {
+          if (cancel) return
+          setFiles(d?.content || d?.items || d || [])
+        })
+        .catch(e => { if (!cancel) notifyRef.current?.(e.message || 'Không tải được danh sách tệp', false) })
+        .finally(() => { if (!cancel) setLoadingFiles(false) })
+    }, 300)
+    return () => { cancel = true; clearTimeout(timer) }
+  }, [tab, q])
 
   return (
     <Modal open onClose={onClose} title="Mở tệp" size="lg">
