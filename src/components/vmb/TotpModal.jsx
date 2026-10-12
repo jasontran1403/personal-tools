@@ -282,7 +282,7 @@ function LockedView({ lockedUntil, now, isAdmin, onUnlock }) {
   return (
     <div className="text-center py-4">
       <div className="text-5xl mb-2">🔒</div>
-      <h3 className="text-base font-bold text-rose-700 mb-2">Đã bị khóa 24 giờ</h3>
+      <h3 className="text-base font-bold text-rose-700 mb-2">Bạn đã bị khóa trong 24 giờ</h3>
       <p className="text-sm text-gray-600 mb-2">
         Do đã nhập sai mã 2FA quá 5 lần liên tiếp.
       </p>
