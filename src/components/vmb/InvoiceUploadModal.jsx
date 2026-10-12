@@ -86,15 +86,30 @@ export default function InvoiceUploadModal({ open, booking, onClose, onChanged }
     return out
   }, [selectionModel, selectedGroupIds])
 
+  // ── 2026-10-13 FIX ──────────────────────────────────────────
+  // BE trả ApiResponse { success, code, message, data }. Lỗi 400/500 có
+  // code >= 400 chứ KHÔNG có field `error`. Check cũ `res.data?.error` luôn
+  // falsy → user tưởng xóa thành công nhưng BE báo lỗi và không xóa.
+  // Giờ check đúng: code >= 400 hoặc success === false → throw.
+  const unwrapOrThrow = (res, fallback) => {
+    const d = res?.data
+    if (!d) throw new Error(fallback)
+    if (d.success === false || (typeof d.code === 'number' && d.code >= 400)) {
+      throw new Error(d.message || fallback)
+    }
+    return d
+  }
+
   const removeInvoice = async (invId) => {
     if (!confirm('Xóa hóa đơn này?')) return
     setBusy(true); setErr('')
     try {
       const res = await deleteInvoice(invId)
-      if (res.data?.error) throw new Error(res.data.message || 'Xóa thất bại')
-      if (onChanged) onChanged()
+      unwrapOrThrow(res, 'Xóa thất bại')
+      if (onChanged) await onChanged()
     } catch (e) {
-      setErr(e.message || 'Xóa thất bại')
+      console.error('[InvoiceUpload.deleteInvoice]', e)
+      setErr(e?.response?.data?.message || e.message || 'Xóa thất bại')
     } finally {
       setBusy(false)
     }
@@ -105,11 +120,19 @@ export default function InvoiceUploadModal({ open, booking, onClose, onChanged }
     const label = kind === 'DRAFT' ? 'nháp' : 'đã phát hành'
     if (!confirm(`Xóa toàn bộ ${currentKindInvoices.length} hóa đơn ${label} của booking này?`)) return
     setBusy(true); setErr('')
+    let failCount = 0
     try {
       for (const inv of currentKindInvoices) {
-        try { await deleteInvoice(inv.id) } catch { /* keep going */ }
+        try {
+          const res = await deleteInvoice(inv.id)
+          unwrapOrThrow(res, 'Xóa thất bại')
+        } catch (e) {
+          console.error('[InvoiceUpload.deleteAll] inv', inv.id, e)
+          failCount++
+        }
       }
-      if (onChanged) onChanged()
+      if (failCount > 0) setErr(`Xóa thất bại ${failCount}/${currentKindInvoices.length} hóa đơn. Mở DevTools xem chi tiết.`)
+      if (onChanged) await onChanged()
     } finally {
       setBusy(false)
     }

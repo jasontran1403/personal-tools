@@ -34,8 +34,24 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
   const [busy, setBusy] = useState(false)
   const fileInputRef = useRef(null)
 
-  const sumTicketFees = (fees) => (!fees || fees.length === 0)
-    ? 0 : sumAmounts(...fees.map(f => f.amount || 0))
+  // 2026-10-12: fees có currency riêng → quy về booking.currency qua rate.
+  const sumFeesInBookingCur = (fees, bookingCur, rate) => {
+    if (!fees || fees.length === 0) return 0
+    const r = parseAmount(rate)
+    let s = 0
+    for (const f of fees) {
+      const amt = parseAmount(f.amount)
+      if (!Number.isFinite(amt)) continue
+      const fc = (f.currency || bookingCur || 'VND').toUpperCase()
+      if (fc === bookingCur) s += amt
+      else if (bookingCur === 'USD' && fc === 'VND') {
+        if (Number.isFinite(r) && r > 0) s += amt / r
+      } else if (bookingCur === 'VND' && fc === 'USD') {
+        if (Number.isFinite(r) && r > 0) s += amt * r
+      }
+    }
+    return s
+  }
 
   // Build breakdown: mỗi booking → list dòng vé. Số tiền quy đổi VND.
   const rowsByBooking = useMemo(() => bookings.map(b => {
@@ -43,7 +59,7 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
       const amtOrig = sumAmounts(
         t.basePrice,
         t.collectionFee,
-        sumTicketFees(t.fees),
+        sumFeesInBookingCur(t.fees, b.currency, b.exchangeRate),
         t.issuanceFee,
       )
       const amtVnd = toVnd(amtOrig, b.currency, b.exchangeRate)
@@ -52,13 +68,14 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
         passengerName: t.passengerName || '(chưa có tên)',
         ticketNumber: t.ticketNumber || '',
         amtOrig,
-        amtVnd: Number.isFinite(amtVnd) ? amtVnd : amtOrig, // fallback nếu rate thiếu
+        amtVnd: Number.isFinite(amtVnd) ? amtVnd : amtOrig,
       }
     })
     const totalOrig = sumAmounts(...tickets.map(x => x.amtOrig))
     const totalVnd  = tickets.reduce((s, x) => s + (Number.isFinite(x.amtVnd) ? x.amtVnd : 0), 0)
     const paidNum   = parseAmount(b.paidAmount) || 0
     const remainOrig = Math.max(0, totalOrig - paidNum)
+    const invoiceCount = (b.invoices || []).length
     return {
       id: b.id,
       code: b.bookingCode || '—',
@@ -68,9 +85,13 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
       totalOrig,
       totalVnd,
       remainOrig,
-      willPay: remainOrig > 0, // dù BE skip PAID, parent cũng không gửi vào nữa.
+      invoiceCount,
+      willPay: remainOrig > 0 && invoiceCount > 0,
     }
   }), [bookings])
+
+  // 2026-10-12: Booking không có hóa đơn → không thu được, cảnh báo.
+  const noInvoiceBookings = rowsByBooking.filter(r => r.invoiceCount === 0)
 
   // Tổng cộng VND (gộp cả USD đã quy đổi).
   const grandTotalVnd = useMemo(
@@ -127,6 +148,13 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
           <div className="shrink-0 p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-900">
             ℹ Các booking có <b>đơn vị tiền khác nhau</b> (VND + USD). Mỗi booking vẫn
             thu theo đơn vị gốc; cột bên dưới hiển thị QUY ĐỔI VND để bạn tổng hợp.
+          </div>
+        )}
+        {noInvoiceBookings.length > 0 && (
+          <div className="shrink-0 p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-[11px] text-rose-900">
+            ⚠ <b>{noInvoiceBookings.length} booking</b> chưa có hóa đơn (nháp/đã PH) sẽ bị
+            <b> BỎ QUA</b> khi thu batch: {noInvoiceBookings.map(r => r.code).join(', ')}.
+            Hãy tạo hóa đơn trước rồi thu lại.
           </div>
         )}
 
@@ -204,8 +232,9 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
         </div>
 
         <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-900 leading-snug">
-          💡 Thu batch <b>bắt buộc thu ĐỦ</b> mỗi booking. Nếu muốn thu 1 phần
-          của 1 booking, dùng chức năng "Thu tiền" riêng cho booking đó.
+          💡 Thu batch <b>bắt buộc thu ĐỦ</b> mỗi booking. BE phân bổ xuống từng
+          hóa đơn còn thiếu của booking theo thứ tự tạo. Nếu muốn thu 1 phần hoặc
+          chọn hóa đơn cụ thể, dùng chức năng "Thu tiền" riêng cho booking đó.
         </div>
       </form>
 

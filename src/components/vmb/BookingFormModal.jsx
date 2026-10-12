@@ -104,6 +104,9 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
               feeType: f.feeType,
               feeTypeLabel: f.feeTypeLabel,
               amount: f.amount || '',
+              // 2026-10-12: Giữ currency riêng của mỗi dòng phí. BE trả null
+              // khi là data cũ → fallback booking.currency ở TicketFeesEditor.
+              currency: f.currency || b.currency || 'VND',
               note: f.note || '',
               orderIdx: f.orderIdx ?? 0,
             })),

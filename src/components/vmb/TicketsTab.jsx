@@ -10,6 +10,7 @@ import UploadOptionsModal from './UploadOptionsModal'
 import TicketNoteModal from './TicketNoteModal'
 import BookingTotalsCard from './BookingTotalsCard'
 import PaymentModal from './PaymentModal'
+import InvoicePickerModal from './InvoicePickerModal'
 import BatchPaymentModal from './BatchPaymentModal'
 import DateRangePicker from '../common/DateRangePicker'
 import CompanySearchSelect, { companyOptions } from '../common/CompanySearchSelect'
@@ -64,7 +65,10 @@ export default function TicketsTab() {
   const [form, setForm]           = useState(null)
   const [face, setFace]           = useState(null)   // { booking, ticketId }
   const [invMgr, setInvMgr]       = useState(null)
+  // 2026-10-12: payFor giờ chứa { booking, invoice } — invoice BẮT BUỘC.
   const [payFor, setPayFor]       = useState(null)
+  // Picker modal khi booking có >1 invoice.
+  const [invoicePicker, setInvoicePicker] = useState(null) // booking | null
   const [batchPay, setBatchPay]   = useState(null)
   const [noteView, setNoteView]   = useState(null)
   const [confirmDel, setConfirmDel] = useState(null)
@@ -138,6 +142,7 @@ export default function TicketsTab() {
   //    q + date range).
   const displayTotals = useMemo(() => {
     if (companyId == null) return totals
+    // 2026-10-12: Split theo fee.currency, không chỉ booking.currency.
     const agg = {
       VND: { subTotal: 0, issuanceFee: 0, grandTotal: 0, ticketCount: 0 },
       USD: { subTotal: 0, issuanceFee: 0, grandTotal: 0, ticketCount: 0 },
@@ -146,13 +151,19 @@ export default function TicketsTab() {
       const cur = b.currency === 'USD' ? 'USD' : 'VND'
       for (const t of (b.tickets || [])) {
         if (t.companyId !== companyId) continue
-        const feesTotal   = sumTicketFees(t.fees)
-        const subTotal    = sumAmounts(t.basePrice, t.collectionFee, feesTotal)
+        const baseColl = sumAmounts(t.basePrice, t.collectionFee)
         const issuanceFee = parseAmount(t.issuanceFee) || 0
-        agg[cur].subTotal    += subTotal
+        // basePrice/collection/issuance luôn vào bucket booking.currency
+        agg[cur].subTotal    += baseColl
         agg[cur].issuanceFee += issuanceFee
-        agg[cur].grandTotal  += subTotal + issuanceFee
+        agg[cur].grandTotal  += baseColl + issuanceFee
         agg[cur].ticketCount += 1
+        // Fees: cộng theo currency riêng
+        const fByCur = sumFeesByCurrency(t.fees, cur)
+        agg.VND.subTotal   += fByCur.VND
+        agg.VND.grandTotal += fByCur.VND
+        agg.USD.subTotal   += fByCur.USD
+        agg.USD.grandTotal += fByCur.USD
       }
     }
     return ['VND', 'USD'].map(c => ({
@@ -288,6 +299,38 @@ export default function TicketsTab() {
   const openBookingFace = (b) => setPresentation(b)
   const openTicketFace  = (b, ticketId) => setFace({ booking: b, ticketId })
   const openUpload      = (b) => setUploadFor(b)
+
+  /**
+   * 2026-10-12: Thu tiền giờ ở cấp HÓA ĐƠN.
+   *   - Booking không có invoice → warning (user phải upload hóa đơn trước)
+   *   - Booking có 1 invoice → mở PaymentModal thẳng
+   *   - Booking có >1 invoice → mở picker để user chọn hóa đơn nào
+   */
+  const openPay = (b) => {
+    // 2026-10-13: Booking tổng = 0 → đã PAID auto, không cần thu/tạo invoice.
+    const bookingTotal = sumAmounts(...(b.tickets || []).map(t =>
+      sumAmounts(t.basePrice, t.collectionFee,
+        sumTicketFees(t.fees, b.currency, b.exchangeRate), t.issuanceFee)))
+    if (bookingTotal <= 0.5) {
+      toast.success('Booking miễn phí (tổng = 0) — đã tự đánh dấu Đã thanh toán.')
+      return
+    }
+    const invs = b.invoices || []
+    if (invs.length === 0) {
+      toast.error('Booking này chưa có hóa đơn (nháp/đã phát hành). Vui lòng tạo hóa đơn trước khi thu tiền.', { duration: 4500 })
+      return
+    }
+    const unpaid = invs.filter(i => i.paymentStatus !== 'PAID')
+    if (unpaid.length === 0) {
+      toast.success('Tất cả hóa đơn của booking này đã thu đủ.')
+      return
+    }
+    if (invs.length === 1) {
+      setPayFor({ booking: b, invoice: invs[0] })
+    } else {
+      setInvoicePicker(b)
+    }
+  }
 
   return (
     // 2026-10-10: Layout flex column — toolbar + totals shrink-0, bảng flex-1 overflow-auto.
@@ -447,7 +490,7 @@ export default function TicketsTab() {
                   onUpload: openUpload,
                   onInvoice: (bookingId) => setInvMgr(bookingId),
                   onNote: setNoteView,
-                  onPay: setPayFor,
+                  onPay: openPay,
                   onEdit: () => setForm({ mode: 'edit', bookingId: b.id }),
                   onDelete: () => setConfirmDel(b),
                 }))
@@ -477,7 +520,7 @@ export default function TicketsTab() {
               onUpload={openUpload}
               onInvoice={(id) => setInvMgr(id)}
               onNote={setNoteView}
-              onPay={setPayFor}
+              onPay={openPay}
               onEdit={() => setForm({ mode: 'edit', bookingId: b.id })}
               onDelete={() => setConfirmDel(b)} />
           ))
@@ -528,9 +571,17 @@ export default function TicketsTab() {
         />
       )}
       {payFor && (
-        <PaymentModal booking={payFor}
+        <PaymentModal booking={payFor.booking} invoice={payFor.invoice}
           onClose={() => setPayFor(null)}
           onSaved={() => { setPayFor(null); onSavedRefresh() }} />
+      )}
+      {invoicePicker && (
+        <InvoicePickerModal booking={invoicePicker}
+          onClose={() => setInvoicePicker(null)}
+          onPick={(inv) => {
+            setPayFor({ booking: invoicePicker, invoice: inv })
+            setInvoicePicker(null)
+          }} />
       )}
       {batchPay && (
         <BatchPaymentModal bookings={batchPay}
@@ -746,8 +797,11 @@ function renderBookingRows(b, bIdx, {
   page, nowTick, isSelected, onToggleSelect,
   onOpenBookingFace, onOpenTicketFace, onPresent, onUpload, onInvoice, onNote, onPay, onEdit, onDelete,
 }) {
+  // 2026-10-12: Tổng QUY về booking.currency — fees khác currency được convert
+  // qua exchangeRate (xem sumTicketFees).
   const bookingTotal = sumAmounts(...(b.tickets || []).map(t =>
-    sumAmounts(t.basePrice, t.collectionFee, sumTicketFees(t.fees), t.issuanceFee)))
+    sumAmounts(t.basePrice, t.collectionFee,
+      sumTicketFees(t.fees, b.currency, b.exchangeRate), t.issuanceFee)))
   const totalVnd = toVnd(bookingTotal, b.currency, b.exchangeRate)
   const N = b.tickets?.length || 1
   const primary = primaryDeparture(b.segments, nowTick)
@@ -772,7 +826,8 @@ function renderBookingRows(b, bIdx, {
     const lastRow  = tIdx === N - 1
     const cardBorder = `${firstRow ? 'border-t-2 border-t-gray-100' : ''} ${lastRow ? 'border-b-4 border-b-gray-100' : ''}`
     const withCollection = sumAmounts(t.basePrice, t.collectionFee)
-    const feesTotal      = sumTicketFees(t.fees)
+    // 2026-10-12: fees quy về booking.currency để cộng cùng basePrice/collection.
+    const feesTotal      = sumTicketFees(t.fees, b.currency, b.exchangeRate)
     const subTotal       = sumAmounts(withCollection, feesTotal)
     const sellPrice      = sumAmounts(subTotal, t.issuanceFee)
     const hasFace = faceStatus(b, t.id)
@@ -1025,14 +1080,20 @@ function autoShort(name) {
 }
 
 function PaymentCell({ booking, bookingTotal, onPay }) {
-  const st = booking.paymentStatus || 'UNPAID'
+  const stRaw = booking.paymentStatus || 'UNPAID'
   const paid = parseAmount(booking.paidAmount) || 0
   const remain = Math.max(0, bookingTotal - paid)
 
-  // 2026-10-10: 3 trạng thái mới:
-  //   PAID    → "Đã thanh toán" (xanh)
-  //   PARTIAL → "Đã thu: <paid>" (vàng) — dòng dưới hiện "còn <remain>"
-  //   UNPAID  → "Chưa thanh toán" (đỏ)
+  // 2026-10-13:
+  //   - total ≈ 0 → PAID (booking miễn phí/không có giá).
+  //   - đã thu đủ (remain ≤ 0) & total > 0 → PAID (safeguard nếu BE
+  //     trả PARTIAL do stale cache / nhiều invoice).
+  //   - còn lại → bám theo stRaw của BE.
+  let st
+  if (bookingTotal <= 0.5) st = 'PAID'
+  else if (remain <= 0.5)  st = 'PAID'
+  else                     st = stRaw
+
   const paidStr = formatMoney(paid, booking.currency, { withUnit: false })
   const badge =
       st === 'PAID'    ? { cls: 'bg-green-100 text-green-700', label: 'Đã thanh toán' }
@@ -1043,9 +1104,9 @@ function PaymentCell({ booking, bookingTotal, onPay }) {
     <button type="button" onClick={() => onPay(booking)}
       className={`px-2 py-1 rounded-md ${badge.cls} hover:brightness-95 transition text-left w-full`}>
       <div className="text-[10px] font-bold">{badge.label}</div>
-      {st !== 'UNPAID' && (
+      {st === 'PARTIAL' && (
         <div className="text-[10px] font-mono tabular-nums mt-0.5 opacity-80">
-          {formatMoney(remain, booking.currency, { withUnit: false })}
+          còn {formatMoney(remain, booking.currency, { withUnit: false })}
         </div>
       )}
     </button>
@@ -1194,7 +1255,8 @@ function TdInvoiceAndFees({ withCollection, fees, currency, exchangeRate, segmen
             const canCopy = Number.isFinite(amt) && amt !== 0
             const label = f.feeTypeLabel || f.feeType
             const labelTitleCase = titleCaseVi(label)
-            // 2026-10-10: copy "{route} - {ticketNumber || bookingCode} (feeLabel)"
+            // 2026-10-12: fee có currency riêng — display + copy đúng theo nó.
+            const feeCur = (f.currency || currency || 'VND').toUpperCase()
             const copyText = buildFeeCopyString(segments, ticketNumber, bookingCode, labelTitleCase)
             const copyLabel = () => {
               navigator.clipboard.writeText(copyText)
@@ -1210,11 +1272,18 @@ function TdInvoiceAndFees({ withCollection, fees, currency, exchangeRate, segmen
                   {label}
                 </button>
                 <button type="button"
-                  onClick={canCopy ? () => copyMoneyAsClipboard(amt, currency, exchangeRate) : undefined}
+                  onClick={canCopy ? () => copyMoneyAsClipboard(amt, feeCur, exchangeRate) : undefined}
                   disabled={!canCopy}
-                  title={canCopy ? (currency === 'USD' ? 'Click để copy (quy đổi VND)' : 'Click để copy') : undefined}
-                  className={`font-mono tabular-nums text-gray-700 text-left ${canCopy ? 'hover:bg-blue-50 hover:text-blue-700 rounded px-1 -mx-1 cursor-copy' : ''}`}>
-                  {formatMoney(amt, currency, { withUnit: false })}
+                  title={canCopy
+                    ? (feeCur === 'USD' ? 'Click để copy (quy đổi VND)' : 'Click để copy')
+                    : undefined}
+                  className={`font-mono tabular-nums text-left ${
+                    feeCur !== currency ? 'text-amber-700 font-semibold' : 'text-gray-700'
+                  } ${canCopy ? 'hover:bg-blue-50 hover:text-blue-700 rounded px-1 -mx-1 cursor-copy' : ''}`}>
+                  {formatMoney(amt, feeCur, { withUnit: false })}
+                  {feeCur !== currency && (
+                    <span className="ml-0.5 text-[9px] opacity-70">{feeCur}</span>
+                  )}
                 </button>
               </div>
             )
@@ -1234,21 +1303,25 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
                              onPresent, onUpload,
                              onInvoice, onNote, onPay, onEdit, onDelete }) {
   const bookingTotal = sumAmounts(...(b.tickets || []).map(t =>
-    sumAmounts(t.basePrice, t.collectionFee, sumTicketFees(t.fees), t.issuanceFee)))
+    sumAmounts(t.basePrice, t.collectionFee,
+      sumTicketFees(t.fees, b.currency, b.exchangeRate), t.issuanceFee)))
   const primary = primaryDeparture(b.segments, nowTick)
   const badgeCls =
       primary?.band === 'warn' ? 'bg-amber-500 text-white'
     : primary?.band === 'future' ? 'bg-blue-600 text-white'
     : ''
-  const st = b.paymentStatus || 'UNPAID'
+  // 2026-10-13: Same safeguard như desktop PaymentCell.
+  const paidNum = parseAmount(b.paidAmount) || 0
+  const remainBk = Math.max(0, bookingTotal - paidNum)
+  const stRaw = b.paymentStatus || 'UNPAID'
+  const st = (bookingTotal <= 0.5 || remainBk <= 0.5) ? 'PAID' : stRaw
   const stCls =
       st === 'PAID'    ? 'bg-green-100 text-green-700'
     : st === 'PARTIAL' ? 'bg-amber-100 text-amber-700'
     :                    'bg-rose-100 text-rose-700'
-  // 2026-10-10: cập nhật labels
   const stLabel =
       st === 'PAID'    ? 'Đã thanh toán'
-    : st === 'PARTIAL' ? `Đã thu: ${formatMoney(parseAmount(b.paidAmount) || 0, b.currency, { withUnit: false })}`
+    : st === 'PARTIAL' ? `Đã thu: ${formatMoney(paidNum, b.currency, { withUnit: false })}`
     :                    'Chưa thanh toán'
 
   // Mobile cũng group theo company cho nhất quán
@@ -1329,7 +1402,11 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
                   </div>
                 </div>
                 <div className="font-mono tabular-nums text-sm font-bold text-gray-900">
-                  {formatMoney(sumAmounts(t.basePrice, t.collectionFee, sumTicketFees(t.fees), t.issuanceFee), b.currency)}
+                  {formatMoney(
+                    sumAmounts(t.basePrice, t.collectionFee,
+                      sumTicketFees(t.fees, b.currency, b.exchangeRate), t.issuanceFee),
+                    b.currency
+                  )}
                 </div>
               </div>
               <div className="flex flex-wrap items-center gap-1">
@@ -1402,13 +1479,49 @@ function kindLabel(k) {
 }
 
 /**
- * Tính tổng số tiền của list TicketFee của 1 vé.
- * Thay cho cột serviceFee cũ đã bỏ. Dùng parseAmount để tôn trọng format
- * user gõ (money.js xử lý dấu . và ,).
+ * Tính tổng số tiền của list TicketFee của 1 vé, QUY về {@code targetCurrency}.
+ *
+ * ── 2026-10-12 multi-currency ────────────────────────────────
+ * Mỗi fee có thể có currency riêng (VND/USD/null=inherit booking). Khi gộp
+ * về booking.currency:
+ *   - fee cùng currency → cộng thẳng
+ *   - fee VND vào booking USD → chia cho exchangeRate
+ *   - fee USD vào booking VND → nhân với exchangeRate
+ *   - rate thiếu → bỏ qua (coi như 0) để không ra NaN
  */
-function sumTicketFees(fees) {
+function sumTicketFees(fees, targetCurrency = 'VND', exchangeRate = null) {
   if (!fees || fees.length === 0) return 0
-  return sumAmounts(...fees.map(f => f.amount || 0))
+  const rate = parseAmount(exchangeRate)
+  let total = 0
+  for (const f of fees) {
+    const amt = parseAmount(f.amount)
+    if (!Number.isFinite(amt)) continue
+    const fc = (f.currency || targetCurrency || 'VND').toUpperCase()
+    if (fc === targetCurrency) {
+      total += amt
+    } else if (targetCurrency === 'USD' && fc === 'VND') {
+      if (Number.isFinite(rate) && rate > 0) total += amt / rate
+    } else if (targetCurrency === 'VND' && fc === 'USD') {
+      if (Number.isFinite(rate) && rate > 0) total += amt * rate
+    }
+  }
+  return total
+}
+
+/**
+ * Sum fees theo RIÊNG từng currency, trả { VND, USD }. Phục vụ TotalsCard
+ * để bucket chính xác (fee VND trong booking USD vẫn vào VND).
+ */
+function sumFeesByCurrency(fees, fallbackCurrency = 'VND') {
+  const out = { VND: 0, USD: 0 }
+  if (!fees) return out
+  for (const f of fees) {
+    const amt = parseAmount(f.amount)
+    if (!Number.isFinite(amt)) continue
+    const fc = (f.currency || fallbackCurrency || 'VND').toUpperCase()
+    if (fc === 'VND' || fc === 'USD') out[fc] += amt
+  }
+  return out
 }
 
 function formatDateTimeShort(ms) {

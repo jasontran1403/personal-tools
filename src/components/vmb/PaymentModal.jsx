@@ -1,41 +1,27 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import Modal from '../common/Modal'
 import ConfirmModal from '../common/ConfirmModal'
 import ZoomablePreview from './ZoomablePreview'
-import { recordPayment, listPayments, deletePayment } from '../../services/vmbApi'
+import { recordInvoicePayment, listInvoicePayments, deletePayment } from '../../services/vmbApi'
 import { parseAmount, formatMoney, sumAmounts } from '../../lib/money'
 
 /**
- * Thu tiền 1 booking.
+ * Thu tiền 1 HÓA ĐƠN (rework 2026-10-12).
  *
- * ── Bố cục ─────────────────────────────────────────────
- * 1. Header: tổng booking, đã thu, còn lại
- * 2. Ô nhập số tiền + nút "Max" (điền = số còn lại)
- * 3. Ghi chú (tùy)
- * 4. Chọn ảnh biên nhận (tùy — chuyển khoản có thể không cần)
- * 5. Lịch sử thu (nếu có) — mỗi phiếu có nút xóa + preview ảnh biên nhận
+ * Props:
+ *   booking   — booking chứa invoice
+ *   invoice   — invoice đang thu (BẮT BUỘC; parent đã xử lý case nhiều invoice)
  *
- * Sau khi ghi nhận, refresh danh sách + đóng modal + callback onSaved.
- *
- * ── 2026-09-15 ──────────────────────────────────────────
- * Nút 📎 mở ZoomablePreview full-screen (đồng bộ với mọi chỗ khác trong khu VMB)
- * thay vì window.open tab mới. Trải nghiệm nhất quán, không phải nhảy tab.
+ * Tổng tiền hóa đơn (grandTotal) do BE tính và trả về trong invoice.grandTotal
+ * — logic multi-currency (phí VND trong booking USD được quy đổi về booking
+ * currency). FE không tự tính lại để tránh lệch.
  */
-// 2026-10-10: Fix tính total — booking có fees (phí đổi vé/hoàn/dịch vụ…)
-// phải cộng vào total, chứ không chỉ basePrice + collectionFee + issuanceFee.
-// Trước đây dùng cột t.serviceFee (đã bỏ) → luôn ra 0 → MAX bị hụt khi là
-// booking đổi vé. Giờ cộng Σ t.fees[].amount.
-function sumTicketFees(fees) {
-  if (!fees || fees.length === 0) return 0
-  return sumAmounts(...fees.map(f => f.amount || 0))
-}
-
-export default function PaymentModal({ booking, onClose, onSaved }) {
-  const total = sumAmounts(...(booking.tickets || []).map(t =>
-    sumAmounts(t.basePrice, t.collectionFee, sumTicketFees(t.fees), t.issuanceFee)))
-  const paidNum = parseAmount(booking.paidAmount) || 0
-  const remain = Math.max(0, total - paidNum)
+export default function PaymentModal({ booking, invoice, onClose, onSaved }) {
+  // BE đã format: grandTotal / paidAmount là chuỗi "27.245.670".
+  const total   = parseAmount(invoice?.grandTotal) || 0
+  const paidNum = parseAmount(invoice?.paidAmount) || 0
+  const remain  = Math.max(0, total - paidNum)
 
   const [amount, setAmount] = useState('')
   const [note, setNote] = useState('')
@@ -45,7 +31,6 @@ export default function PaymentModal({ booking, onClose, onSaved }) {
   const [history, setHistory] = useState([])
   const [loadingHist, setLoadingHist] = useState(true)
   const [confirmDel, setConfirmDel] = useState(null)
-  // { url, name } — payment biên nhận đang preview; null = không hiển thị
   const [preview, setPreview] = useState(null)
 
   const fileInputRef = useRef(null)
@@ -53,18 +38,17 @@ export default function PaymentModal({ booking, onClose, onSaved }) {
   const loadHistory = useCallback(async () => {
     setLoadingHist(true)
     try {
-      const res = await listPayments(booking.id)
+      const res = await listInvoicePayments(invoice.id)
       setHistory(res.data?.data || [])
-    } catch (e) {
-      // silent — nếu list lỗi thì cũng cho user thu tiếp
-    } finally {
-      setLoadingHist(false)
-    }
-  }, [booking.id])
+    } catch (e) { /* silent */ }
+    finally { setLoadingHist(false) }
+  }, [invoice.id])
 
   useEffect(() => { loadHistory() }, [loadHistory])
 
   const setMax = () => setAmount(formatMoney(remain, booking.currency, { withUnit: false }))
+
+  const scopeLabel = useMemo(() => scopeLabelOf(invoice, booking), [invoice, booking])
 
   const submit = async (e) => {
     e.preventDefault()
@@ -73,10 +57,9 @@ export default function PaymentModal({ booking, onClose, onSaved }) {
     if (n > remain + 0.5 && remain > 0) {
       if (!window.confirm(`Số thu (${formatMoney(n, booking.currency)}) LỚN HƠN số còn lại (${formatMoney(remain, booking.currency)}). Tiếp tục?`)) return
     }
-
     setBusy(true)
     try {
-      await recordPayment(booking.id, { amount, note, file })
+      await recordInvoicePayment(invoice.id, { amount, note, file })
       toast.success('Đã ghi nhận')
       onSaved?.()
     } catch (e) {
@@ -93,7 +76,7 @@ export default function PaymentModal({ booking, onClose, onSaved }) {
       toast.success('Đã xóa phiếu thu')
       setConfirmDel(null)
       loadHistory()
-      onSaved?.()      // để parent recompute status
+      onSaved?.()
     } catch (e) {
       toast.error(e?.response?.data?.message || 'Xóa thất bại')
     }
@@ -102,7 +85,7 @@ export default function PaymentModal({ booking, onClose, onSaved }) {
   return (
     <>
       <Modal open onClose={busy ? undefined : onClose}
-        title={`Thu tiền — ${booking.bookingCode || 'booking'}`}
+        title={`Thu tiền hóa đơn — ${booking.bookingCode || 'booking'}`}
         size="md" closeOnBackdrop={!busy}
         footer={
           <div className="flex justify-end gap-2">
@@ -117,10 +100,18 @@ export default function PaymentModal({ booking, onClose, onSaved }) {
             </button>
           </div>
         }>
+        {/* Scope info */}
+        <div className="mb-2 flex items-center gap-2 text-xs">
+          <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-700 font-bold">
+            🧾 {invoiceLabel(invoice)}
+          </span>
+          <span className="text-gray-600">{scopeLabel}</span>
+        </div>
+
         {/* Summary */}
         <div className="mb-3 p-3 rounded-xl bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200">
           <div className="grid grid-cols-3 gap-2 text-center">
-            <SumCol label="Tổng" value={formatMoney(total, booking.currency)}
+            <SumCol label="Tổng hóa đơn" value={formatMoney(total, booking.currency)}
               cls="text-gray-900" />
             <SumCol label="Đã thu" value={formatMoney(paidNum, booking.currency)}
               cls="text-green-700" />
@@ -189,7 +180,7 @@ export default function PaymentModal({ booking, onClose, onSaved }) {
         {/* Lịch sử thu */}
         <div className="mt-5 pt-4 border-t border-gray-200">
           <div className="text-xs font-bold text-gray-700 uppercase mb-2">
-            Lịch sử thu {loadingHist && <span className="text-gray-400 normal-case">(đang tải…)</span>}
+            Lịch sử thu (hóa đơn này) {loadingHist && <span className="text-gray-400 normal-case">(đang tải…)</span>}
           </div>
           {history.length === 0 && !loadingHist ? (
             <div className="text-xs text-gray-400 italic">Chưa có phiếu thu nào.</div>
@@ -259,7 +250,7 @@ export default function PaymentModal({ booking, onClose, onSaved }) {
       {confirmDel && (
         <ConfirmModal
           open title="Xóa phiếu thu"
-          message={`Xóa phiếu thu ${confirmDel.amount}? Ảnh biên nhận (nếu có) cũng bị xóa nếu không booking khác dùng chung.`}
+          message={`Xóa phiếu thu ${confirmDel.amount}? Ảnh biên nhận (nếu có) cũng bị xóa nếu không hóa đơn khác dùng chung.`}
           confirmLabel="Xóa" danger
           onConfirm={doDelete}
           onCancel={() => setConfirmDel(null)}
@@ -276,4 +267,20 @@ function SumCol({ label, value, cls }) {
       <div className={`text-sm font-mono tabular-nums ${cls}`}>{value}</div>
     </div>
   )
+}
+
+function invoiceLabel(inv) {
+  if (inv.status === 'ISSUED')   return `Đã PH${inv.invoiceNumbers ? ` #${inv.invoiceNumbers}` : ''}`
+  if (inv.status === 'ADJUSTED') return `Điều chỉnh${inv.invoiceNumbers ? ` #${inv.invoiceNumbers}` : ''}`
+  return 'Nháp'
+}
+
+function scopeLabelOf(inv, booking) {
+  const ids = inv?.ticketIds || []
+  if (ids.length === 0) return `Áp cho cả booking (${(booking.tickets || []).length} vé)`
+  const names = ids.map(id => {
+    const t = (booking.tickets || []).find(x => x.id === id)
+    return t?.passengerName || `#${id}`
+  })
+  return `Áp cho ${ids.length} vé: ${names.join(', ')}`
 }

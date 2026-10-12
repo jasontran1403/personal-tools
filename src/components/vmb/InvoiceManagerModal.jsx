@@ -259,21 +259,35 @@ function InvoiceCard({ inv, ticketLookup, onEdit, onDelete, onPreview, onFileRep
   )
 }
 
+/**
+ * ── 2026-10-13 rework ────────────────────────────────────────
+ * Trước: 2 nút ↻ (thay) và × (xóa) nằm absolute, opacity-0 group-hover → 100%.
+ * Vấn đề: trên touch devices không hover được; preview button bên dưới ăn
+ * click; user không biết button tồn tại. Nay layout thành 3 phần ngang hàng:
+ *   [ Preview (flex-1, click xem) ] [ ↻ ] [ × ]
+ * Buttons LUÔN HIỂN THỊ, click độc lập.
+ */
 function InvoiceFileSlot({ file: f, onPreview, onReplace, onDelete }) {
   const inputRef = useRef(null)
   return (
-    <div className="relative group p-2 rounded-lg border border-gray-200 bg-gray-50 hover:bg-white hover:border-blue-300 transition">
-      <button type="button" onClick={onPreview} className="w-full text-left">
+    <div className="p-2 rounded-lg border border-gray-200 bg-gray-50 hover:bg-white hover:border-blue-300 transition flex items-stretch gap-1">
+      <button type="button" onClick={onPreview}
+        title="Click để xem file"
+        className="flex-1 min-w-0 text-left px-1 py-0.5 rounded hover:bg-blue-50">
         <div className="text-[10px] font-bold text-gray-500 uppercase mb-0.5">{f.label}</div>
-        <div className="text-xs text-gray-900 truncate pr-10">📄 {f.name || 'file'}</div>
+        <div className="text-xs text-gray-900 truncate">📄 {f.name || 'file'}</div>
       </button>
-      <div className="absolute top-1 right-1 flex gap-0.5 opacity-0 group-hover:opacity-100 transition">
+      <div className="flex flex-col gap-0.5 shrink-0">
         <button type="button" onClick={() => inputRef.current?.click()}
           title="Thay file mới"
-          className="w-6 h-6 rounded-md bg-white text-blue-600 hover:bg-blue-100 flex items-center justify-center text-xs shadow-sm border border-gray-200">↻</button>
+          className="w-7 h-7 rounded-md bg-white text-blue-600 hover:bg-blue-100 active:bg-blue-200 flex items-center justify-center text-xs shadow-sm border border-gray-200">
+          ↻
+        </button>
         <button type="button" onClick={onDelete}
           title="Xóa file"
-          className="w-6 h-6 rounded-md bg-white text-rose-600 hover:bg-rose-100 flex items-center justify-center text-sm shadow-sm border border-gray-200">×</button>
+          className="w-7 h-7 rounded-md bg-white text-rose-600 hover:bg-rose-100 active:bg-rose-200 flex items-center justify-center text-base leading-none shadow-sm border border-gray-200">
+          ×
+        </button>
       </div>
       <input ref={inputRef} type="file" hidden accept="image/*,application/pdf"
         onChange={e => {

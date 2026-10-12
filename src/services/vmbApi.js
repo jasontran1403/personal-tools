@@ -231,12 +231,17 @@ export const adminUnlockLookup = () =>
 // PAYMENTS
 // ══════════════════════════════════════════════════════════════
 
-export const recordPayment = (bookingId, { amount, note, file } = {}) => {
+// ── 2026-10-12 rework: Payment theo HÓA ĐƠN ──
+
+/**
+ * Thu tiền cho 1 HÓA ĐƠN. Thay cho recordPayment(bookingId) cũ.
+ */
+export const recordInvoicePayment = (invoiceId, { amount, note, file } = {}) => {
   const fd = new FormData()
   fd.append('amount', amount)
   if (note) fd.append('note', note)
   if (file instanceof File) fd.append('file', file)
-  return api.post(`/api/tools/vmb/bookings/${bookingId}/payments`, fd, {
+  return api.post(`/api/tools/vmb/invoices/${invoiceId}/payments`, fd, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
 }
@@ -251,8 +256,13 @@ export const batchPay = ({ bookingIds, note, file } = {}) => {
   })
 }
 
+/** Lịch sử thu của 1 BOOKING (gộp mọi invoice). */
 export const listPayments = (bookingId) =>
   api.get(`/api/tools/vmb/bookings/${bookingId}/payments`)
+
+/** 2026-10-12: Lịch sử thu của 1 HÓA ĐƠN. */
+export const listInvoicePayments = (invoiceId) =>
+  api.get(`/api/tools/vmb/invoices/${invoiceId}/payments`)
 
 export const deletePayment = (paymentId) =>
   api.delete(`/api/tools/vmb/payments/${paymentId}`)
