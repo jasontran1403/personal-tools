@@ -917,6 +917,18 @@ function renderBookingRows(b, bIdx, {
               {b.bookingCode || '—'}
               {b.sharedTicketFace && b.bookingFace && <span className="ml-1 text-emerald-600">📎</span>}
             </button>
+            {/* ── 2026-10-16: Hiển thị trạng thái invoice group ── */}
+            {b.invoiceGroupId != null && (
+              b.isInvoiceGroupOwner ? (
+                <div className="mt-0.5 font-mono text-[10px] italic text-indigo-400" title="Booking chủ — các booking khác link booking này để share hóa đơn">
+                  Booking chủ
+                </div>
+              ) : b.ownerBookingCode ? (
+                <div className="mt-0.5 font-mono text-[10px] italic text-amber-400" title={`Link ${b.ownerBookingCode} — share hóa đơn với booking chủ`}>
+                  Link {b.ownerBookingCode}
+                </div>
+              ) : null
+            )}
           </td>
         )}
 

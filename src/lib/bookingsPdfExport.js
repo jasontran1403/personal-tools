@@ -696,11 +696,13 @@ export function findTicketsMissingDraftInvoice(bookings) {
 /**
  * Tải tất cả file hóa đơn nháp của các booking (draftUrl).
  *
- * Naming convention (theo yêu cầu 2026-09-25):
- *   - Hóa đơn CHUNG cho booking (ticketIds rỗng) →
+ * Naming convention (2026-10-16 v3):
+ *   - Hóa đơn CHUNG cho 1 booking →
  *       Draft-Invoice-<bookingCode>.<ext>
- *   - Hóa đơn RIÊNG cho 1..N vé cụ thể →
- *       Draft-Invoice-<tên hành khách của các vé đó>.<ext>
+ *   - Hóa đơn gộp nhiều booking (invoice group — luôn full khách) →
+ *       Draft-Invoice-<ownerCode>-<linkedCode1>-...<ext>
+ *   - Hóa đơn áp cho 1..N vé cụ thể (CHỈ khi 1 booking) →
+ *       Draft-Invoice-<bookingCode>-<pax1>-<pax2>...<ext>
  *
  * Extension lấy từ file gốc (draftOriginal / draftUrl); mặc định .pdf nếu
  * không phát hiện được — vì có thể user upload ảnh (jpg/png) chứ không chỉ
@@ -749,34 +751,94 @@ export async function downloadDraftInvoices(bookings, { onProgress } = {}) {
   return { total: jobs.length, done, errors }
 }
 
+/**
+ * ── 2026-10-16: Convention mới cho tên file hóa đơn nháp ──
+ *
+ *   • Hóa đơn CHUNG 1 booking:              Draft-Invoice-<bookingCode>
+ *   • Hóa đơn gộp N booking (invoice group) qua link:
+ *                                           Draft-Invoice-<code1>-<code2>-...
+ *   • Hóa đơn tách theo tập vé:             Draft-Invoice-<ownerCode>-<pax1>-<pax2>-...
+ *   • Hóa đơn gộp N booking + tách theo vé: Draft-Invoice-<code1>-<code2>-...-<pax1>-<pax2>-...
+ *
+ * Dedupe theo invoice.id — khi 1 invoice group hiển thị ở nhiều booking cùng
+ * lúc trong `bookings`, chỉ tải MỘT lần (owner trước).
+ */
 function collectDraftInvoiceJobs(bookings) {
-  const jobs = []
+  // 1. Dedupe invoices theo id. Mỗi invoice gom "danh sách booking share".
+  //    sourceBookingId = booking GỐC (upload file). Các booking khác là "ké".
+  // ── 2026-10-16 v2: Dedupe theo invoice GỐC ──
+  //   Mirror invoice có `sourceBookingId` chỉ về owner booking (có `sourceBookingCode`).
+  //   Key dedupe = `sourceBookingId + sourceBookingCode` (chung cho owner + mirror).
+  //   Khi `bookings` list chứa cả owner & member → mỗi booking có record Invoice
+  //   riêng (vật lý), nhưng vì cùng key → chỉ tải 1 lần.
+  const invByKey = new Map()  // key → { inv (owner preferred), ownerCode, codes: Set }
   for (const b of bookings || []) {
-    const invoices = b.invoices || []
-    const tickets  = b.tickets  || []
-    for (const inv of invoices) {
+    for (const inv of b.invoices || []) {
       if (!inv.draftUrl) continue
-
-      const scopeIds = inv.ticketIds || []
-      const isBookingWide = scopeIds.length === 0
-
-      let baseName
-      if (isBookingWide) {
-        baseName = `Draft-Invoice-${b.bookingCode || `booking-${b.id}`}`
+      const isOwner = inv.sourceBookingId == null || inv.sourceBookingId === b.id
+      const ownerBookingCode = inv.sourceBookingCode || b.bookingCode || `booking-${b.id}`
+      // key: ưu tiên sourceBookingId (owner booking) + inv.sourceBookingId
+      // Nếu là owner invoice thì sourceBookingId = chính b.id (từ mapper BE)
+      const key = `${inv.sourceBookingId || b.id}::${inv.draftOriginal || inv.draftUrl}`
+      const bCode = b.bookingCode || `booking-${b.id}`
+      if (!invByKey.has(key)) {
+        invByKey.set(key, {
+          inv,
+          ownerCode: ownerBookingCode,
+          codes: new Set([bCode]),
+        })
       } else {
-        const names = scopeIds
-          .map(id => tickets.find(t => t.id === id)?.passengerName)
-          .filter(Boolean)
-        const joined = names.length > 0 ? names.join(', ') : `booking-${b.id}`
-        baseName = `Draft-Invoice-${joined}`
+        const rec = invByKey.get(key)
+        rec.codes.add(bCode)
+        // Nếu record cũ là mirror, mà record mới là owner → prefer owner
+        if (isOwner) {
+          rec.inv = inv
+          rec.ownerCode = ownerBookingCode
+        }
       }
-
-      const ext = extensionOf(inv.draftOriginal) || extensionOf(inv.draftUrl) || '.pdf'
-      jobs.push({
-        url: resolveFileUrl(inv.draftUrl),
-        filename: sanitizeFilename(baseName) + ext,
-      })
     }
+  }
+  const invById = invByKey  // alias cho đoạn code dưới
+
+  const jobs = []
+  for (const rec of invById.values()) {
+    const { inv, ownerCode, codes } = rec
+
+    // Danh sách mã booking: owner trước, các booking member sau (loại trùng).
+    const codeList = [ownerCode, ...[...codes].filter(c => c !== ownerCode)]
+    const codePart = codeList.join('-')
+
+    const scopeIds = inv.ticketIds || []
+    const isBookingWide = scopeIds.length === 0
+    const isGrouped = codes.size > 1   // 2026-10-16: >1 booking → đã gộp
+
+    let baseName
+    if (isGrouped) {
+      // Hóa đơn gộp nhiều booking: luôn hiểu là FULL khách (của cả nhóm) →
+      // chỉ cần mã các booking, không liệt kê tên.
+      baseName = `Draft-Invoice-${codePart}`
+    } else if (isBookingWide) {
+      // 1 booking, chung → chỉ mã booking.
+      baseName = `Draft-Invoice-${codePart}`
+    } else {
+      // 1 booking, tách theo vé → mã booking + tên các khách.
+      const nameFor = (tid) => {
+        for (const b of bookings || []) {
+          const t = (b.tickets || []).find(x => x.id === tid)
+          if (t) return t.passengerName
+        }
+        return null
+      }
+      const names = scopeIds.map(nameFor).filter(Boolean)
+      const paxPart = names.length > 0 ? names.join('-') : `booking-${inv.id}`
+      baseName = `Draft-Invoice-${codePart}-${paxPart}`
+    }
+
+    const ext = extensionOf(inv.draftOriginal) || extensionOf(inv.draftUrl) || '.pdf'
+    jobs.push({
+      url: resolveFileUrl(inv.draftUrl),
+      filename: sanitizeFilename(baseName) + ext,
+    })
   }
   return jobs
 }

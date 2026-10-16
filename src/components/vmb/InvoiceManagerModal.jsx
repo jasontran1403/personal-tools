@@ -145,6 +145,7 @@ export default function InvoiceManagerModal({ bookingId, onClose, onDirty }) {
                 {invoices.map(inv => (
                   <InvoiceCard key={inv.id} inv={inv}
                     ticketLookup={tickets}
+                    currentBookingId={booking?.id}
                     onEdit={() => setEditing(inv)}
                     onDelete={() => setConfirmDel(inv)}
                     onPreview={(p) => setPreviewFile(p)}
@@ -210,7 +211,7 @@ function relFromAbs(absUrl) {
 
 // ─────────────────────────────────────────────────────────
 
-function InvoiceCard({ inv, ticketLookup, onEdit, onDelete, onPreview, onFileReplace, onFileDelete }) {
+function InvoiceCard({ inv, ticketLookup, currentBookingId, onEdit, onDelete, onPreview, onFileReplace, onFileDelete }) {
   const files = [
     inv.draftUrl              && { slot: 'draft',      label: 'Nháp',              url: inv.draftUrl,              name: inv.draftOriginal },
     inv.issuedUrl             && { slot: 'issued',     label: 'Đã phát hành',      url: inv.issuedUrl,             name: inv.issuedOriginal },
@@ -224,8 +225,15 @@ function InvoiceCard({ inv, ticketLookup, onEdit, onDelete, onPreview, onFileRep
   const scopeTickets = scopeIds.map(id => ticketLookup.find(t => t.id === id)).filter(Boolean)
   const isBookingWide = scopeTickets.length === 0
 
+  // ── 2026-10-16: Hóa đơn "ké" từ booking khác qua invoice group ──
+  // Khi sourceBookingId tồn tại và KHÁC currentBookingId → đây là hóa đơn mà
+  // booking này đang mượn hiển thị. Chặn edit/xóa/thay file từ phía borrower.
+  const isBorrowed = inv.sourceBookingId != null
+    && currentBookingId != null
+    && inv.sourceBookingId !== currentBookingId
+
   return (
-    <div className="p-3 rounded-xl bg-white border border-gray-200">
+    <div className={`p-3 rounded-xl border ${isBorrowed ? 'bg-indigo-50/40 border-indigo-200' : 'bg-white border-gray-200'}`}>
       <div className="flex items-center gap-2 mb-2 flex-wrap">
         <Badge color={badge.color} dot>{badge.label}</Badge>
         {isBookingWide ? (
@@ -238,16 +246,30 @@ function InvoiceCard({ inv, ticketLookup, onEdit, onDelete, onPreview, onFileRep
             🎫 {scopeTickets.map(t => t.passengerName || `#${t.id}`).join(', ')}
           </span>
         )}
+        {isBorrowed && (
+          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 ring-1 ring-amber-200"
+            title="Hóa đơn này được upload ở booking khác trong cùng nhóm">
+            🔗 Ké từ {inv.sourceBookingCode || `#${inv.sourceBookingId}`}
+          </span>
+        )}
         {inv.note && <span className="text-xs text-gray-600 truncate">{inv.note}</span>}
         <div className="flex-1" />
-        <button onClick={onEdit} className="text-xs font-semibold text-blue-600 hover:text-blue-800">Sửa</button>
-        <button onClick={onDelete} className="text-xs font-semibold text-rose-600 hover:text-rose-800">Xóa hóa đơn</button>
+        {!isBorrowed && (
+          <>
+            <button onClick={onEdit} className="text-xs font-semibold text-blue-600 hover:text-blue-800">Sửa</button>
+            <button onClick={onDelete} className="text-xs font-semibold text-rose-600 hover:text-rose-800">Xóa hóa đơn</button>
+          </>
+        )}
+        {isBorrowed && (
+          <span className="text-[10px] text-gray-400 italic">Chỉ sửa được ở booking gốc</span>
+        )}
       </div>
       {files.length > 0 && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {files.map((f, i) => (
             <InvoiceFileSlot key={i}
               file={f}
+              readOnly={isBorrowed}
               onPreview={() => onPreview({ url: fileUrl(f.url), name: f.name })}
               onReplace={(newFile) => onFileReplace(f.slot, newFile)}
               onDelete={() => onFileDelete(f.slot, f.label)}
@@ -267,7 +289,7 @@ function InvoiceCard({ inv, ticketLookup, onEdit, onDelete, onPreview, onFileRep
  *   [ Preview (flex-1, click xem) ] [ ↻ ] [ × ]
  * Buttons LUÔN HIỂN THỊ, click độc lập.
  */
-function InvoiceFileSlot({ file: f, onPreview, onReplace, onDelete }) {
+function InvoiceFileSlot({ file: f, readOnly, onPreview, onReplace, onDelete }) {
   const inputRef = useRef(null)
   return (
     <div className="p-2 rounded-lg border border-gray-200 bg-gray-50 hover:bg-white hover:border-blue-300 transition flex items-stretch gap-1">
@@ -277,18 +299,20 @@ function InvoiceFileSlot({ file: f, onPreview, onReplace, onDelete }) {
         <div className="text-[10px] font-bold text-gray-500 uppercase mb-0.5">{f.label}</div>
         <div className="text-xs text-gray-900 truncate">📄 {f.name || 'file'}</div>
       </button>
-      <div className="flex flex-col gap-0.5 shrink-0">
-        <button type="button" onClick={() => inputRef.current?.click()}
-          title="Thay file mới"
-          className="w-7 h-7 rounded-md bg-white text-blue-600 hover:bg-blue-100 active:bg-blue-200 flex items-center justify-center text-xs shadow-sm border border-gray-200">
-          ↻
-        </button>
-        <button type="button" onClick={onDelete}
-          title="Xóa file"
-          className="w-7 h-7 rounded-md bg-white text-rose-600 hover:bg-rose-100 active:bg-rose-200 flex items-center justify-center text-base leading-none shadow-sm border border-gray-200">
-          ×
-        </button>
-      </div>
+      {!readOnly && (
+        <div className="flex flex-col gap-0.5 shrink-0">
+          <button type="button" onClick={() => inputRef.current?.click()}
+            title="Thay file mới"
+            className="w-7 h-7 rounded-md bg-white text-blue-600 hover:bg-blue-100 active:bg-blue-200 flex items-center justify-center text-xs shadow-sm border border-gray-200">
+            ↻
+          </button>
+          <button type="button" onClick={onDelete}
+            title="Xóa file"
+            className="w-7 h-7 rounded-md bg-white text-rose-600 hover:bg-rose-100 active:bg-rose-200 flex items-center justify-center text-base leading-none shadow-sm border border-gray-200">
+            ×
+          </button>
+        </div>
+      )}
       <input ref={inputRef} type="file" hidden accept="image/*,application/pdf"
         onChange={e => {
           const nf = e.target.files?.[0]

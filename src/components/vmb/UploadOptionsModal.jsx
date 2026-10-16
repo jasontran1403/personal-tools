@@ -105,6 +105,11 @@ export default function UploadOptionsModal({ open, booking, onClose, onChanged }
     )
   }
 
+  // ── 2026-10-16: Member booking (link đến booking khác) KHÔNG được upload
+  //    hóa đơn — chỉ owner mới upload, mirror tự đồng bộ xuống. ──
+  const isMemberOnly = booking.invoiceGroupId != null && !booking.isInvoiceGroupOwner
+  const ownerCode = booking.ownerBookingCode
+
   const opts = [
     {
       key: 'proof',
@@ -124,7 +129,10 @@ export default function UploadOptionsModal({ open, booking, onClose, onChanged }
       key: 'invoice',
       icon: '🧾',
       label: 'Hóa đơn',
-      hint: 'Chọn nháp hay đã phát hành, sau đó chọn khách để áp',
+      hint: isMemberOnly
+        ? `Booking này link đến ${ownerCode || 'booking khác'} — vui lòng upload ở booking chủ, hóa đơn sẽ tự chia sẻ về đây.`
+        : 'Chọn nháp hay đã phát hành, sau đó chọn khách để áp',
+      disabled: isMemberOnly,
     },
   ]
 
@@ -135,12 +143,21 @@ export default function UploadOptionsModal({ open, booking, onClose, onChanged }
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         {opts.map(o => (
           <button key={o.key} type="button"
-            onClick={() => setSub(o.key)}
-            className="text-left p-4 rounded-lg border border-gray-300 bg-white hover:border-blue-500 hover:shadow-md transition">
+            onClick={() => !o.disabled && setSub(o.key)}
+            disabled={o.disabled}
+            title={o.disabled ? o.hint : ''}
+            className={`text-left p-4 rounded-lg border transition ${
+              o.disabled
+                ? 'border-gray-200 bg-gray-50 opacity-50 cursor-not-allowed'
+                : 'border-gray-300 bg-white hover:border-blue-500 hover:shadow-md'
+            }`}>
             <div className="flex items-start gap-3">
               <span className="text-2xl">{o.icon}</span>
               <div className="flex-1">
-                <div className="text-sm font-bold text-gray-800">{o.label}</div>
+                <div className="text-sm font-bold text-gray-800">
+                  {o.label}
+                  {o.disabled && <span className="ml-1 text-[10px] font-semibold text-amber-600">🔒 Khóa</span>}
+                </div>
                 <div className="text-[11px] text-gray-500 mt-0.5">{o.hint}</div>
               </div>
             </div>

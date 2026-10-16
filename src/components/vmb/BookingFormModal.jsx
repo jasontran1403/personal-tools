@@ -3,10 +3,12 @@ import toast from 'react-hot-toast'
 import Modal from '../common/Modal'
 import RouteInput from './RouteInput'
 import PriceInput from './PriceInput'
-import { getBooking, createBooking, updateBooking, listCompanies, listFeeTypes, listBookings } from '../../services/vmbApi'
+import { getBooking, createBooking, updateBooking, listCompanies, listFeeTypes, listBookings, getPassenger } from '../../services/vmbApi'
 import { parseAmount, formatMoney } from '../../lib/money'
 import TicketFeesEditor from './TicketFeesEditor'
 import CompanySearchSelect, { companyOptions } from '../common/CompanySearchSelect'
+import PassengerSearchSelect from '../common/PassengerSearchSelect'
+import PassengerIdPickerModal from './PassengerIdPickerModal'
 
 /**
  * Form thêm/sửa BOOKING (kèm segments + N tickets).
@@ -67,6 +69,17 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
     sharedTicketFace: false,
     segments: [],
     tickets: [newTicket()],
+    // ── 2026-10-16: invoice group link ──
+    //   linkedBookingCode: mã booking để gộp hóa đơn (user nhập).
+    //   invoiceGroupId: id group hiện tại (chỉ hiển thị khi edit).
+    //   linkedBookings: list [{id, bookingCode}] các booking cùng group khác.
+    //   clearInvoiceGroup: toggle bỏ link.
+    linkedBookingCode: '',
+    invoiceGroupId: null,
+    isInvoiceGroupOwner: false,
+    ownerBookingCode: null,
+    linkedBookings: [],
+    clearInvoiceGroup: false,
   }))
 
   useEffect(() => {
@@ -85,6 +98,12 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
           exchangeRate: b.exchangeRate || '',
           note: b.note || '',
           sharedTicketFace: !!b.sharedTicketFace,
+          linkedBookingCode: '',
+          invoiceGroupId: b.invoiceGroupId || null,
+          isInvoiceGroupOwner: !!b.isInvoiceGroupOwner,
+          ownerBookingCode: b.ownerBookingCode || null,
+          linkedBookings: b.linkedBookings || [],
+          clearInvoiceGroup: false,
           segments: (b.segments || []).map(s => ({
             fromCode: s.fromCode, toCode: s.toCode,
             departLocalMs: s.departLocalMs, segOrder: s.segOrder,
@@ -93,6 +112,8 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
             id: t.id,
             passengerName: t.passengerName || '',
             companyId: t.companyId || null,
+            passengerId: t.passengerId || null,
+            passengerDocumentType: t.passengerDocumentType || null,
             ticketNumber: t.ticketNumber || '',
             basePrice: t.basePrice || '',
             collectionFee: t.collectionFee || '',
@@ -133,6 +154,69 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
   const setTicket = (i, patch) => setForm(f => ({
     ...f, tickets: f.tickets.map((t, idx) => idx === i ? { ...t, ...patch } : t),
   }))
+
+  // ── 2026-10-16: ID presentation picker ──
+  // Khi user chọn 1 passenger qua PassengerSearchSelect → mở modal với mode
+  // "picker". Lưu { ticketIdx, passenger } vào state. Confirm → cập nhật ticket.
+  const [idPicker, setIdPicker] = useState(null)  // { ticketIdx, passenger } | null
+
+  // earliestDepartMs: epoch chặng đi đầu tiên (dùng để check expiry 6 tháng)
+  const earliestDepartMs = useMemo(() => {
+    const ms = (form.segments || [])
+      .map(s => s.departLocalMs)
+      .filter(x => x != null && x > 0)
+    return ms.length ? Math.min(...ms) : null
+  }, [form.segments])
+
+  // isInternational: có bất kỳ chặng nào tiếp xúc sân bay không phải VN
+  const isInternational = useMemo(() => {
+    const VN_AIRPORTS = new Set([
+      'SGN','HAN','DAD','CXR','HPH','VII','UIH','HUI','PQC','VCA',
+      'VCL','VCS','VKG','DIN','THD','TBB','VDH','BMV','DLI','VDO',
+      'DAD','VVU','VKG',
+    ])
+    for (const s of form.segments || []) {
+      if (s.fromCode && !VN_AIRPORTS.has(s.fromCode)) return true
+      if (s.toCode && !VN_AIRPORTS.has(s.toCode)) return true
+    }
+    return false
+  }, [form.segments])
+
+  const openPickerForTicket = async (ticketIdx, passenger) => {
+    try {
+      // Fetch full passenger để lấy documents + URL ảnh
+      const res = await getPassenger(passenger.id)
+      const full = res.data?.data || passenger
+      setIdPicker({ ticketIdx, passenger: full })
+    } catch {
+      setIdPicker({ ticketIdx, passenger })
+    }
+  }
+
+  const confirmIdPick = ({ type, doc }) => {
+    if (!idPicker) return
+    const { ticketIdx, passenger } = idPicker
+    setTicket(ticketIdx, {
+      passengerName: passenger.fullName || '',
+      passengerId: passenger.id,
+      passengerDocumentType: type,
+      // Nếu passenger thuộc 1 company cụ thể và vé chưa có companyId → gán luôn
+      companyId: form.tickets[ticketIdx].companyId ?? passenger.companyId ?? null,
+    })
+    setIdPicker(null)
+  }
+
+  const cancelIdPick = () => {
+    if (!idPicker) return
+    const { ticketIdx } = idPicker
+    // Xóa khách khỏi ô input vé đã chọn
+    setTicket(ticketIdx, {
+      passengerName: '',
+      passengerId: null,
+      passengerDocumentType: null,
+    })
+    setIdPicker(null)
+  }
 
   // ── 2026-09-21: Auto lookup mã booking cũ khi kind là EXCHANGE/REFUND/SERVICE ──
   // Chỉ áp dụng ở CREATE mode (không lookup khi sửa vé đã tồn tại).
@@ -279,14 +363,21 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
     setBusy(true)
     try {
       // ── Strip _originalTotal (chỉ dùng ở client) trước khi gửi BE ──
+      // ── Strip các field hiển thị thuần (BE tự tính lại) ──
+      const { invoiceGroupId, linkedBookings, isInvoiceGroupOwner, ownerBookingCode, ...rest } = form
       const body = {
-        ...form,
+        ...rest,
         segments: (form.segments || []).map((s, i) => ({ ...s, segOrder: i })),
         tickets: form.tickets.map(t => {
           const { _originalTotal, ...cleanT } = t
           return cleanT
         }),
       }
+      // linkedBookingCode: chỉ gửi khi user nhập mã mới (trim).
+      if (body.linkedBookingCode) body.linkedBookingCode = body.linkedBookingCode.trim().toUpperCase()
+      else delete body.linkedBookingCode
+      // clearInvoiceGroup: chỉ gửi khi user tick bỏ link.
+      if (!body.clearInvoiceGroup) delete body.clearInvoiceGroup
       if (isEdit) {
         await updateBooking(bookingId, body)
         toast.success('Đã cập nhật')
@@ -401,6 +492,88 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
               </label>
             </div>
 
+            {/* ── 2026-10-16: Gộp hóa đơn với booking khác (invoice group) ── */}
+            {/* Style match với section "Mặt vé CHUNG" phía trên (dark-friendly) */}
+            <div className="mt-3 p-3 rounded-xl bg-indigo-500/10 border border-indigo-400/40">
+              <div className="text-sm font-semibold text-indigo-200 mb-1">
+                🔗 Gộp hóa đơn với booking khác
+              </div>
+              <div className="text-[11px] text-indigo-300/80 mb-2 leading-relaxed">
+                Nhập mã booking <b>chủ</b> vào đây — hóa đơn upload ở booking chủ sẽ
+                tự động chia sẻ cho tất cả booking link đến nó. Bỏ link bất cứ lúc nào.
+              </div>
+
+              {/* Khi edit: hiển thị trạng thái group */}
+              {isEdit && form.invoiceGroupId != null && (
+                <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                  {form.isInvoiceGroupOwner ? (
+                    <>
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold
+                          bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/40">
+                        ⭐ Booking chủ
+                      </span>
+                      {form.linkedBookings && form.linkedBookings.length > 0 && (
+                        <>
+                          <span className="text-[10px] text-indigo-300/60">— có {form.linkedBookings.length} booking link tới:</span>
+                          {form.linkedBookings.map(lb => (
+                            <span key={lb.id} className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-mono font-semibold
+                              bg-indigo-500/20 text-indigo-200 ring-1 ring-indigo-400/40">
+                              {lb.bookingCode || `#${lb.id}`}
+                            </span>
+                          ))}
+                        </>
+                      )}
+                    </>
+                  ) : form.ownerBookingCode ? (
+                    <>
+                      <span className="text-[10px] text-indigo-300/80">Đang link đến booking chủ:</span>
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-mono font-bold
+                          bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/40">
+                        {form.ownerBookingCode}
+                      </span>
+                    </>
+                  ) : null}
+                  <label className="inline-flex items-center gap-1 ml-auto text-[11px] text-rose-300 cursor-pointer">
+                    <input type="checkbox" checked={!!form.clearInvoiceGroup}
+                      onChange={e => setField('clearInvoiceGroup', e.target.checked)}
+                      className="accent-rose-500" />
+                    Bỏ link (sau khi lưu)
+                  </label>
+                </div>
+              )}
+
+              {/* ── Cảnh báo rõ hậu quả khi tick "Bỏ link" ── */}
+              {isEdit && form.clearInvoiceGroup && form.invoiceGroupId != null && (
+                <div className="mb-2 p-2 rounded-md bg-rose-500/15 border border-rose-400/50 text-[11px] text-rose-200">
+                  ⚠ <b>Sau khi lưu:</b>{' '}
+                  {form.isInvoiceGroupOwner ? (
+                    <>
+                      Booking này đang là <b>chủ</b> — mọi hóa đơn mà các booking link
+                      đến đang hiển thị ké sẽ bị xóa khỏi các booking đó. Hóa đơn gốc
+                      ở đây <b>vẫn giữ nguyên</b>.
+                    </>
+                  ) : (
+                    <>
+                      Hóa đơn ké từ <b>{form.ownerBookingCode}</b> sẽ bị xóa khỏi
+                      booking này. File gốc ở booking chủ <b>vẫn còn</b>.
+                    </>
+                  )}
+                </div>
+              )}
+
+              <input
+                type="text"
+                value={form.linkedBookingCode}
+                onChange={e => setField('linkedBookingCode', e.target.value.toUpperCase())}
+                disabled={!!form.clearInvoiceGroup}
+                placeholder="VD: P34F5W — bỏ trống nếu không muốn link"
+                className="w-full px-3 py-2 rounded-lg bg-slate-900/40 border border-indigo-400/30
+                  text-slate-100 placeholder:text-slate-500 text-sm font-mono uppercase
+                  focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 outline-none
+                  disabled:opacity-40 disabled:cursor-not-allowed"
+              />
+            </div>
+
             <Field label="Ghi chú chung (booking)">
               <textarea rows={2} value={form.note}
                 onChange={e => setField('note', e.target.value)}
@@ -447,16 +620,30 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                     </Field>
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-2">
-                      <Field label="Tên khách hàng">
-                        <input type="text" value={t.passengerName}
-                          onChange={e => setTicket(i, { passengerName: formatPaxName(e.target.value) })}
-                          onPaste={e => {
-                            // 2026-10-10: KUWABATA/YOSHIRO → KUWABATA YOSHIRO
-                            e.preventDefault()
-                            const raw = (e.clipboardData || window.clipboardData).getData('text')
-                            setTicket(i, { passengerName: formatPaxName(raw) })
+                      <Field label={<>Tên khách hàng {t.passengerDocumentType && (
+                        <span className="ml-1 text-[10px] font-bold text-indigo-700">
+                          · {t.passengerDocumentType === 'CCCD' ? '🪪 CCCD' : '📘 HC'}
+                        </span>
+                      )}</>}>
+                        {/* 2026-10-16: Dropdown search thay vì input thuần.
+                            Lọc theo t.companyId. Chọn → mở IdPresentationModal. */}
+                        <PassengerSearchSelect
+                          value={t.passengerName}
+                          companyId={t.companyId}
+                          onChangeText={text => setTicket(i, {
+                            passengerName: formatPaxName(text),
+                            // User gõ tay sửa name → clear link cũ
+                            passengerId: null, passengerDocumentType: null,
+                          })}
+                          onPick={(p) => {
+                            if (!p) {
+                              // Clear
+                              setTicket(i, { passengerName: '', passengerId: null, passengerDocumentType: null })
+                            } else {
+                              openPickerForTicket(i, p)
+                            }
                           }}
-                          className="input" placeholder="NGUYEN VAN A" />
+                        />
                       </Field>
                       <Field label="Số vé">
                         <input type="text" value={t.ticketNumber}
@@ -524,6 +711,17 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
           `}</style>
         </form>
       )}
+
+      {/* 2026-10-16: Compact ID picker (modal nhỏ, không preview ảnh) */}
+      {idPicker && (
+        <PassengerIdPickerModal
+          passenger={idPicker.passenger}
+          isInternational={isInternational}
+          earliestDepartMs={earliestDepartMs}
+          onConfirm={confirmIdPick}
+          onCancel={cancelIdPick}
+        />
+      )}
     </Modal>
   )
 }
@@ -538,6 +736,9 @@ function newTicket() {
     basePrice: '', collectionFee: '', issuanceFee: '',
     paidStatus: 'PENDING', note: '',
     fees: [],
+    // 2026-10-16: Link tới Passenger khi chọn qua dropdown.
+    passengerId: null,
+    passengerDocumentType: null,
     // Client-only: theo dõi "tổng tiền gốc từ vendor" để đồng bộ basePrice
     // với collectionFee. Bị strip trong submit.
     _originalTotal: null,
