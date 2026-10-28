@@ -119,9 +119,12 @@ export default function TicketsTab() {
   }, [filterParams])
 
   // Load thêm 1 trang tiếp theo và APPEND vào rows.
+  // Dùng ref để chống trùng gọi (scroll bắn nhiều event trước khi state kịp cập nhật).
+  const loadingMoreRef = useRef(false)
   const loadMore = useCallback(async () => {
-    if (loadingMore || loading) return
+    if (loadingMoreRef.current || loading) return
     if (page >= totalPages - 1) return
+    loadingMoreRef.current = true
     setLoadingMore(true)
     try {
       const next = page + 1
@@ -134,9 +137,22 @@ export default function TicketsTab() {
     } catch (e) {
       toast.error(e?.response?.data?.message || 'Không tải thêm được danh sách vé')
     } finally {
+      loadingMoreRef.current = false
       setLoadingMore(false)
     }
-  }, [filterParams, page, totalPages, loadingMore, loading])
+  }, [filterParams, page, totalPages, loading])
+
+  // 2026-10-28 (v2): Infinite scroll — scroll qua ngưỡng 80% chiều cao
+  // → tự fetch trang kế tiếp. Dùng cho CẢ desktop (ref container bảng) và
+  // mobile (ref container card). Guard loadingMoreRef chặn trigger kép.
+  const onScrollLoadMore = useCallback((e) => {
+    if (loadingMoreRef.current || loading) return
+    if (page >= totalPages - 1) return
+    const el = e.currentTarget
+    const scrolled = el.scrollTop + el.clientHeight
+    const threshold = el.scrollHeight * 0.8
+    if (scrolled >= threshold) loadMore()
+  }, [loadMore, loading, page, totalPages])
 
   // Soft-refresh: refetch pages 0..page sau khi sửa/xóa/cập nhật.
   //   - KHÔNG set `loading=true` để bảng không bị thay bằng "Đang tải…" (giữ UI).
@@ -494,7 +510,7 @@ export default function TicketsTab() {
 
       {/* Desktop table — chiếm phần còn lại, cuộn trong khung bảng */}
       <div className="hidden lg:flex flex-1 min-h-0 bg-white rounded-2xl shadow border border-gray-100 overflow-hidden flex-col">
-        <div ref={desktopScrollRef} className="flex-1 overflow-auto">
+        <div ref={desktopScrollRef} onScroll={onScrollLoadMore} className="flex-1 overflow-auto">
           <table className="w-full text-xs border-collapse table-fixed">
             <colgroup>
               <col style={{ width: 32 }} />
@@ -573,12 +589,11 @@ export default function TicketsTab() {
           total={total}
           hasMore={page < totalPages - 1}
           loading={loadingMore}
-          onLoadMore={loadMore}
         />
       </div>
 
       {/* Mobile cards — flex-1 overflow-auto */}
-      <div ref={mobileScrollRef} className="lg:hidden flex-1 min-h-0 overflow-auto space-y-2">
+      <div ref={mobileScrollRef} onScroll={onScrollLoadMore} className="lg:hidden flex-1 min-h-0 overflow-auto space-y-2">
         {loading ? (
           <div className="text-center py-10 text-gray-400 text-sm">Đang tải…</div>
         ) : filteredRows.length === 0 ? (
@@ -606,7 +621,6 @@ export default function TicketsTab() {
           total={total}
           hasMore={page < totalPages - 1}
           loading={loadingMore}
-          onLoadMore={loadMore}
         />
       </div>
 
@@ -1546,29 +1560,23 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
 }
 
 /**
- * 2026-10-28: Thay Pagination bằng nút "Tải thêm".
- *   - Hiển thị "{loaded}/{total} booking" + nút tải trang kế tiếp (append).
- *   - Khi hết dữ liệu → ghi "Đã hiển thị đủ".
- *   - Ẩn hẳn thanh nếu chưa có booking nào (list rỗng).
- * Lý do: cho phép thao tác batch (ví dụ thu tiền) trên các booking từ nhiều
- * trang trong CÙNG 1 page, không phải chuyển trang qua lại.
+ * 2026-10-28 (v2): Status bar cho infinite-scroll (bỏ nút "Tải thêm").
+ *   - Hiển thị "Đang hiển thị X/Y booking".
+ *   - Khi `loading=true` (đang fetch trang kế) → thêm "⏳ Đang tải thêm…".
+ *   - Khi `hasMore=false` → "Đã hiển thị đủ".
+ *   - Trigger fetch nằm ở scroll handler (80% chiều cao) của container.
  */
-function LoadMoreBar({ loaded, total, hasMore, loading, onLoadMore }) {
+function LoadMoreBar({ loaded, total, hasMore, loading }) {
   if (!loaded) return null
   return (
     <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-t border-gray-100 text-xs">
       <span className="text-gray-500">
         Đang hiển thị <b>{loaded}</b>{total ? <>/<b>{total}</b></> : null} booking
       </span>
-      {hasMore ? (
-        <button
-          type="button"
-          onClick={onLoadMore}
-          disabled={loading}
-          className="px-3 py-1.5 rounded-md bg-blue-600 text-white font-semibold
-                     hover:bg-blue-700 disabled:opacity-60 shadow-sm">
-          {loading ? '⏳ Đang tải…' : '⬇ Tải thêm'}
-        </button>
+      {loading ? (
+        <span className="text-blue-600 font-semibold">⏳ Đang tải thêm…</span>
+      ) : hasMore ? (
+        <span className="text-gray-400 italic">Cuộn xuống để tải thêm</span>
       ) : (
         <span className="text-gray-400 italic">Đã hiển thị đủ</span>
       )}
