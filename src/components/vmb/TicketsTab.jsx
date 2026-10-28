@@ -56,9 +56,18 @@ export default function TicketsTab() {
   // trùng; các số liệu ở card tổng sẽ tính lại từ các vé khớp filter.
   const [companyId, setCompanyId]   = useState(null)
   const [companies, setCompanies]   = useState([])
+  // 2026-10-28: Bỏ phân trang → gộp các trang vào CÙNG 1 danh sách (load more).
+  //   - `page` = chỉ số trang CAO NHẤT đã load (0-based). Khi filter đổi reset về 0.
+  //   - `rows` tích lũy content của mọi trang 0..page.
+  //   - `loadingMore` cho nút "Tải thêm" (không chớp bảng).
+  //   - `refresh()` fetch lại pages 0..page và GIỮ scroll (dùng sau khi sửa/xóa
+  //     booking/hóa đơn/mặt vé → tránh bị kéo về top).
   const [page, setPage]           = useState(0)
   const [totalPages, setTotalPages] = useState(1)
   const [total, setTotal]         = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const desktopScrollRef = useRef(null)
+  const mobileScrollRef  = useRef(null)
 
   const [selectedIds, setSelectedIds] = useState(() => new Set())
 
@@ -92,18 +101,77 @@ export default function TicketsTab() {
     return p
   }, [q, fromSale, toSale, paymentStatus])
 
+  // Load lần đầu / khi filter đổi: lấy page 0, THAY rows.
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await listBookings({ ...filterParams, page, size: 50 })
+      const res = await listBookings({ ...filterParams, page: 0, size: 50 })
       const d = res.data?.data
       setRows(d?.content || [])
       setTotalPages(d?.totalPages || 1)
       setTotal(d?.totalElements || 0)
+      setPage(0)
     } catch (e) {
       toast.error(e?.response?.data?.message || 'Không tải được danh sách vé')
     } finally {
       setLoading(false)
+    }
+  }, [filterParams])
+
+  // Load thêm 1 trang tiếp theo và APPEND vào rows.
+  const loadMore = useCallback(async () => {
+    if (loadingMore || loading) return
+    if (page >= totalPages - 1) return
+    setLoadingMore(true)
+    try {
+      const next = page + 1
+      const res = await listBookings({ ...filterParams, page: next, size: 50 })
+      const d = res.data?.data
+      setRows(prev => [...prev, ...(d?.content || [])])
+      setTotalPages(d?.totalPages || 1)
+      setTotal(d?.totalElements || 0)
+      setPage(next)
+    } catch (e) {
+      toast.error(e?.response?.data?.message || 'Không tải thêm được danh sách vé')
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [filterParams, page, totalPages, loadingMore, loading])
+
+  // Soft-refresh: refetch pages 0..page sau khi sửa/xóa/cập nhật.
+  //   - KHÔNG set `loading=true` để bảng không bị thay bằng "Đang tải…" (giữ UI).
+  //   - Lưu scrollTop trước khi fetch, restore sau khi commit rows.
+  const refresh = useCallback(async () => {
+    const dTop = desktopScrollRef.current?.scrollTop ?? 0
+    const mTop = mobileScrollRef.current?.scrollTop  ?? 0
+    const upTo = page
+    try {
+      const acc = []
+      let lastMeta = null
+      for (let p = 0; p <= upTo; p++) {
+        const res = await listBookings({ ...filterParams, page: p, size: 50 })
+        const d = res.data?.data
+        acc.push(...(d?.content || []))
+        lastMeta = d
+        // Nếu BE báo totalPages đã co lại (xóa booking cuối cùng của trang),
+        // dừng sớm — không fetch trang không tồn tại.
+        if (lastMeta && p >= (lastMeta.totalPages || 1) - 1) break
+      }
+      setRows(acc)
+      if (lastMeta) {
+        const tp = lastMeta.totalPages || 1
+        setTotalPages(tp)
+        setTotal(lastMeta.totalElements || 0)
+        if (page > tp - 1) setPage(Math.max(0, tp - 1))
+      }
+    } catch (e) {
+      toast.error(e?.response?.data?.message || 'Không tải lại được danh sách vé')
+    } finally {
+      // Restore scroll — chạy ở frame tiếp theo để React commit DOM xong.
+      requestAnimationFrame(() => {
+        if (desktopScrollRef.current) desktopScrollRef.current.scrollTop = dTop
+        if (mobileScrollRef.current)  mobileScrollRef.current.scrollTop  = mTop
+      })
     }
   }, [filterParams, page])
 
@@ -187,7 +255,8 @@ export default function TicketsTab() {
   const qTimer = useRef(null)
   const onSearch = (v) => {
     if (qTimer.current) clearTimeout(qTimer.current)
-    qTimer.current = setTimeout(() => { setPage(0); setQ(v) }, 300)
+    // 2026-10-28: filter thay đổi → `load` tự reset page=0, không cần setPage ở đây.
+    qTimer.current = setTimeout(() => { setQ(v) }, 300)
   }
 
   // 2026-10-10: Chặn chọn booking đã PAID (không có gì để thu nữa).
@@ -226,7 +295,9 @@ export default function TicketsTab() {
     setBatchPay(selectedBookings)
   }
 
-  const onSavedRefresh = () => { load(); loadTotals() }
+  // 2026-10-28: refresh thay cho load → giữ nguyên các trang đã load thêm
+  // và scroll position, user không bị kéo về đầu trang sau khi thao tác.
+  const onSavedRefresh = () => { refresh(); loadTotals() }
 
   // ── 2026-09-20: Xuất báo cáo PDF theo filter ──────────────
   // ── 2026-09-25: sau khi xuất xong, nếu có hóa đơn nháp → hỏi tải luôn ──
@@ -361,7 +432,6 @@ export default function TicketsTab() {
             <DateRangePicker
               value={{ from: fromSale, to: toSale }}
               onChange={({ from, to }) => {
-                setPage(0)
                 setFromSale(from)
                 setToSale(to)
               }}
@@ -378,7 +448,7 @@ export default function TicketsTab() {
             { k: 'PAID',   lbl: 'Đã thanh toán' },
           ].map(t => (
             <button key={t.k} type="button"
-              onClick={() => { setPage(0); setPaymentStatus(t.k) }}
+              onClick={() => setPaymentStatus(t.k)}
               className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap ${
                 paymentStatus === t.k ? 'bg-white shadow text-blue-700' : 'text-gray-600 hover:text-gray-900'
               }`}>{t.lbl}</button>
@@ -424,7 +494,7 @@ export default function TicketsTab() {
 
       {/* Desktop table — chiếm phần còn lại, cuộn trong khung bảng */}
       <div className="hidden lg:flex flex-1 min-h-0 bg-white rounded-2xl shadow border border-gray-100 overflow-hidden flex-col">
-        <div className="flex-1 overflow-auto">
+        <div ref={desktopScrollRef} className="flex-1 overflow-auto">
           <table className="w-full text-xs border-collapse table-fixed">
             <colgroup>
               <col style={{ width: 32 }} />
@@ -498,11 +568,17 @@ export default function TicketsTab() {
             </tbody>
           </table>
         </div>
-        <Pagination page={page} totalPages={totalPages} total={total} onPage={setPage} />
+        <LoadMoreBar
+          loaded={rows.length}
+          total={total}
+          hasMore={page < totalPages - 1}
+          loading={loadingMore}
+          onLoadMore={loadMore}
+        />
       </div>
 
       {/* Mobile cards — flex-1 overflow-auto */}
-      <div className="lg:hidden flex-1 min-h-0 overflow-auto space-y-2">
+      <div ref={mobileScrollRef} className="lg:hidden flex-1 min-h-0 overflow-auto space-y-2">
         {loading ? (
           <div className="text-center py-10 text-gray-400 text-sm">Đang tải…</div>
         ) : filteredRows.length === 0 ? (
@@ -525,7 +601,13 @@ export default function TicketsTab() {
               onDelete={() => setConfirmDel(b)} />
           ))
         )}
-        <Pagination page={page} totalPages={totalPages} total={total} onPage={setPage} />
+        <LoadMoreBar
+          loaded={rows.length}
+          total={total}
+          hasMore={page < totalPages - 1}
+          loading={loadingMore}
+          onLoadMore={loadMore}
+        />
       </div>
 
       {/* Modals */}
@@ -548,7 +630,7 @@ export default function TicketsTab() {
         />
       )}
       {invMgr && (
-        <InvoiceManagerModal bookingId={invMgr} onClose={() => setInvMgr(null)} onDirty={load} />
+        <InvoiceManagerModal bookingId={invMgr} onClose={() => setInvMgr(null)} onDirty={refresh} />
       )}
       {presentation && (
         <PresentationModal open={true} booking={presentation} onClose={() => setPresentation(null)} />
@@ -1463,17 +1545,33 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
   )
 }
 
-function Pagination({ page, totalPages, total, onPage }) {
-  if (totalPages <= 1) return null
+/**
+ * 2026-10-28: Thay Pagination bằng nút "Tải thêm".
+ *   - Hiển thị "{loaded}/{total} booking" + nút tải trang kế tiếp (append).
+ *   - Khi hết dữ liệu → ghi "Đã hiển thị đủ".
+ *   - Ẩn hẳn thanh nếu chưa có booking nào (list rỗng).
+ * Lý do: cho phép thao tác batch (ví dụ thu tiền) trên các booking từ nhiều
+ * trang trong CÙNG 1 page, không phải chuyển trang qua lại.
+ */
+function LoadMoreBar({ loaded, total, hasMore, loading, onLoadMore }) {
+  if (!loaded) return null
   return (
     <div className="flex items-center justify-between px-4 py-2 bg-gray-50 border-t border-gray-100 text-xs">
-      <span className="text-gray-500">{total} vé · trang {page + 1}/{totalPages}</span>
-      <div className="flex gap-1">
-        <button onClick={() => onPage(Math.max(0, page - 1))} disabled={page === 0}
-          className="px-2.5 py-1 rounded-md bg-white border border-gray-200 disabled:opacity-40 hover:bg-gray-100">←</button>
-        <button onClick={() => onPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1}
-          className="px-2.5 py-1 rounded-md bg-white border border-gray-200 disabled:opacity-40 hover:bg-gray-100">→</button>
-      </div>
+      <span className="text-gray-500">
+        Đang hiển thị <b>{loaded}</b>{total ? <>/<b>{total}</b></> : null} booking
+      </span>
+      {hasMore ? (
+        <button
+          type="button"
+          onClick={onLoadMore}
+          disabled={loading}
+          className="px-3 py-1.5 rounded-md bg-blue-600 text-white font-semibold
+                     hover:bg-blue-700 disabled:opacity-60 shadow-sm">
+          {loading ? '⏳ Đang tải…' : '⬇ Tải thêm'}
+        </button>
+      ) : (
+        <span className="text-gray-400 italic">Đã hiển thị đủ</span>
+      )}
     </div>
   )
 }
