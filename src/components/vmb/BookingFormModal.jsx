@@ -55,6 +55,7 @@ const INITIAL_FORM = () => ({
   currency: 'VND',
   exchangeRate: '',
   note: '',
+  referrerName: '',   // 2026-11-07: Người giới thiệu (khách lẻ)
   sharedTicketFace: false,
   segments: [],
   tickets: [newTicket()],
@@ -79,7 +80,7 @@ function isFormDirty(f) {
   if (!t) return (f.tickets || []).length > 1
   if ((f.tickets || []).length > 1) return true
   if (t.passengerName || t.ticketNumber || t.basePrice || t.collectionFee ||
-      t.issuanceFee || t.note || t.companyId != null ||
+      t.issuanceFee || t.hnhFee || t.note || t.companyId != null ||
       (t.fees || []).length > 0) return true
   return false
 }
@@ -162,6 +163,7 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
           currency: b.currency || 'VND',
           exchangeRate: b.exchangeRate || '',
           note: b.note || '',
+          referrerName: b.referrerName || '',
           sharedTicketFace: !!b.sharedTicketFace,
           linkedBookingCode: '',
           invoiceGroupId: b.invoiceGroupId || null,
@@ -183,6 +185,7 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
             basePrice: t.basePrice || '',
             collectionFee: t.collectionFee || '',
             issuanceFee: t.issuanceFee || '',
+            hnhFee: t.hnhFee || '',
             paidStatus: t.paidStatus || 'PENDING',
             note: t.note || '',
             fees: (t.fees || []).map(f => ({
@@ -264,7 +267,8 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
     if (!idPicker) return
     const { ticketIdx, passenger } = idPicker
     setTicket(ticketIdx, {
-      passengerName: passenger.fullName || '',
+      // 2026-11-08: Luôn viết HOA tên khách khi lưu / chọn.
+      passengerName: (passenger.fullName || '').toUpperCase(),
       passengerId: passenger.id,
       passengerDocumentType: type,
       // Nếu passenger thuộc 1 company cụ thể và vé chưa có companyId → gán luôn
@@ -400,9 +404,13 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
       tickets: [{
         ...newTicket(),
         companyId: first.companyId ?? null,
-        basePrice: first.basePrice || '',
+        // 2026-11-07: Copy basePrice = basePrice gốc + HNH fee (giá bán dành
+        //   cho vé mới đã bao gồm phần HNH thu tay). HNH fee KHÔNG copy sang
+        //   (vé mới chưa thu HNH).
+        basePrice: addMoney(first.basePrice, first.hnhFee, f.currency),
         collectionFee: first.collectionFee || '',
         issuanceFee: first.issuanceFee || '',
+        hnhFee: '',
         // Copy gross tracking từ vé đầu tiên — vé mới cũng ăn theo cùng gross.
         // Nếu user muốn khác, họ tự paste giá gốc mới → baseline reset.
         _originalTotal: first._originalTotal ?? null,
@@ -437,6 +445,9 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
         segments: (form.segments || []).map((s, i) => ({ ...s, segOrder: i })),
         tickets: form.tickets.map(t => {
           const { _originalTotal, ...cleanT } = t
+          // 2026-11-08: Force HOA cho passengerName khi save (phòng trường hợp
+          //   tên chèn vào trước đây đang lowercase ở DB).
+          if (cleanT.passengerName) cleanT.passengerName = cleanT.passengerName.toUpperCase()
           return cleanT
         }),
       }
@@ -519,13 +530,17 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                 </select>
               </Field>
               <Field label="Hãng bay">
-                <input type="text" value={form.airlineCode}
-                  onChange={e => setField('airlineCode', e.target.value.toUpperCase().slice(0, 3))}
-                  placeholder="VJ, VN…" className="input font-mono uppercase" />
+                {/* 2026-11-07: max 2 ký tự IATA (VJ, VN…). Ký tự thứ 3 bị chặn. */}
+                <input type="text" value={form.airlineCode} maxLength={2}
+                  onChange={e => setField('airlineCode',
+                    e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 2))}
+                  placeholder="VJ, VN" className="input font-mono uppercase" />
               </Field>
               <Field label="Mã booking">
-                <input type="text" value={form.bookingCode}
-                  onChange={e => setField('bookingCode', e.target.value.toUpperCase())}
+                {/* 2026-11-07: max 6 ký tự PNR, viết hoa, chỉ A-Z/0-9. */}
+                <input type="text" value={form.bookingCode} maxLength={6}
+                  onChange={e => setField('bookingCode',
+                    e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6))}
                   placeholder="ABC123" className="input font-mono uppercase" />
               </Field>
             </div>
@@ -578,11 +593,11 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
 
             {/* ── 2026-10-16: Gộp hóa đơn với booking khác (invoice group) ── */}
             {/* Style match với section "Mặt vé CHUNG" phía trên (dark-friendly) */}
-            <div className="mt-3 p-3 rounded-xl bg-indigo-500/10 border border-indigo-400/40">
-              <div className="text-sm font-semibold text-indigo-200 mb-1">
+            <div className="mt-3 p-3 rounded-xl bg-indigo-50 border border-indigo-200">
+              <div className="text-sm font-semibold text-indigo-800 mb-1">
                 🔗 Gộp hóa đơn với booking khác
               </div>
-              <div className="text-[11px] text-indigo-300/80 mb-2 leading-relaxed">
+              <div className="text-[11px] text-indigo-700 mb-2 leading-relaxed">
                 Nhập mã booking <b>chủ</b> vào đây — hóa đơn upload ở booking chủ sẽ
                 tự động chia sẻ cho tất cả booking link đến nó. Bỏ link bất cứ lúc nào.
               </div>
@@ -593,15 +608,15 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                   {form.isInvoiceGroupOwner ? (
                     <>
                       <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold
-                          bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/40">
+                          bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300">
                         ⭐ Booking chủ
                       </span>
                       {form.linkedBookings && form.linkedBookings.length > 0 && (
                         <>
-                          <span className="text-[10px] text-indigo-300/60">— có {form.linkedBookings.length} booking link tới:</span>
+                          <span className="text-[10px] text-indigo-700">— có {form.linkedBookings.length} booking link tới:</span>
                           {form.linkedBookings.map(lb => (
                             <span key={lb.id} className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-mono font-semibold
-                              bg-indigo-500/20 text-indigo-200 ring-1 ring-indigo-400/40">
+                              bg-indigo-100 text-indigo-800 ring-1 ring-indigo-300">
                               {lb.bookingCode || `#${lb.id}`}
                             </span>
                           ))}
@@ -610,14 +625,14 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                     </>
                   ) : form.ownerBookingCode ? (
                     <>
-                      <span className="text-[10px] text-indigo-300/80">Đang link đến booking chủ:</span>
+                      <span className="text-[10px] text-indigo-700">Đang link đến booking chủ:</span>
                       <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-mono font-bold
-                          bg-amber-500/20 text-amber-200 ring-1 ring-amber-400/40">
+                          bg-amber-100 text-amber-800 ring-1 ring-amber-300">
                         {form.ownerBookingCode}
                       </span>
                     </>
                   ) : null}
-                  <label className="inline-flex items-center gap-1 ml-auto text-[11px] text-rose-300 cursor-pointer">
+                  <label className="inline-flex items-center gap-1 ml-auto text-[11px] text-rose-700 cursor-pointer">
                     <input type="checkbox" checked={!!form.clearInvoiceGroup}
                       onChange={e => setField('clearInvoiceGroup', e.target.checked)}
                       className="accent-rose-500" />
@@ -628,7 +643,7 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
 
               {/* ── Cảnh báo rõ hậu quả khi tick "Bỏ link" ── */}
               {isEdit && form.clearInvoiceGroup && form.invoiceGroupId != null && (
-                <div className="mb-2 p-2 rounded-md bg-rose-500/15 border border-rose-400/50 text-[11px] text-rose-200">
+                <div className="mb-2 p-2 rounded-md bg-rose-50 border border-rose-300 text-[11px] text-rose-800">
                   ⚠ <b>Sau khi lưu:</b>{' '}
                   {form.isInvoiceGroupOwner ? (
                     <>
@@ -651,9 +666,9 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                 onChange={e => setField('linkedBookingCode', e.target.value.toUpperCase())}
                 disabled={!!form.clearInvoiceGroup}
                 placeholder="VD: P34F5W — bỏ trống nếu không muốn link"
-                className="w-full px-3 py-2 rounded-lg bg-slate-900/40 border border-indigo-400/30
-                  text-slate-100 placeholder:text-slate-500 text-sm font-mono uppercase
-                  focus:border-indigo-400 focus:ring-2 focus:ring-indigo-400/20 outline-none
+                className="w-full px-3 py-2 rounded-lg bg-white border border-indigo-300
+                  text-slate-900 placeholder:text-slate-400 text-sm font-mono uppercase
+                  focus:border-indigo-500 focus:ring-2 focus:ring-indigo-400/30 outline-none
                   disabled:opacity-40 disabled:cursor-not-allowed"
               />
             </div>
@@ -662,6 +677,16 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
               <textarea rows={2} value={form.note}
                 onChange={e => setField('note', e.target.value)}
                 className="input resize-none" placeholder="Ghi chú tùy chọn cho cả booking" />
+            </Field>
+
+            {/* 2026-11-07: Người giới thiệu — chỉ cần cho booking khách lẻ,
+                nhưng cứ hiển thị luôn vì nhẹ. Free text, VD: "Tiểu Hà (Zalo)
+                thuộc Create Medic". */}
+            <Field label="Người giới thiệu (khách lẻ)">
+              <input type="text" value={form.referrerName}
+                onChange={e => setField('referrerName', e.target.value)}
+                className="input"
+                placeholder='VD: "Tiểu Hà (Zalo) thuộc Create Medic" — bỏ trống nếu không có' />
             </Field>
           </Section>
 
@@ -756,6 +781,17 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                       </Field>
                     </div>
 
+                    {/* 2026-11-07: Phí xuất vé của HNH — luôn VND, optional.
+                        Được cộng vào Giá bán (copy giá gốc = basePrice + hnhFee). */}
+                    <div className="mt-2">
+                      <Field label={
+                        <span>Phí xuất vé của HNH <span className="text-[10px] text-gray-500 font-normal">(VND, tùy chọn — cộng vào giá bán)</span></span>
+                      }>
+                        <PriceInput value={t.hnhFee || ''} currency="VND"
+                          onChange={v => setTicket(i, { hnhFee: v })} />
+                      </Field>
+                    </div>
+
                     <div className="mt-2">
                       <div className="text-[10px] font-semibold text-gray-600 mb-1">Các loại phí phát sinh</div>
                       <TicketFeesEditor
@@ -814,10 +850,25 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
 //  Helpers
 // ═══════════════════════════════════════════════════════════════
 
+/**
+ * 2026-11-07: Cộng 2 chuỗi tiền theo VN format, trả về chuỗi đã format lại.
+ * Dùng khi copy giá gốc = basePrice + hnhFee (HNH luôn VND) sang vé mới.
+ * Nếu currency != VND thì bỏ qua HNH (không tự quy đổi ở FE).
+ */
+function addMoney(aStr, bStr, currency) {
+  const a = parseAmount(aStr) || 0
+  const b = parseAmount(bStr) || 0
+  if (!b) return aStr || ''
+  if (currency && currency !== 'VND') return aStr || ''
+  const sum = a + b
+  return formatMoney(sum, 'VND', { withUnit: false })
+}
+
 function newTicket() {
   return {
     passengerName: '', companyId: null, ticketNumber: '',
     basePrice: '', collectionFee: '', issuanceFee: '',
+    hnhFee: '',    // 2026-11-07
     paidStatus: 'PENDING', note: '',
     fees: [],
     // 2026-10-16: Link tới Passenger khi chọn qua dropdown.
@@ -885,8 +936,14 @@ function CurrencyToggle({ value, onChange }) {
  */
 function formatPaxName(raw) {
   if (!raw) return ''
+  // 2026-11-07: hỗ trợ cả "/" và "," làm delimiter (và ";" bonus).
+  //   "TRUONG/BA LAN"  → "TRUONG BA LAN"
+  //   "TRUONG, BA LAN" → "TRUONG BA LAN"
+  //   "TRUONG; BA LAN" → "TRUONG BA LAN"
+  // 2026-11-08: Tự động viết HOA toàn bộ (giữ dấu tiếng Việt).
   return String(raw)
-    .replace(/\//g, ' ')
+    .replace(/[/,;]+/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/^\s+/, '')
+    .toUpperCase()
 }

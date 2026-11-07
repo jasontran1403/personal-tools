@@ -170,6 +170,10 @@ export const createPassenger = (body) =>
 export const updatePassenger = (id, body) =>
   api.put(`/api/tools/vmb/passengers/${id}`, body)
 
+// 2026-11-08: PATCH riêng field referrerName — không cần gửi lại cả form.
+export const updatePassengerReferrer = (id, referrerName) =>
+  api.patch(`/api/tools/vmb/passengers/${id}/referrer`, { referrerName })
+
 export const deletePassenger = (id) =>
   api.delete(`/api/tools/vmb/passengers/${id}`)
 

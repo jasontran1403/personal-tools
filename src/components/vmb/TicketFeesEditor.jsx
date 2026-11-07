@@ -87,7 +87,8 @@ export default function TicketFeesEditor({ value = [], onChange, currency = 'VND
         <div className="w-36">
           <div className="text-[10px] font-semibold text-gray-600 mb-1">Số tiền</div>
           <div className="h-10">
-            <PriceInput value={pickAmount} currency={pickCurrency} onChange={setPickAmount} />
+            {/* 2026-11-07: hideUnit vì đã có toggle Đơn vị bên cạnh */}
+            <PriceInput value={pickAmount} currency={pickCurrency} onChange={setPickAmount} hideUnit />
           </div>
         </div>
         <div className="w-24">
@@ -136,7 +137,7 @@ export default function TicketFeesEditor({ value = [], onChange, currency = 'VND
                 </div>
                 {/* Số vé — prefix "Số vé:" dính sẵn, cùng bg với input (seamless) */}
                 <label className="h-9 w-44 flex items-center rounded-md border border-gray-200 bg-white focus-within:border-blue-500 overflow-hidden cursor-text">
-                  <span className="pl-2 pr-1 pr-1 text-[11px] text-gray-500 select-none whitespace-nowrap bg-white">
+                  <span className="pl-2 pr-1 text-[11px] text-gray-500 select-none whitespace-nowrap bg-white">
                     Số vé:
                   </span>
                   <input type="text" value={f.ticketNumber || ''}
@@ -144,7 +145,7 @@ export default function TicketFeesEditor({ value = [], onChange, currency = 'VND
                     placeholder=""
                     title="Số vé riêng của dịch vụ (optional) — để trống nếu dùng chung số vé chính"
                     style={{ background: 'transparent', boxShadow: 'none', appearance: 'none' }}
-                    className="flex-1 min-w-0 h-full pr-2 pl-1 text-xs font-mono outline-none border-0" />
+                    className="flex-1 min-w-0 h-full pr-2 text-xs font-mono outline-none border-0" />
                 </label>
                 <input type="text" value={f.note || ''}
                   onChange={e => editNote(i, e.target.value)}

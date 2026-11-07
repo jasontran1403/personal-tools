@@ -37,6 +37,7 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
     fullName: '',
     dob: '',
     gender: 'MALE',
+    referrerName: '',   // 2026-11-08: Người giới thiệu (walk-in only)
   })
 
   // Documents state — edit mode load từ server; create mode buffer client
@@ -65,6 +66,7 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
           fullName: p.fullName || '',
           dob: p.dob || '',
           gender: p.gender || 'MALE',
+          referrerName: p.referrerName || '',
         })
         const docs = p.documents || []
         const c = docs.find(d => d.type === 'CCCD')
@@ -101,9 +103,13 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
     const body = {
       companyId: companyPickMode === 'existing' && form.companyId ? Number(form.companyId) : null,
       newCompanyName: companyPickMode === 'new' ? form.newCompanyName : null,
-      fullName: form.fullName,
+      // 2026-11-08: Force viết HOA tên khi lưu.
+      fullName: (form.fullName || '').toUpperCase(),
       dob: form.dob,
       gender: form.gender,
+      // 2026-11-08: Chỉ gửi referrer khi là khách lẻ (companyId = null hoặc
+      //   companyPickMode = 'none'). BE trim rỗng → null giúp đồng nhất.
+      referrerName: (form.referrerName || '').trim() || null,
     }
 
     setBusy(true)
@@ -264,6 +270,18 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
 
               <Field label="Ngày sinh">
                 <DateInputVN value={form.dob} onChange={v => setField('dob', v)} />
+              </Field>
+
+              {/* 2026-11-08: Người giới thiệu — free text. Chỉ có ý nghĩa với
+                  khách lẻ (BE chỉ dùng cho walk-in trong UI customers); vẫn
+                  hiển thị cho mọi passenger, BE lưu nếu không rỗng. */}
+              <Field label={
+                <span>Người giới thiệu <span className="text-[10px] font-normal text-gray-500">(cho khách lẻ, rỗng = Khách mới)</span></span>
+              }>
+                <input type="text" value={form.referrerName}
+                  onChange={e => setField('referrerName', e.target.value)}
+                  className="input"
+                  placeholder='VD: "Tiểu Hà (Zalo) thuộc Create Medic"' />
               </Field>
             </form>
 
@@ -474,7 +492,10 @@ function extractFields(d) {
 function formatPaxName(raw) {
   if (!raw) return ''
   return String(raw)
-    .replace(/\//g, ' ')
+    // 2026-11-07: hỗ trợ "/", "," và ";" làm delimiter.
+    .replace(/[/,;]+/g, ' ')
     .replace(/\s+/g, ' ')
     .replace(/^\s+/, '')
+    // 2026-11-08: Tự động viết HOA toàn bộ.
+    .toUpperCase()
 }

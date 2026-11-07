@@ -159,17 +159,22 @@ export default function IdPresentationModal({ passenger, onClose }) {
               <CopyableField label="Số CCCD" value={doc?.docNumber} mono />
               <CopyableField label="Giới tính" value={genderLabel(passenger?.gender)}
                 copyLabel="Đã copy giới tính" />
+              {/* 2026-11-08: copyValue = chuỗi hiển thị (dd/MM/yyyy) để copy
+                  đúng format đang hiện trên UI, không copy yyyy-MM-dd. */}
               <CopyableField label="Ngày sinh" value={passenger?.dob}
+                copyValue={formatDateVn(passenger?.dob) || passenger?.dob}
                 display={formatDateVn(passenger?.dob) || '—'} mono />
 
               {/* Ngày cấp TRƯỚC ngày hết hạn */}
               {doc?.issueDate && (
                 <CopyableField label="Ngày cấp" value={doc?.issueDate}
+                  copyValue={formatDateVn(doc?.issueDate) || doc?.issueDate}
                   display={formatDateVn(doc?.issueDate)} mono />
               )}
 
               {/* Ngày hết hạn + badge còn lại */}
               <CopyableField label="Ngày hết hạn" value={doc?.expiryDate}
+                copyValue={formatDateVn(doc?.expiryDate) || doc?.expiryDate}
                 display={formatDateVn(doc?.expiryDate) || '—'} mono
                 suffix={remaining && <ExpiryBadge remaining={remaining} />} />
             </>
@@ -180,16 +185,19 @@ export default function IdPresentationModal({ passenger, onClose }) {
               <CopyableField label="Mã quốc tịch (ISO-3)" value={doc?.nationality} mono />
               <CopyableField label="Số hộ chiếu" value={doc?.docNumber} mono />
               <CopyableField label="Ngày sinh" value={passenger?.dob}
+                copyValue={formatDateVn(passenger?.dob) || passenger?.dob}
                 display={formatDateVn(passenger?.dob) || '—'} mono />
 
               {/* Ngày cấp TRƯỚC ngày hết hạn */}
               {doc?.issueDate && (
                 <CopyableField label="Ngày cấp" value={doc?.issueDate}
+                  copyValue={formatDateVn(doc?.issueDate) || doc?.issueDate}
                   display={formatDateVn(doc?.issueDate)} mono />
               )}
 
               {/* Ngày hết hạn + badge còn lại */}
               <CopyableField label="Ngày hết hạn" value={doc?.expiryDate}
+                copyValue={formatDateVn(doc?.expiryDate) || doc?.expiryDate}
                 display={formatDateVn(doc?.expiryDate) || '—'} mono
                 suffix={remaining && <ExpiryBadge remaining={remaining} />} />
             </>

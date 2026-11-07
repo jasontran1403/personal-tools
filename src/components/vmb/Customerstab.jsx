@@ -24,7 +24,7 @@
  */
 import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
-import { listBookings, listCompanies } from '../../services/vmbApi'
+import { listBookings, listCompanies, listPassengers, updatePassengerReferrer } from '../../services/vmbApi'
 import { parseAmount, formatMoney } from '../../lib/money'
 
 // ── Config ─────────────────────────────────────────────────
@@ -222,12 +222,117 @@ function ticketSums(t, b) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// 2026-11-08: DebtAgeBadge — số ngày công nợ, màu scale theo mức độ.
+//   Tính từ fromMs (ngày phát hành hoặc ngày xuất vé) → hôm nay.
+//   Xanh lá <7, vàng <30, cam <90, đỏ ≥90.
+// ═══════════════════════════════════════════════════════════
+function DebtAgeBadge({ fromMs }) {
+  if (!fromMs) return <span className="text-gray-400 text-xs">—</span>
+  const days = Math.max(0, Math.floor((Date.now() - fromMs) / 86400000))
+  let cls
+  if (days < 7)       cls = 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300'
+  else if (days < 30) cls = 'bg-amber-100 text-amber-800 ring-1 ring-amber-300'
+  else if (days < 90) cls = 'bg-orange-100 text-orange-800 ring-1 ring-orange-300'
+  else                cls = 'bg-rose-100 text-rose-800 ring-1 ring-rose-300'
+  return (
+    <span className={`inline-block px-2 py-0.5 rounded font-mono font-bold text-[11px] whitespace-nowrap ${cls}`}>
+      {days} ngày
+    </span>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════
+// 2026-11-08: DebtDatesBadges — list badges nhỏ dưới số tiền công nợ.
+//   Xanh LÁ   = ngày phát hành hóa đơn (invoice đã có số).
+//   Xanh DƯƠNG = ngày xuất vé (fallback khi booking chưa phát hành hóa đơn).
+// ═══════════════════════════════════════════════════════════
+function DebtDatesBadges({ bookings }) {
+  const items = useMemo(() => buildDebtItems(bookings || []), [bookings])
+  if (!items.length) return null
+  // Group theo (kind, dd/MM/yyyy) — các timestamp cùng NGÀY gộp 1 badge, có
+  //   corner count. Key dùng chuỗi dd/MM/yyyy để tránh case 2 timestamp cùng
+  //   ngày nhưng khác giờ sinh ra 2 badge.
+  const groupMap = new Map()
+  for (const it of items) {
+    let kind, date
+    if (it.type === 'invoice' && it.issueDate) { kind = 'issue'; date = it.issueDate }
+    else if (it.saleDate)                      { kind = 'sale';  date = it.saleDate  }
+    else continue
+    const dmy = fmtDMY(date)
+    const k = `${kind}:${dmy}`
+    if (!groupMap.has(k)) groupMap.set(k, { kind, dmy, date, count: 0 })
+    const g = groupMap.get(k)
+    g.count += 1
+    if (date > g.date) g.date = date   // giữ ts mới nhất để sort
+  }
+  const out = [...groupMap.values()].sort((a, b) => b.date - a.date)
+  if (!out.length) return null
+  return (
+    // 2026-11-08 (rev3): Flex-wrap + justify-end + gap đều (ngang = dọc).
+    //   Wrapper minWidth 240px: ép table-layout dành chỗ đủ cho 3 badges/dòng
+    //   (mỗi badge ~70px + gap 6px + corner-count 4px).
+    //   Dùng cùng 1 value cho gap-x / gap-y → spacing đều.
+    // ml-auto để wrapper flex này được đẩy sát biên phải của cell (vì td
+    //   `text-right` chỉ ảnh hưởng inline content).
+    <div className="mt-1 ml-auto flex flex-wrap gap-1.5 justify-end"
+         style={{ width: 260 }}>
+      {out.map((x, i) => (
+        <span key={i}
+          title={x.kind === 'issue'
+            ? `Ngày phát hành hóa đơn${x.count > 1 ? ` (${x.count} HĐ)` : ''}`
+            : `Ngày xuất vé — chưa phát hành${x.count > 1 ? ` (${x.count} vé)` : ''}`}
+          className={`relative inline-block text-[10px] font-mono font-semibold px-1.5 py-1 rounded whitespace-nowrap
+            ${x.kind === 'issue'
+              ? 'bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300'
+              : 'bg-blue-100 text-blue-800 ring-1 ring-blue-300'}`}>
+          {x.dmy}
+          {x.count > 1 && (
+            <span className="absolute -top-1 -right-1.5 min-w-[14px] h-[14px] px-0.5
+                rounded-full bg-rose-600 text-white text-[8px] font-bold flex items-center
+                justify-center leading-none ring-1 ring-white">
+              {x.count}
+            </span>
+          )}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════
+// 2026-11-08: Phân loại tuyến bay nội địa / quốc tế theo IATA.
+//   Rule: Nếu TẤT CẢ segments đều có cả fromCode và toCode thuộc VN → DOMESTIC.
+//          Chỉ cần 1 segment có airport không thuộc VN → INTERNATIONAL.
+//   Danh sách VN giữ hardcode, bổ sung dễ.
+// ═══════════════════════════════════════════════════════════
+const VN_AIRPORTS = new Set([
+  'SGN','HAN','DAD','HPH','CXR','DLI','HUI','PQC','VCA','VII',
+  'UIH','BMV','VDH','VCL','TBB','VCS','VKG','DIN','PXU','CAH',
+  'TGH','VDO','VCI','VKS','SQH','THD','HOO',
+])
+function isDomesticBooking(b) {
+  const segs = b?.segments || []
+  if (!segs.length) return true // Không có segment → coi như domestic để tránh sai lệch
+  for (const s of segs) {
+    const f = (s.fromCode || '').toUpperCase()
+    const t = (s.toCode || '').toUpperCase()
+    if (f && !VN_AIRPORTS.has(f)) return false
+    if (t && !VN_AIRPORTS.has(t)) return false
+  }
+  return true
+}
+
+// ═══════════════════════════════════════════════════════════
 //  Component
 // ═══════════════════════════════════════════════════════════
 
 export default function CustomersTab() {
   const [companies, setCompanies] = useState([])
   const [bookings, setBookings]   = useState([])
+  // 2026-11-08: Danh sách passenger khách-lẻ ĐÃ TẠO. Tab "Khách lẻ" dựng rows
+  //   chỉ từ list này + attach dữ liệu từ bookings. Không auto-tạo row cho khách
+  //   trong booking mà chưa có record.
+  const [walkInPassengers, setWalkInPassengers] = useState([])
   const [loading, setLoading]     = useState(true)
   const [q, setQ]                 = useState('')
   // 2026-11-07 (rev): filter loại khách — default = Công ty.
@@ -239,6 +344,10 @@ export default function CustomersTab() {
   const [editFor, setEditFor]     = useState(null)   // row cần sửa (có companyId)
   // 2026-11-07: modal chi tiết công nợ khi click vào số công nợ > 0.
   const [debtFor, setDebtFor]     = useState(null)   // { row, items }
+  // 2026-11-08: modal chi tiết.
+  //   mode='referrer'  → click vào tên khách lẻ: chỉ show người giới thiệu.
+  //   mode='revenue'   → click vào cột doanh thu: chỉ show phí xuất vé QT/QN.
+  const [detailFor, setDetailFor] = useState(null)   // { row, mode }
 
   // Load companies + fetch toàn bộ booking (phân trang).
   useEffect(() => {
@@ -246,8 +355,6 @@ export default function CustomersTab() {
     ;(async () => {
       setLoading(true)
       try {
-        const cRes = await listCompanies()
-        if (!cancel) setCompanies(cRes.data?.data || [])
         const all = []
         let page = 0
         const MAX = 50
@@ -260,8 +367,8 @@ export default function CustomersTab() {
         }
         if (!cancel) setBookings(all)
       } catch (e) {
-        console.error('[customers load]', e)
-        toast.error('Không tải được dữ liệu')
+        console.error('[customers load bookings]', e)
+        toast.error('Không tải được booking')
       } finally {
         if (!cancel) setLoading(false)
       }
@@ -269,88 +376,183 @@ export default function CustomersTab() {
     return () => { cancel = true }
   }, [])
 
-  // Gộp theo công ty, hoặc theo TÊN HÀNH KHÁCH nếu không có companyId
-  //   ("khách lẻ"). Mỗi khách lẻ = 1 row riêng (không gộp hết vào 1 row).
+  // 2026-11-08: Lazy fetch theo tab hiện tại.
+  //   - Tab "Công ty" → listCompanies.
+  //   - Tab "Khách lẻ" → listPassengers({walkInOnly:true}).
+  //   Mỗi lần toggle tab là 1 lần reload (đảm bảo data mới nhất, tránh cache cũ
+  //   sau khi tạo/sửa khách ở tab khác).
+  useEffect(() => {
+    let cancel = false
+    if (kind === 'company') {
+      ;(async () => {
+        try {
+          const cRes = await listCompanies()
+          if (!cancel) setCompanies(cRes.data?.data || [])
+        } catch (e) {
+          console.error('[customers load companies]', e)
+          toast.error('Không tải được công ty')
+        }
+      })()
+    } else if (kind === 'walkin') {
+      ;(async () => {
+        try {
+          const pRes = await listPassengers({ walkInOnly: true, size: 500 })
+          if (!cancel) setWalkInPassengers(pRes.data?.data?.content || [])
+        } catch (e) {
+          console.error('[customers load walk-in]', e)
+          toast.error('Không tải được khách lẻ')
+        }
+      })()
+    }
+    return () => { cancel = true }
+  }, [kind])
+
+  // Gộp theo công ty (các công ty có booking) + mỗi khách-lẻ ĐÃ TẠO là 1 row.
+  //   2026-11-08: Row khách-lẻ dựng từ `walkInPassengers` (đã tạo trong hệ thống)
+  //   — không dựng từ tickets. Match ticket với passenger theo passengerId trước,
+  //   fallback uppercase name. Ticket không match passenger nào → bỏ qua (dữ liệu
+  //   cũ chưa gán passengerId).
   const rows = useMemo(() => {
     const map = new Map()
     const getCompany = (id) => companies.find(c => c.id === id)
+
+    // 1) Seed rows cho mỗi khách-lẻ đã tạo.
+    for (const p of walkInPassengers) {
+      const paxName = (p.fullName || '').trim().toUpperCase()
+      if (!paxName) continue
+      const key = `p:${p.id}`   // key theo ID để tránh đụng tên trùng.
+      map.set(key, {
+        key,
+        companyId: null,
+        passengerId: p.id,
+        passengerKey: paxName,  // dùng để match ticket nếu không có passengerId
+        name: paxName,
+        isWalkIn: true,
+        ticketCount: 0,
+        ticket: 0, iss: 0, revenue: 0, debt: 0,
+        unpaidBookings: [],
+        // 2026-11-08: Phí xuất vé GẦN NHẤT theo loại tuyến.
+        latestDomestic: null,
+        latestInternational: null,
+        // 2026-11-08: Referrer lấy trực tiếp từ passenger (khỏi lệ thuộc booking).
+        referrerName: p.referrerName || null,
+      })
+    }
+    // Reverse index tên → key để match ticket theo tên nhanh.
+    const walkInByName = new Map()
+    for (const r of map.values()) walkInByName.set(r.passengerKey, r.key)
+    // 2026-11-08: Set các companyId là "khách lẻ sentinel" (Company seed
+    //   tên "Khách lẻ") — để KHÔNG tạo row Công ty cho chúng. Nhận diện
+    //   qua companyName trong bản thân passenger walk-in (BE trả về).
+    const walkInCompanyIds = new Set()
+    for (const p of walkInPassengers) {
+      if (p.companyId != null) walkInCompanyIds.add(p.companyId)
+    }
+
+    // 2) Gộp booking: ƯU TIÊN match theo passengerId (ticket chọn từ dropdown
+    //    → BE/FE set luôn companyId = id của "Khách lẻ" sentinel, nên nếu
+    //    duyệt companyId trước thì vé walk-in sẽ vào bucket Company "Khách lẻ"
+    //    sai chỗ). Thứ tự match:
+    //      1) passengerId có trong map (seeded từ walkInPassengers) → walk-in row
+    //      2) companyId != null và KHÔNG phải sentinel → company row
+    //      3) passengerName match tên walk-in đã tạo → walk-in row
+    //      4) Không match gì → skip (ko tạo row ảo)
     for (const b of bookings) {
       const isUnpaid = (b.paymentStatus || 'UNPAID') !== 'PAID'
+      const relatedKeys = new Set()
       for (const t of (b.tickets || [])) {
         const cid = t.companyId
         const paxName = (t.passengerName || '').trim().toUpperCase()
-        // 2026-11-07 (rev): không có companyId → key theo tên hành khách;
-        //   tên trống → skip (không đủ dữ liệu để liệt kê thành 1 KH riêng).
-        const key = cid != null ? `c${cid}`
-          : paxName ? `p:${paxName}`
-          : null
-        if (!key) continue
-        if (!map.has(key)) {
-          const c = cid != null ? getCompany(cid) : null
-          map.set(key, {
-            key,
-            companyId: cid,                 // null cho khách lẻ
-            name: c?.name || paxName,
-            isWalkIn: cid == null,          // badge "Khách lẻ" / "Công ty"
-            ticketCount: 0,                 // 2026-11-07: số vé theo HÀNH KHÁCH
-            ticket: 0, iss: 0, revenue: 0, debt: 0,
-            unpaidBookings: [],             // 2026-11-07: để mở modal chi tiết
-          })
+        let key = null
+        if (t.passengerId != null && map.has(`p:${t.passengerId}`)) {
+          key = `p:${t.passengerId}`
+        } else if (cid != null && !walkInCompanyIds.has(cid)) {
+          key = `c${cid}`
+          if (!map.has(key)) {
+            const c = getCompany(cid)
+            map.set(key, {
+              key, companyId: cid, name: c?.name || `#${cid}`, isWalkIn: false,
+              ticketCount: 0, ticket: 0, iss: 0, revenue: 0, debt: 0,
+              unpaidBookings: [],
+              latestDomestic: null, latestInternational: null, referrerName: null,
+            })
+          }
+        } else if (paxName && walkInByName.has(paxName)) {
+          key = walkInByName.get(paxName)
+        } else {
+          continue    // Khách lẻ chưa tạo record / company là sentinel → skip.
         }
         const sums = ticketSums(t, b)
         const r = map.get(key)
-        // ── 2026-11-07 (rev2): CHỈ loại các vé có SELL PRICE = 0.
-        //   issuanceFee = 0 vẫn đếm (vé thực mua có thể miễn phí xuất vé).
-        //   sellPrice = ticketPrice + issuanceFee (đã quy đổi VND).
         const sellPrice = sums.ticketPrice + sums.issuanceFee
         if (sellPrice > 0.5) r.ticketCount += 1
         r.ticket  += sums.ticketPrice
         r.iss     += sums.issuanceFee
         r.revenue += sellPrice
         if (isUnpaid) r.debt += sellPrice
-      }
-      // 2026-11-07: gắn booking UNPAID vào mỗi row liên quan (để modal chi tiết).
-      if ((b.paymentStatus || 'UNPAID') !== 'PAID') {
-        // Booking có thể có vé của nhiều company (hiếm) → add vào mọi key liên quan.
-        const addedKeys = new Set()
-        for (const t of (b.tickets || [])) {
-          const cid = t.companyId
-          const paxName = (t.passengerName || '').trim().toUpperCase()
-          const k = cid != null ? `c${cid}` : paxName ? `p:${paxName}` : null
-          if (k && !addedKeys.has(k) && map.has(k)) {
-            addedKeys.add(k)
-            map.get(k).unpaidBookings.push(b)
+        relatedKeys.add(key)
+
+        // 2026-11-08: Theo dõi BOOKING GẦN NHẤT theo nội địa / quốc tế.
+        //   "Gần nhất" dựa trên saleDate (fallback createdAt).
+        //   Lưu per-ticket để UI render được breakdown: cùng phí → gộp tên,
+        //   khác phí → tách dòng.
+        const when = b.saleDate || b.createdAt || 0
+        const issThis = sums.issuanceFee
+        if (issThis > 0.5) {
+          const target = isDomesticBooking(b) ? 'latestDomestic' : 'latestInternational'
+          const current = r[target]
+          const ticketEntry = {
+            name: (t.passengerName || '').trim().toUpperCase() || '—',
+            iss: issThis,
           }
+          if (!current || when > current.saleDate) {
+            // Booking mới hơn → reset.
+            r[target] = {
+              bookingId: b.id,
+              bookingCode: b.bookingCode,
+              saleDate: when,
+              tickets: [ticketEntry],
+            }
+          } else if (current.bookingId === b.id) {
+            // Cùng booking → append vé.
+            current.tickets.push(ticketEntry)
+          }
+          // Cũ hơn → bỏ.
         }
+      }
+      if (isUnpaid) {
+        for (const k of relatedKeys) map.get(k).unpaidBookings.push(b)
       }
     }
     // 2026-11-07 (rev): Attach dates (within window) + noteCount.
     //   Chỉ lấy ngày từ HÔM NAY trở đi cho tới +90 ngày.
     const nowMs = Date.now()
     const list = [...map.values()]
+    // 2026-11-08 (rev4): meta dùng r.key (vừa cho company 'c<id>' vừa cho
+    //   walk-in 'p:<pid>'), nên khách lẻ cũng có ngày quan trọng + ghi chú.
     for (const r of list) {
-      if (r.companyId != null) {
-        const { dates: ds, notes } = metaOf(meta, r.companyId)
-        const upcoming = ds
-          .map(d => ({ ...d, _date: nextSolarOccurrence(d, nowMs) }))
-          .filter(d => d._date && daysUntil(d._date, nowMs) <= UPCOMING_WINDOW_DAYS && daysUntil(d._date, nowMs) >= 0)
-          .sort((a, b) => a._date.getTime() - b._date.getTime())
-        r.upcoming = upcoming
-        r.noteCount = notes.length
-        r.nearestDays = upcoming.length ? daysUntil(upcoming[0]._date, nowMs) : Infinity
-      } else {
-        r.upcoming = []
-        r.noteCount = 0
-        r.nearestDays = Infinity
-      }
+      const { dates: ds, notes } = metaOf(meta, r.key)
+      const upcoming = ds
+        .map(d => ({ ...d, _date: nextSolarOccurrence(d, nowMs) }))
+        .filter(d => d._date && daysUntil(d._date, nowMs) <= UPCOMING_WINDOW_DAYS && daysUntil(d._date, nowMs) >= 0)
+        .sort((a, b) => a._date.getTime() - b._date.getTime())
+      r.upcoming = upcoming
+      r.noteCount = notes.length
+      r.nearestDays = upcoming.length ? daysUntil(upcoming[0]._date, nowMs) : Infinity
     }
     return list
-  }, [bookings, companies, meta])
+  }, [bookings, companies, walkInPassengers, meta])
 
   // Filter + sort.
   const filtered = useMemo(() => {
     // ── 2026-11-07 (rev): filter theo loại khách (Công ty / Khách lẻ) trước.
-    let out = rows.filter(r => (kind === 'walkin') === !!r.isWalkIn)
+    // ── 2026-11-08: Ở tab Công ty, bỏ luôn các row có tên "Khách lẻ" (phòng
+    //    trường hợp DB có record Company tên trùng).
+    let out = rows.filter(r => {
+      if ((kind === 'walkin') !== !!r.isWalkIn) return false
+      if (kind === 'company' && /^kh[aá]ch\s+l[eẻ]$/i.test((r.name || '').trim())) return false
+      return true
+    })
     const qq = q.trim().toLowerCase()
     if (qq) out = out.filter(r => r.name.toLowerCase().includes(qq))
     const dir = sortDir === 'asc' ? 1 : -1
@@ -387,11 +589,11 @@ export default function CustomersTab() {
     })
   }
 
-  const SortH = ({ k, children, align = 'left' }) => {
+  const SortH = ({ k, children, align = 'left', style }) => {
     const active = sortKey === k
     const arrow = active ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'
     return (
-      <th onClick={() => toggleSort(k)}
+      <th onClick={() => toggleSort(k)} style={style}
         className={`px-3 py-2 text-xs font-bold text-gray-600 cursor-pointer select-none whitespace-nowrap bg-gray-50
           ${align === 'right' ? 'text-right' : 'text-left'}
           ${active ? 'text-blue-700' : 'hover:text-gray-900'}`}>
@@ -434,31 +636,41 @@ export default function CustomersTab() {
       </div>
 
       <div className="flex-1 overflow-auto rounded-xl border border-gray-200 bg-white">
-        <table className="w-full text-sm">
+        {/* 2026-11-08 (rev4): table-layout fixed + colgroup — đảm bảo widths
+            giống hệt ở cả 2 tab Công ty / Khách lẻ, không bị flick layout. */}
+        <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: '26%' }} />   {/* Tên khách hàng */}
+            <col style={{ width: '12%' }} />   {/* Tổng tiền vé */}
+            <col style={{ width: '14%' }} />   {/* Tổng phí xuất vé (+ vé) */}
+            <col style={{ width: '13%' }} />   {/* Tổng doanh thu */}
+            <col style={{ width: '20%' }} />   {/* Công nợ hiện tại (+15% share) */}
+            <col style={{ width: '15%' }} />   {/* Ngày sắp tới (-15% share) */}
+          </colgroup>
           <thead className="sticky top-0 z-10 bg-gray-50">
-            <tr>
+            {/* 2026-11-08 (rev5): tương tự body — pseudo ::after inset khỏi
+                top/bottom header cell → giao điểm mượt với line ngang. */}
+            <tr className={``}>
+              {/* 2026-11-08 (rev3): Để các cột auto-size cho cân, chỉ fix width
+                  cột "Công nợ" (vì badges cần chỗ cố định 3/dòng). */}
               <th className="px-3 py-2 text-xs font-bold text-gray-600 bg-gray-50 text-left whitespace-nowrap">
                 Tên khách hàng
               </th>
-              {/* 2026-11-07: thêm cột Số vé đã mua (đếm theo HÀNH KHÁCH) */}
-              <SortH k="ticketCount" align="right">Số vé đã mua</SortH>
               <SortH k="ticket" align="right">Tổng tiền vé</SortH>
               <SortH k="iss"    align="right">Tổng phí xuất vé</SortH>
               <SortH k="revenue" align="right">Tổng doanh thu</SortH>
-              <SortH k="debt"    align="right">Công nợ hiện tại</SortH>
-              <SortH k="date">Ngày sắp tới (3 tháng)</SortH>
-              <th className="px-3 py-2 text-xs font-bold text-gray-600 bg-gray-50"></th>
+              <SortH k="debt" align="right">Công nợ hiện tại</SortH>
+              <SortH k="date" align="right">Ngày sắp tới</SortH>
             </tr>
           </thead>
           <tbody>
             {loading && filtered.length === 0 ? (
-              <tr><td colSpan={8} className="text-center text-xs text-gray-400 italic py-10">Đang tải…</td></tr>
+              <tr><td colSpan={6} className="text-center text-xs text-gray-400 italic py-10">Đang tải…</td></tr>
             ) : filtered.length === 0 ? (
-              <tr><td colSpan={8} className="text-center text-xs text-gray-400 italic py-10">Không có khách hàng</td></tr>
+              <tr><td colSpan={6} className="text-center text-xs text-gray-400 italic py-10">Không có khách hàng</td></tr>
             ) : filtered.map(r => (
-              <tr key={r.key} className="border-t border-gray-100 hover:bg-blue-50/30">
-                <td className="px-3 py-2 font-semibold text-gray-900">
-                  {/* 2026-11-07 (rev): badge TRƯỚC tên — xanh cho công ty, cam cho khách lẻ. */}
+              <tr key={r.key} className={`border-t border-gray-100 hover:bg-blue-50/30`}>
+                <td className="px-3 py-3 font-semibold text-gray-900 whitespace-normal break-words">
                   <span className={`mr-2 text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded font-bold ${
                     r.isWalkIn
                       ? 'bg-amber-100 text-amber-800'
@@ -466,48 +678,73 @@ export default function CustomersTab() {
                   }`}>
                     {r.isWalkIn ? 'Khách lẻ' : 'Công ty'}
                   </span>
-                  {r.name}
+                  {/* 2026-11-08 (rev4): Click vào TÊN (cả khách lẻ + công ty)
+                      → mở modal Ngày quan trọng & ghi chú. Khách lẻ có thêm
+                      section Người giới thiệu ở trên. Noti nhỏ (N) khi có note. */}
+                  <button type="button"
+                    onClick={() => setEditFor(r)}
+                    title="Click để quản lý ngày quan trọng & ghi chú"
+                    className={`hover:underline decoration-dotted cursor-pointer
+                      ${r.isWalkIn ? 'decoration-amber-400' : 'decoration-blue-400'}`}>
+                    {r.name}
+                    {r.noteCount > 0 && (
+                      <span className="ml-1.5 text-[10px] font-semibold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">
+                        {r.noteCount} 📝
+                      </span>
+                    )}
+                  </button>
                 </td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums font-bold text-blue-700">{r.ticketCount}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums">{formatMoney(r.ticket, 'VND', { withUnit: false })}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums">{formatMoney(r.iss, 'VND', { withUnit: false })}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums font-bold text-emerald-700">{formatMoney(r.revenue, 'VND', { withUnit: false })}</td>
-                <td className="px-3 py-2 text-right font-mono tabular-nums font-bold">
+                <td className="px-3 py-3.5 text-right font-mono tabular-nums">{formatMoney(r.ticket, 'VND', { withUnit: false })}</td>
+                <td className="px-3 py-3.5 text-right font-mono tabular-nums whitespace-nowrap">
+                  {formatMoney(r.iss, 'VND', { withUnit: false })}
+                  {/* 2026-11-08 (rev2): gộp số vé đã mua vào trong ngoặc, sau phí xuất vé. */}
+                  <span className="ml-1 text-[11px] font-sans text-blue-700 font-semibold">
+                    ({r.ticketCount} vé)
+                  </span>
+                </td>
+                <td className="px-3 py-3.5 text-right font-mono tabular-nums font-bold text-emerald-700">
+                  <button type="button"
+                    onClick={() => setDetailFor({ row: r, mode: 'revenue' })}
+                    title="Click để xem phí xuất vé Quốc tế / Quốc nội gần nhất"
+                    className="hover:bg-emerald-50 rounded px-1 -mx-1 cursor-pointer underline decoration-dotted decoration-emerald-300">
+                    {formatMoney(r.revenue, 'VND', { withUnit: false })}
+                  </button>
+                </td>
+                <td className="px-3 py-3.5 text-right font-mono tabular-nums font-bold">
                   {r.debt > 0 ? (
-                    <button type="button"
-                      onClick={() => setDebtFor(r)}
-                      title="Click để xem chi tiết hóa đơn / booking chưa thanh toán"
-                      className="text-rose-700 hover:bg-rose-50 rounded px-1 -mx-1 cursor-pointer underline decoration-dotted decoration-rose-300">
-                      {formatMoney(r.debt, 'VND', { withUnit: false })}
-                    </button>
+                    <>
+                      <button type="button"
+                        onClick={() => setDebtFor(r)}
+                        title="Click để xem chi tiết hóa đơn / booking chưa thanh toán"
+                        className="text-rose-700 hover:bg-rose-50 rounded px-1 -mx-1 cursor-pointer underline decoration-dotted decoration-rose-300">
+                        {formatMoney(r.debt, 'VND', { withUnit: false })}
+                      </button>
+                      {/* 2026-11-08 (rev3): Wrapper min-width 280 để table layout
+                          dành chỗ cho 3 badges/dòng, khoảng cách badges đều. */}
+                      <DebtDatesBadges bookings={r.unpaidBookings} />
+                    </>
                   ) : <span className="text-gray-400">—</span>}
                 </td>
-                <td className="px-3 py-2">
-                  {/* 2026-11-07 (rev): CHỈ hiển thị ngày sắp tới trong 90 ngày,
-                      mỗi ngày 1 dòng. Note KHÔNG hiện ở đây — chỉ trong modal. */}
+                <td className="px-3 py-3.5 text-right">
+                  {/* 2026-11-08 (rev4): canh phải — dòng 1 thứ + ngày, dòng 2
+                      label + số ngày còn lại. */}
                   {r.upcoming && r.upcoming.length > 0 ? (
-                    <div className="flex flex-col gap-0.5">
+                    <div className="flex flex-col gap-1.5 items-end">
                       {r.upcoming.map((d, i) => (
-                        <div key={i} className="text-xs">
-                          {/* 2026-11-07: luôn in thứ trong tuần cho ngày sắp tới. */}
-                          <b className="text-indigo-700">{vnWeekday(d._date)}, {fmtLocalDate(d._date)}</b>
-                          <span className="text-gray-500"> — {d.label}</span>
-                          <span className="ml-1 text-[10px] text-gray-400">
-                            (còn {daysUntil(d._date)} ngày{d.year ? ' · 1 lần' : ''})
-                          </span>
+                        <div key={i} className="text-xs leading-tight text-right">
+                          <div className="font-bold text-indigo-700 whitespace-nowrap">
+                            {vnWeekday(d._date)}, {fmtLocalDate(d._date)}
+                          </div>
+                          <div className="text-[11px] text-gray-500 break-words">
+                            {d.label}
+                            <span className="ml-1 text-[10px] text-gray-400">
+                              (còn {daysUntil(d._date)} ngày{d.year ? ' · 1 lần' : ''})
+                            </span>
+                          </div>
                         </div>
                       ))}
                     </div>
                   ) : <span className="text-xs text-gray-400 italic">—</span>}
-                </td>
-                <td className="px-3 py-2 text-right">
-                  {r.companyId != null && (
-                    <button type="button" onClick={() => setEditFor(r)}
-                      title="Quản lý ngày quan trọng + ghi chú"
-                      className="px-2 py-1 rounded-md bg-indigo-50 text-indigo-700 text-xs font-semibold hover:bg-indigo-100 whitespace-nowrap">
-                      📅 Ngày &amp; ghi chú{r.noteCount > 0 ? ` (${r.noteCount})` : ''}
-                    </button>
-                  )}
                 </td>
               </tr>
             ))}
@@ -518,16 +755,39 @@ export default function CustomersTab() {
       {debtFor && (
         <DebtDetailModal row={debtFor} onClose={() => setDebtFor(null)} />
       )}
+      {detailFor && (
+        <RevenueDetailModal
+          row={detailFor.row}
+          mode={detailFor.mode}
+          onClose={() => setDetailFor(null)}
+          onReferrerSaved={(pid, ref) => {
+            // Cập nhật in-place walkInPassengers để row + modal re-render với
+            // referrer mới (khỏi phải refetch cả list).
+            setWalkInPassengers(list => list.map(p =>
+              p.id === pid ? { ...p, referrerName: ref } : p
+            ))
+            setDetailFor(d => d && d.row.passengerId === pid
+              ? { ...d, row: { ...d.row, referrerName: ref } }
+              : d)
+          }}
+        />
+      )}
       {editFor && (
         <CustomerMetaModal
           customer={editFor}
-          initialDates={metaOf(meta, editFor.companyId).dates}
-          initialNotes={metaOf(meta, editFor.companyId).notes}
+          initialDates={metaOf(meta, editFor.key).dates}
+          initialNotes={metaOf(meta, editFor.key).notes}
           onClose={() => setEditFor(null)}
           onSave={({ dates, notes }) => {
-            onMetaChanged(editFor.companyId, { dates, notes })
+            onMetaChanged(editFor.key, { dates, notes })
             setEditFor(null)
           }}
+          onReferrerSaved={editFor.isWalkIn ? ((pid, ref) => {
+            setWalkInPassengers(list => list.map(p =>
+              p.id === pid ? { ...p, referrerName: ref } : p))
+            setEditFor(f => f && f.passengerId === pid
+              ? { ...f, referrerName: ref } : f)
+          }) : null}
         />
       )}
     </div>
@@ -550,7 +810,7 @@ function newId() {
     : `id-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-function CustomerMetaModal({ customer, initialDates, initialNotes, onClose, onSave }) {
+function CustomerMetaModal({ customer, initialDates, initialNotes, onClose, onSave, onReferrerSaved }) {
   const [dates, setDates] = useState(() => initialDates.map(d => ({ ...d })))
   const [notes, setNotes] = useState(() => initialNotes.map(n => ({ ...n })))
   // 2026-11-07 (rev): panel toggle thay cho 2 cột. Default = 'notes'.
@@ -599,10 +859,11 @@ function CustomerMetaModal({ customer, initialDates, initialNotes, onClose, onSa
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" onClick={onClose} />
-      {/* 2026-11-07 (rev2): size 80dvw × 80dvh (+10dvh), styled hơn. */}
-      <div className="relative w-[80dvw] h-[80dvh] bg-gradient-to-b from-white to-slate-50 rounded-2xl shadow-2xl flex flex-col overflow-hidden ring-1 ring-black/5">
-        {/* ── Header gradient ── */}
-        <div className="shrink-0 px-6 py-4 bg-gradient-to-r from-indigo-600 via-blue-600 to-cyan-600 text-white flex items-center justify-between">
+      {/* 2026-11-08 (rev4): Nền slate-100 (tối hơn trắng) — darkmode remap sang
+          #1e293b, light mode cũng dịu hơn gradient trắng trước đây. */}
+      <div className="relative w-[80dvw] h-[80dvh] bg-slate-100 rounded-2xl shadow-2xl flex flex-col overflow-hidden ring-1 ring-black/10">
+        {/* ── Header gradient — dịu hơn: indigo-700 → blue-700 ── */}
+        <div className="shrink-0 px-6 py-4 bg-gradient-to-r from-indigo-700 to-blue-700 text-white flex items-center justify-between">
           <div className="min-w-0 flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center text-xl backdrop-blur-sm">
               🗂️
@@ -616,9 +877,17 @@ function CustomerMetaModal({ customer, initialDates, initialNotes, onClose, onSa
             className="w-9 h-9 rounded-lg text-white/80 hover:bg-white/15 text-xl shrink-0">×</button>
         </div>
 
+        {/* 2026-11-08: Section Người giới thiệu — chỉ khách lẻ. Ở đầu modal
+            để nhân viên bàn luôn thấy trước khi scroll xuống ngày/ghi chú. */}
+        {customer.isWalkIn && customer.passengerId != null && (
+          <div className="shrink-0 px-6 pt-4">
+            <ReferrerEditor row={customer} onSaved={onReferrerSaved} />
+          </div>
+        )}
+
         {/* ── Panel toggle (segmented) ── */}
         <div className="shrink-0 px-6 pt-4">
-          <div className="inline-flex p-1 rounded-xl bg-slate-100 border border-slate-200">
+          <div className="inline-flex p-1 rounded-xl bg-slate-200 border border-slate-300">
             <button onClick={() => setPanel('notes')}
               className={`px-4 py-2 rounded-lg text-sm font-semibold transition flex items-center gap-2 ${
                 panel === 'notes'
@@ -687,17 +956,18 @@ function CustomerMetaModal({ customer, initialDates, initialNotes, onClose, onSa
 function NotesPanel({ notes, nText, setNText, addNote, removeNote, updateNote, editingNoteId, setEditingNoteId }) {
   return (
     <div className="space-y-4">
-      <div className="p-4 rounded-xl bg-gradient-to-br from-amber-50 to-orange-50 border border-amber-200 shadow-sm space-y-3">
-        <div className="text-[11px] font-bold uppercase tracking-wide text-amber-800 flex items-center gap-2">
+      {/* 2026-11-08 (rev4): Tone neutral — bỏ gradient vàng chói. */}
+      <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 shadow-sm space-y-3">
+        <div className="text-[11px] font-bold uppercase tracking-wide text-amber-700 flex items-center gap-2">
           <span>✍️</span> Thêm ghi chú mới
         </div>
         <textarea value={nText} onChange={e => setNText(e.target.value)}
           placeholder="VD: Khách thích gộp HĐ đầu tháng; email kế toán nh.lan@example.com; thường đặt vé thứ 6…"
           rows={4}
-          className="w-full px-3 py-2 rounded-lg border border-amber-200 bg-white text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200 resize-y leading-relaxed" />
+          className="w-full px-3 py-2 rounded-lg border border-slate-300 bg-white text-sm outline-none focus:border-amber-500 focus:ring-2 focus:ring-amber-200 resize-y leading-relaxed" />
         <div className="flex justify-end">
           <button type="button" onClick={addNote}
-            className="h-10 px-4 rounded-lg bg-gradient-to-r from-amber-500 to-orange-500 text-white text-xs font-bold shadow-sm shadow-amber-500/30 hover:shadow-md">
+            className="h-10 px-4 rounded-lg bg-amber-600 text-white text-xs font-bold hover:bg-amber-500">
             + Thêm ghi chú
           </button>
         </div>
@@ -746,24 +1016,25 @@ function DatesPanel({
 }) {
   return (
     <div className="space-y-4">
-      <div className="p-4 rounded-xl bg-gradient-to-br from-indigo-50 to-blue-50 border border-indigo-200 shadow-sm space-y-3">
-        <div className="text-[11px] font-bold uppercase tracking-wide text-indigo-800 flex items-center gap-2">
+      {/* 2026-11-08 (rev4): Tone neutral — bỏ gradient chói, dùng slate-50/100. */}
+      <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 shadow-sm space-y-3">
+        <div className="text-[11px] font-bold uppercase tracking-wide text-indigo-700 flex items-center gap-2">
           <span>➕</span> Thêm ngày mới
         </div>
         <input type="text" value={dLabel} onChange={e => setDLabel(e.target.value)}
           placeholder="Nhãn (VD: SN sếp Hùng, SN chị Lan, Kỷ niệm thành lập…)"
-          className="w-full h-10 px-3 py-0 rounded-lg border border-indigo-200 bg-white text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200" />
+          className="w-full h-10 px-3 py-0 rounded-lg border border-slate-300 bg-white text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200" />
         <div className="flex flex-wrap gap-2 items-end">
           <LabeledInput label="Ngày" value={dDay} onChange={setDDay} width="w-20" placeholder="DD" maxLen={2} />
           <LabeledInput label="Tháng" value={dMonth} onChange={setDMonth} width="w-20" placeholder="MM" maxLen={2} />
           <LabeledInput label="Năm (tuỳ chọn)" value={dYear} onChange={setDYear} width="w-28" placeholder="YYYY" maxLen={4} />
           <div className="flex-1" />
           <button type="button" onClick={addDate}
-            className="h-10 px-4 rounded-lg bg-gradient-to-r from-indigo-600 to-blue-600 text-white text-xs font-bold shadow-sm shadow-indigo-500/30 hover:shadow-md">
+            className="h-10 px-4 rounded-lg bg-indigo-700 text-white text-xs font-bold hover:bg-indigo-600">
             + Thêm ngày
           </button>
         </div>
-        <div className="text-[10px] text-indigo-700">
+        <div className="text-[10px] text-slate-500">
           💡 Không nhập năm → lặp lại hàng năm. Nhập năm → ngày 1-lần (VD kỷ niệm năm 2027).
         </div>
       </div>
@@ -774,13 +1045,13 @@ function DatesPanel({
         <ul className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
           {dates.map(d => (
             <li key={d.id}
-              className="rounded-xl border border-slate-200 bg-white shadow-sm hover:shadow-md transition overflow-hidden">
+              className="rounded-xl border border-slate-200 bg-slate-50 shadow-sm hover:shadow-md transition overflow-hidden">
               {editingDateId === d.id ? (
                 <DateEditRow value={d} onCancel={() => setEditingDateId(null)}
                   onSave={(patch) => { updateDate(d.id, patch); setEditingDateId(null) }} />
               ) : (
                 <div className="p-3 flex items-center gap-3">
-                  <div className="shrink-0 w-14 h-14 rounded-xl bg-gradient-to-br from-indigo-500 to-blue-500 text-white flex flex-col items-center justify-center shadow">
+                  <div className="shrink-0 w-14 h-14 rounded-xl bg-indigo-700 text-white flex flex-col items-center justify-center">
                     <div className="text-[9px] uppercase tracking-wider leading-none mt-0.5">Th {d.month}</div>
                     <div className="text-xl font-black leading-none">{d.day}</div>
                     {d.year && <div className="text-[9px] opacity-80 leading-none mt-0.5">{d.year}</div>}
@@ -954,6 +1225,9 @@ function DebtDetailModal({ row, onClose }) {
                   <th className="px-3 py-2.5 text-left text-[11px] font-bold text-gray-600 uppercase tracking-wide">Hành trình</th>
                   <th className="px-3 py-2.5 text-left text-[11px] font-bold text-gray-600 uppercase tracking-wide">Tên hành khách</th>
                   <th className="px-3 py-2.5 text-right text-[11px] font-bold text-gray-600 uppercase tracking-wide">Số tiền</th>
+                  {/* 2026-11-08: Số ngày công nợ — từ ngày phát hành (nếu có)
+                      hoặc ngày xuất vé đến ngày hiện tại. */}
+                  <th className="px-3 py-2.5 text-right text-[11px] font-bold text-gray-600 uppercase tracking-wide w-28">Số ngày CN</th>
                 </tr>
               </thead>
               <tbody>
@@ -1025,6 +1299,13 @@ function DebtDetailModal({ row, onClose }) {
                     <td className="px-3 py-2 text-right font-mono tabular-nums font-bold text-rose-700 whitespace-nowrap">
                       {formatMoney(it.amount, 'VND', { withUnit: false })} <span className="text-[10px] text-gray-500">VND</span>
                     </td>
+                    {/* 2026-11-08: Số ngày công nợ. Tính từ ngày phát hành (nếu
+                        hóa đơn đã issued), ngược lại từ ngày xuất vé. Badge màu
+                        đổi theo mức độ (càng lâu càng đậm). */}
+                    <td className="px-3 py-2 text-right whitespace-nowrap">
+                      <DebtAgeBadge
+                        fromMs={it.type === 'invoice' && it.issueDate ? it.issueDate : it.saleDate} />
+                    </td>
                   </tr>
                 ))}
                 {/* TỔNG CÔNG NỢ — label sát số tiền (~30px). */}
@@ -1036,6 +1317,7 @@ function DebtDetailModal({ row, onClose }) {
                   <td className="px-3 py-2.5 text-right font-mono tabular-nums font-black text-rose-800 text-sm whitespace-nowrap">
                     {formatMoney(total, 'VND', { withUnit: false })} <span className="text-[10px]">VND</span>
                   </td>
+                  <td className="px-3 py-2.5"></td>
                 </tr>
               </tbody>
             </table>
@@ -1165,4 +1447,218 @@ function buildDebtItems(bookings) {
     }
   }
   return out
+}
+
+// ═══════════════════════════════════════════════════════════
+//  2026-11-08: RevenueDetailModal — click doanh thu (hoặc tên
+//  khách lẻ) để xem:
+//    - Phí xuất vé Quốc tế gần nhất (breakdown theo phí nếu khác nhau)
+//    - Phí xuất vé Quốc nội gần nhất (tương tự)
+//    - Người giới thiệu (chỉ khách lẻ)
+// ═══════════════════════════════════════════════════════════
+
+/**
+ * Gộp list tickets theo số tiền phí xuất vé.
+ * Return: [{ amount, names: [...] }, ...] — sorted theo amount desc.
+ */
+function groupTicketsByFee(tickets) {
+  if (!Array.isArray(tickets) || tickets.length === 0) return []
+  const m = new Map()
+  for (const t of tickets) {
+    const k = String(Math.round(t.iss))   // key theo integer VND để tránh floating
+    if (!m.has(k)) m.set(k, { amount: t.iss, names: [] })
+    m.get(k).names.push(t.name)
+  }
+  return [...m.values()].sort((a, b) => b.amount - a.amount)
+}
+
+function RevenueDetailModal({ row, mode = 'revenue', onClose, onReferrerSaved }) {
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+
+  const dom = row.latestDomestic
+  const intl = row.latestInternational
+  const isReferrer = mode === 'referrer'
+  const title = isReferrer ? 'Thông tin khách lẻ' : 'Chi tiết doanh thu'
+
+  return (
+    <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-md" onClick={onClose} />
+      <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl overflow-hidden ring-1 ring-black/5">
+        <div className={`px-5 py-3 text-white flex items-center justify-between
+          ${isReferrer
+            ? 'bg-gradient-to-r from-amber-600 to-orange-600'
+            : 'bg-gradient-to-r from-emerald-600 to-teal-600'}`}>
+          <div className="min-w-0">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-white/80">
+              {title} — {row.isWalkIn ? 'Khách lẻ' : 'Công ty'}
+            </div>
+            <div className="text-base font-bold truncate">{row.name}</div>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-lg hover:bg-white/15 text-xl leading-none">×</button>
+        </div>
+        <div className="p-4 space-y-3">
+          {isReferrer ? (
+            <ReferrerEditor row={row} onSaved={onReferrerSaved} />
+          ) : (
+            <>
+              <FeeBreakdownCard title="Phí xuất vé Quốc tế gần nhất" info={intl} tone="indigo" />
+              <FeeBreakdownCard title="Phí xuất vé Quốc nội gần nhất" info={dom} tone="emerald" />
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/**
+ * 2026-11-08: Editor inline cho người giới thiệu của khách lẻ.
+ *   - Rỗng (null/blank) → display "Khách mới" (italic).
+ *   - Click "Sửa" → textbox + Lưu/Hủy.
+ *   - Lưu → PATCH /passengers/{id}/referrer, cập nhật lại row ở list cha.
+ */
+function ReferrerEditor({ row, onSaved }) {
+  const [editing, setEditing] = useState(false)
+  const [value, setValue]     = useState(row.referrerName || '')
+  const [busy, setBusy]       = useState(false)
+
+  const save = async () => {
+    if (!row.passengerId) {
+      toast.error('Không xác định được passenger')
+      return
+    }
+    setBusy(true)
+    try {
+      const v = value.trim()
+      await updatePassengerReferrer(row.passengerId, v || null)
+      onSaved?.(row.passengerId, v || null)
+      setEditing(false)
+      toast.success('Đã cập nhật người giới thiệu')
+    } catch (e) {
+      console.error(e)
+      toast.error('Lưu thất bại')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const cancel = () => { setValue(row.referrerName || ''); setEditing(false) }
+  const hasVal = !!(row.referrerName && row.referrerName.trim())
+
+  return (
+    <div className="p-3 rounded-lg bg-amber-50 border border-amber-200">
+      <div className="flex items-center justify-between">
+        <div className="text-[10px] font-bold uppercase tracking-wide text-amber-700">Người giới thiệu</div>
+        {!editing && (
+          <button type="button" onClick={() => setEditing(true)}
+            className="text-[11px] font-semibold text-amber-700 hover:text-amber-800 hover:underline">
+            ✎ Sửa
+          </button>
+        )}
+      </div>
+      {editing ? (
+        <div className="mt-2">
+          <input type="text" value={value} autoFocus
+            onChange={e => setValue(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter') save()
+              else if (e.key === 'Escape') cancel()
+            }}
+            className="w-full px-2 py-1.5 rounded-md bg-white border border-amber-300
+              focus:border-amber-500 focus:ring-2 focus:ring-amber-400/30 outline-none text-sm"
+            placeholder='VD: "Tiểu Hà (Zalo) thuộc Create Medic" — rỗng = Khách mới' />
+          <div className="mt-2 flex items-center justify-end gap-2">
+            <button type="button" onClick={cancel} disabled={busy}
+              className="px-3 py-1 rounded-md text-xs font-semibold text-gray-600 hover:bg-gray-100">
+              Hủy
+            </button>
+            <button type="button" onClick={save} disabled={busy}
+              className="px-3 py-1 rounded-md text-xs font-semibold text-white bg-amber-600 hover:bg-amber-500 disabled:opacity-60">
+              {busy ? 'Đang lưu…' : 'Lưu'}
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-1 text-sm font-semibold text-amber-800">
+          {hasVal
+            ? row.referrerName
+            : <span className="italic text-gray-500">Khách mới</span>}
+        </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Card hiển thị phí xuất vé GẦN NHẤT của 1 loại tuyến.
+ *   - info = null → "Chưa có vé loại này".
+ *   - tickets cùng amount → "n cho A, B, C".
+ *   - tickets khác amount → nhiều dòng, mỗi dòng "n cho A và B".
+ * Tone palette chọn class có remap sẵn trong darkmode.css để không bị trôi.
+ */
+function FeeBreakdownCard({ title, info, tone }) {
+  // Bảng tone → bộ class (background + border + label + body).
+  //   Dùng class literal (không string interp Tailwind) để JIT giữ được class.
+  // Chọn 700/800: darkmode.css có remap các mức này nên hiển thị tốt ở cả 2 theme.
+  const toneMap = {
+    indigo: {
+      bg:    'bg-indigo-50 border-indigo-200',
+      label: 'text-indigo-700',
+      body:  'text-indigo-800',
+      muted: 'text-indigo-700',
+    },
+    emerald: {
+      bg:    'bg-emerald-50 border-emerald-200',
+      label: 'text-emerald-700',
+      body:  'text-emerald-800',
+      muted: 'text-emerald-700',
+    },
+  }
+  const c = toneMap[tone] || toneMap.indigo
+
+  if (!info) {
+    return (
+      <div className={`p-3 rounded-lg border ${c.bg}`}>
+        <div className={`text-[10px] font-bold uppercase tracking-wide ${c.label}`}>{title}</div>
+        <div className="mt-1 text-sm italic text-gray-500">Chưa có vé loại này</div>
+      </div>
+    )
+  }
+  const groups = groupTicketsByFee(info.tickets)
+  const allSame = groups.length === 1
+  return (
+    <div className={`p-3 rounded-lg border ${c.bg}`}>
+      <div className="flex items-center justify-between">
+        <div className={`text-[10px] font-bold uppercase tracking-wide ${c.label}`}>{title}</div>
+        <div className={`text-[10px] font-mono ${c.muted}`}>
+          Booking <b>{info.bookingCode || '—'}</b>
+        </div>
+      </div>
+      {allSame ? (
+        <div className={`mt-1 text-sm font-semibold ${c.body}`}>
+          <span className="font-mono">{formatMoney(groups[0].amount, 'VND', { withUnit: false })} VNĐ</span>
+          {groups[0].names.length > 1 && (
+            <span className={`ml-1 ${c.muted} font-normal`}>· cho {groups[0].names.join(', ')}</span>
+          )}
+        </div>
+      ) : (
+        <ul className="mt-1 space-y-1">
+          {groups.map((g, i) => (
+            <li key={i} className={`text-sm font-semibold ${c.body}`}>
+              <span className="font-mono">{formatMoney(g.amount, 'VND', { withUnit: false })} VNĐ</span>
+              <span className={`ml-1 ${c.muted} font-normal`}>
+                · cho {g.names.length > 1
+                  ? g.names.slice(0, -1).join(', ') + ' và ' + g.names[g.names.length - 1]
+                  : g.names[0]}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
 }

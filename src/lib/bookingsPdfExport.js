@@ -270,7 +270,19 @@ function kindLine(b, t) {
 function noteLine(b) {
   const lines = []
   if (b.note && b.note.trim()) lines.push({ text: b.note.trim(), fontSize: 7 })
-  // Có thể gộp thêm note của từng ticket nếu muốn — hiện chỉ hiển thị note booking-level
+  // 2026-11-07: Hiển thị Phí xuất vé HNH của từng vé trong Ghi chú.
+  for (const t of (b.tickets || [])) {
+    const hnh = parseAmount(t.hnhFee) || 0
+    if (hnh > 0) {
+      const who = (t.passengerName || '').trim() || t.ticketNumber || 'Vé'
+      const hnhStr = new Intl.NumberFormat('vi-VN').format(hnh)
+      lines.push({ text: `• HNH ${who}: ${hnhStr} VNĐ`, fontSize: 6, color: '#555' })
+    }
+  }
+  // 2026-11-07: Người giới thiệu — hữu ích khi review báo cáo khách lẻ.
+  if (b.referrerName && b.referrerName.trim()) {
+    lines.push({ text: `• Giới thiệu: ${b.referrerName.trim()}`, fontSize: 6, color: '#555' })
+  }
   return lines.length ? lines : [{ text: '—', fontSize: 7, color: '#aaa' }]
 }
 
@@ -280,10 +292,14 @@ function ticketNumbers(t) {
   const base = parseAmount(t.basePrice) || 0
   const coll = parseAmount(t.collectionFee) || 0
   const iss = parseAmount(t.issuanceFee) || 0
+  // 2026-11-07: HNH fee luôn VND, cộng thẳng vào giá bán (nhưng không ảnh
+  //   hưởng cột Giá gốc hiển thị). Nếu booking có currency khác VND, FE không
+  //   quy đổi ở đây — sẽ bỏ qua trong report (BE tính chính xác hơn).
+  const hnh = parseAmount(t.hnhFee) || 0
   const feesSum = (t.fees || []).reduce((s, f) => s + (parseAmount(f.amount) || 0), 0)
-  const subTotal = base + coll + feesSum
+  const subTotal = base + coll + feesSum + hnh
   const sellPrice = subTotal + iss
-  return { base, coll, iss, feesSum, subTotal, sellPrice }
+  return { base, coll, iss, feesSum, hnh, subTotal, sellPrice }
 }
 
 function bookingTotals(b) {

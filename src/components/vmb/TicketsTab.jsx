@@ -1017,7 +1017,12 @@ function renderBookingRows(b, bIdx, {
     const firstRow = tIdx === 0
     const lastRow  = tIdx === N - 1
     const cardBorder = `${firstRow ? 'border-t-2 border-t-gray-100' : ''} ${lastRow ? 'border-b-4 border-b-gray-100' : ''}`
-    const withCollection = sumAmounts(t.basePrice, t.collectionFee)
+    // 2026-11-07: HNH fee luôn VND, cộng vào basePrice (giá bán) khi currency = VND.
+    //   Nếu booking USD, FE skip (BE sẽ quy đổi chính xác hơn).
+    const withHnh        = (b.currency === 'VND' || !b.currency)
+      ? sumAmounts(t.basePrice, t.hnhFee)
+      : t.basePrice
+    const withCollection = sumAmounts(withHnh, t.collectionFee)
     // 2026-10-12: fees quy về booking.currency để cộng cùng basePrice/collection.
     const feesTotal      = sumTicketFees(t.fees, b.currency, b.exchangeRate)
     const subTotal       = sumAmounts(withCollection, feesTotal)

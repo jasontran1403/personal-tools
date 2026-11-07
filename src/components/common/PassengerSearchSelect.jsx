@@ -48,9 +48,12 @@ export default function PassengerSearchSelect({
     if (!open || disabled) return
     let abort = false
     setLoading(true)
+    // 2026-11-08: companyId null → khách lẻ (walk-in only).
+    //   BE filter p.company IS NULL để không trộn khách công ty vào dropdown.
     listPassengers({
       q: debouncedQ || '',
       companyId: companyId || undefined,
+      walkInOnly: companyId == null ? true : undefined,
       size: 20,
     })
       .then(res => {
@@ -137,7 +140,7 @@ function PassengerRow({ p, onClick }) {
       className="w-full text-left px-3 py-2 hover:bg-blue-50 border-b border-gray-100 last:border-0">
       <div className="flex items-center gap-2">
         <div className="flex-1 min-w-0">
-          <div className="text-sm font-semibold text-gray-900 truncate">{p.fullName}</div>
+          <div className="text-sm font-semibold text-gray-900 truncate">{(p.fullName || '').toUpperCase()}</div>
           <div className="text-[10px] text-gray-500 truncate">
             {p.companyName || 'Khách lẻ'}
             {cccd && <span className="ml-1 text-indigo-600">· CCCD</span>}
