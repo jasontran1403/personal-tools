@@ -51,6 +51,8 @@ const SIZE = {
   xl:   'max-w-4xl',
   huge: 'max-w-[96dvw]',
   full: 'max-w-[96vw]',
+  // ── 2026-11-07: preset riêng cho báo cáo công nợ: 70dvw × 80dvh ──
+  debt: 'max-w-[70dvw] w-[70dvw]',
 }
 
 export default function Modal({
@@ -61,20 +63,24 @@ export default function Modal({
   closeOnBackdrop = true,
   footer,
   children,
+  // ── 2026-11-07: Chặn ESC của modal này khi có child modal/preview mở trên. ──
+  //   Caller set `disableEsc` = true khi ZoomablePreview (hoặc modal con) đang
+  //   mở phía trên — ESC sẽ chỉ đóng child, không xuyên qua đóng cả parent.
+  disableEsc = false,
 }) {
   const panelRef = useRef(null)
-  // Lưu callback mới nhất vào ref để effect KHÔNG phụ thuộc vào identity
-  // của onClose / closeOnBackdrop (chúng đổi mỗi lần parent re-render,
-  // khiến effect bị unmount–remount liên tục → hở khe khóa body overflow).
   const onCloseRef = useRef(onClose)
   const closeOnBackdropRef = useRef(closeOnBackdrop)
+  const disableEscRef = useRef(disableEsc)
   useEffect(() => { onCloseRef.current = onClose }, [onClose])
   useEffect(() => { closeOnBackdropRef.current = closeOnBackdrop }, [closeOnBackdrop])
+  useEffect(() => { disableEscRef.current = disableEsc }, [disableEsc])
 
   // Esc để đóng, khoá scroll trang khi mở (chỉ chạy khi `open` đổi)
   useEffect(() => {
     if (!open) return
     const onKey = e => {
+      if (disableEscRef.current) return
       if (e.key === 'Escape' && closeOnBackdropRef.current) onCloseRef.current?.()
     }
     document.addEventListener('keydown', onKey)
@@ -102,7 +108,9 @@ export default function Modal({
       <div
         ref={panelRef}
         className={`relative w-full ${SIZE[size] || SIZE.md} bg-white rounded-2xl shadow-2xl
-                    ${size === 'huge' ? 'max-h-[96dvh] h-[96dvh]' : 'max-h-[92vh]'}
+                    ${size === 'huge' ? 'max-h-[96dvh] h-[96dvh]'
+                      : size === 'debt' ? 'max-h-[80dvh] h-[80dvh]'
+                      : 'max-h-[92vh]'}
                     flex flex-col overflow-hidden`}
         onMouseDown={e => e.stopPropagation()}
       >

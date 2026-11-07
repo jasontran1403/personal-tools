@@ -14,7 +14,10 @@ import InvoicePickerModal from './InvoicePickerModal'
 import BatchPaymentModal from './BatchPaymentModal'
 import DateRangePicker from '../common/DateRangePicker'
 import CompanySearchSelect, { companyOptions } from '../common/CompanySearchSelect'
-import { listBookings, deleteBooking, totalsBookings, listCompanies } from '../../services/vmbApi'
+import { listBookings, deleteBooking, totalsBookings, listCompanies,
+  listInvoicePayments, deletePayment } from '../../services/vmbApi'
+// 2026-11-07: dùng cho PaidReceiptsModal (xem/xoá biên nhận khi đã thanh toán)
+import ZoomablePreview from './ZoomablePreview'
 import { parseAmount, formatMoney, sumAmounts, toVnd } from '../../lib/money'
 import { primaryDeparture } from '../../lib/countdown'
 import { formatDepart } from '../../lib/airportTz'
@@ -49,6 +52,12 @@ export default function TicketsTab() {
   // 2026-10-10: Filter trạng thái thanh toán. '' = tất cả, 'PAID' = đã thanh toán,
   // 'UNPAID' = chưa thanh toán (gồm cả PARTIAL).
   const [paymentStatus, setPaymentStatus] = useState('')
+  // ── 2026-11-07: Sort booking theo thời gian bay gần nhất ──
+  //   'default' = thứ tự của BE (createdAt/saleDate desc).
+  //   'nearestDeparture' = booking có chặng bay gần nhất (chưa qua) lên đầu;
+  //       booking đã bay hết / không có segment xuống cuối, giữ thứ tự mặc định
+  //       giữa các booking cùng band.
+  const [sortMode, setSortMode] = useState('default')
   // ── 2026-10-09: Filter theo công ty ──
   // null = Tất cả (mặc định). Số = id công ty.
   // List công ty lấy từ listCompanies (dùng chung với tab Thông tin khách).
@@ -78,6 +87,8 @@ export default function TicketsTab() {
   const [payFor, setPayFor]       = useState(null)
   // Picker modal khi booking có >1 invoice.
   const [invoicePicker, setInvoicePicker] = useState(null) // booking | null
+  // 2026-11-07: modal xem/xoá biên nhận cho booking đã thanh toán.
+  const [paidReceiptsFor, setPaidReceiptsFor] = useState(null)
   const [batchPay, setBatchPay]   = useState(null)
   const [noteView, setNoteView]   = useState(null)
   const [confirmDel, setConfirmDel] = useState(null)
@@ -216,10 +227,37 @@ export default function TicketsTab() {
 
   // ── Filter client-side theo companyId ─────────────────────
   // Booking match nếu có ≥1 vé có companyId trùng với filter.
+  // ── 2026-11-07 ────────────────────────────────────────────
+  //   - Sort theo nearestDeparture nếu user bấm nút sort.
+  //   - Guard Req 4: nếu user chọn filter UNPAID mà booking có TOTAL ≈ 0
+  //     thì không hiển thị booking này (dữ liệu cũ có thể còn paymentStatus
+  //     chưa được rollup về PAID — ép client-side cho khớp BE).
   const filteredRows = useMemo(() => {
-    if (companyId == null) return rows
-    return rows.filter(b => (b.tickets || []).some(t => t.companyId === companyId))
-  }, [rows, companyId])
+    let out = rows
+    if (companyId != null) {
+      out = out.filter(b => (b.tickets || []).some(t => t.companyId === companyId))
+    }
+    // Guard UNPAID: nếu client tính được total = 0 → ẩn khỏi danh sách UNPAID,
+    // vì về mặt logic booking miễn phí đã được coi là đã thanh toán.
+    if (paymentStatus === 'UNPAID') {
+      out = out.filter(b => {
+        const bt = sumAmounts(...(b.tickets || []).map(t =>
+          sumAmounts(t.basePrice, t.collectionFee,
+            sumTicketFees(t.fees, b.currency, b.exchangeRate), t.issuanceFee)))
+        return bt > 0.5
+      })
+    }
+    if (sortMode === 'nearestDeparture') {
+      // Dùng nowTick để sort ổn định trong 1 tick; nearest = chặng ĐẦU chưa qua.
+      const keyOf = (b) => {
+        const pd = primaryDeparture(b.segments, nowTick)
+        return pd?.departMs ?? Number.POSITIVE_INFINITY
+      }
+      // Clone trước khi sort để không mutate rows gốc.
+      out = [...out].sort((a, b) => keyOf(a) - keyOf(b))
+    }
+    return out
+  }, [rows, companyId, paymentStatus, sortMode, nowTick])
 
   // ── Totals: khi có filter công ty thì tính lại từ các vé khớp filter.
   //    Khi không có filter thì dùng totals từ BE (tổng toàn hệ thống theo
@@ -326,32 +364,38 @@ export default function TicketsTab() {
   const [confirmDraftDl,   setConfirmDraftDl]   = useState(null) // { bookings, count }
   const [warnMissingDraft, setWarnMissingDraft] = useState(null) // { missing: [...] }
 
-  const handleExportPdf = async () => {
+  // ── 2026-11-07 (rev): tách thành picker 2 option ──────────
+  //   A — Báo cáo vé hôm nay: ÉP filter range về hôm nay, giữ nguyên các
+  //       filter khác (q, company), rồi chạy flow exportBookingsReport +
+  //       hỏi tải hóa đơn nháp như cũ. KHÔNG cần user chọn ngày trước.
+  //   B — Báo cáo công nợ: mở modal chọn công ty / chi nhánh, nhập số hoá
+  //       đơn, generate PDF riêng.
+  const [exportPick, setExportPick]   = useState(false)   // bool — mở picker
+  const [debtOpen, setDebtOpen]       = useState(false)   // bool — mở modal công nợ
+
+  const handleExportTodayReport = async () => {
+    setExportPick(false)
     setExporting(true)
     const tid = toast.loading('Đang tải dữ liệu và tạo PDF…')
     try {
       const mod = await import('../../lib/bookingsPdfExport')
-      const { bookings, fromMs, toMs } = await mod.exportBookingsReport(filterParams, {
+      // Force range = hôm nay, GIỮ q + company filter còn lại.
+      const today = mod.getTodayRangeMs()
+      const todayParams = { ...filterParams, fromSale: today.fromMs, toSale: today.toMs }
+      const { bookings, fromMs, toMs } = await mod.exportBookingsReport(todayParams, {
         onProgress: (loaded, total) => {
           toast.loading(`Đã tải ${loaded}/${total || '?'} booking…`, { id: tid })
         },
       })
       toast.success('Đã tạo PDF', { id: tid })
-
-      // ── Guard 1: date range phải nằm trong hôm nay ──
       if (!mod.isRangeWithinToday(fromMs, toMs)) return
-
-      // Không có hóa đơn nháp nào → không cần hỏi
       const count = mod.countDraftInvoices(bookings)
       if (count === 0) return
-
-      // ── Guard 2: mọi vé phải có hóa đơn nháp bao phủ ──
       const missing = mod.findTicketsMissingDraftInvoice(bookings)
       if (missing.length > 0) {
         setWarnMissingDraft({ missing })
         return
       }
-
       setConfirmDraftDl({ bookings, count })
     } catch (e) {
       console.error('[PDF export]', e)
@@ -407,9 +451,12 @@ export default function TicketsTab() {
       toast.error('Booking này chưa có hóa đơn (nháp/đã phát hành). Vui lòng tạo hóa đơn trước khi thu tiền.', { duration: 4500 })
       return
     }
+    // ── 2026-11-07 (rev2): Booking đã thu đủ TOÀN BỘ hoá đơn → mở modal
+    //   RECEIPTS riêng (chỉ xem ảnh biên nhận + xoá). Không mở PaymentModal
+    //   nữa vì user không cần nhập thêm tiền khi đã đủ.
     const unpaid = invs.filter(i => i.paymentStatus !== 'PAID')
     if (unpaid.length === 0) {
-      toast.success('Tất cả hóa đơn của booking này đã thu đủ.')
+      setPaidReceiptsFor(b)
       return
     }
     if (invs.length === 1) {
@@ -456,32 +503,58 @@ export default function TicketsTab() {
           </div>
         </div>
 
-        {/* 2026-10-10: Filter trạng thái thanh toán */}
-        <div className="flex gap-1 shrink-0 p-0.5 rounded-lg bg-gray-100">
-          {[
-            { k: '',       lbl: 'Tất cả' },
-            { k: 'UNPAID', lbl: 'Chưa thanh toán' },
-            { k: 'PAID',   lbl: 'Đã thanh toán' },
-          ].map(t => (
-            <button key={t.k} type="button"
-              onClick={() => setPaymentStatus(t.k)}
-              className={`px-3 py-1.5 rounded-md text-xs font-semibold whitespace-nowrap ${
-                paymentStatus === t.k ? 'bg-white shadow text-blue-700' : 'text-gray-600 hover:text-gray-900'
-              }`}>{t.lbl}</button>
-          ))}
-        </div>
+        {/* ── 2026-11-07 (rev): Filter trạng thái → single toggle 3-state ──
+            Tất cả → Chưa thanh toán → Đã thanh toán → (loop) Tất cả. */}
+        {(() => {
+          const CYCLE = ['', 'UNPAID', 'PAID']
+          const LABEL = { '': 'Tất cả', UNPAID: 'Chưa thanh toán', PAID: 'Đã thanh toán' }
+          const STYLE = {
+            '':       'bg-gray-100 text-gray-700 border-gray-300',
+            UNPAID:   'bg-rose-500 text-white border-rose-500 shadow-sm',
+            PAID:     'bg-emerald-500 text-white border-emerald-500 shadow-sm',
+          }
+          const next = () => {
+            const i = CYCLE.indexOf(paymentStatus)
+            setPaymentStatus(CYCLE[(i + 1) % CYCLE.length])
+          }
+          return (
+            <button type="button" onClick={next}
+              title="Bấm để đổi: Tất cả → Chưa thanh toán → Đã thanh toán"
+              // 2026-11-07 (rev): width cố định ~160px để nút không co giãn
+              //   theo nhãn (mỗi state chữ dài khác nhau → đẩy input bên trái).
+              className={`w-[160px] text-center px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 border transition ${STYLE[paymentStatus]}`}>
+              💳 {LABEL[paymentStatus]}
+            </button>
+          )
+        })()}
 
-        <button type="button" onClick={handleExportPdf} disabled={exporting}
-          title="Xuất báo cáo PDF (landscape) — theo filter hiện tại; nếu chưa filter thì lấy toàn bộ"
+        {/* ── 2026-11-07: Sort booking theo thời gian bay gần nhất ── */}
+        <button type="button"
+          onClick={() => setSortMode(m => m === 'nearestDeparture' ? 'default' : 'nearestDeparture')}
+          title="Sắp xếp booking theo thời gian bay gần nhất (chặng chưa qua)"
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 border ${
+            sortMode === 'nearestDeparture'
+              ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
+              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+          }`}>
+          ⏱ Bay gần nhất {sortMode === 'nearestDeparture' ? '•' : ''}
+        </button>
+
+        {/* 2026-11-07 (rev): nút này giờ mở picker 2 option */}
+        <button type="button" onClick={() => setExportPick(true)} disabled={exporting}
+          title="Xuất PDF — chọn loại báo cáo"
           className="px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white
             text-sm font-semibold shadow-md shadow-emerald-500/20 shrink-0 disabled:opacity-50">
           {exporting ? '⏳ Đang xuất…' : '📄 Xuất PDF'}
         </button>
 
+        {/* 2026-11-07 (rev): icon-only, giữ title để tooltip */}
         <button type="button" onClick={() => setForm({ mode: 'create' })}
-          className="px-4 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 text-white
-            text-sm font-semibold shadow-md shadow-blue-500/20 hover:from-blue-700 hover:to-indigo-700 shrink-0">
-          + Thêm booking
+          title="Thêm booking mới"
+          className="w-10 h-10 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 text-white
+            text-xl font-bold shadow-md shadow-blue-500/20 hover:from-blue-700 hover:to-indigo-700 shrink-0
+            flex items-center justify-center leading-none">
+          +
         </button>
       </div>
 
@@ -671,6 +744,14 @@ export default function TicketsTab() {
           onClose={() => setPayFor(null)}
           onSaved={() => { setPayFor(null); onSavedRefresh() }} />
       )}
+      {/* 2026-11-07: Modal xem/xoá biên nhận cho booking đã thanh toán. */}
+      {paidReceiptsFor && (
+        <PaidReceiptsModal booking={paidReceiptsFor}
+          onClose={() => setPaidReceiptsFor(null)}
+          onChanged={() => { onSavedRefresh() }}
+          onCleared={() => { setPaidReceiptsFor(null); onSavedRefresh() }}
+        />
+      )}
       {invoicePicker && (
         <InvoicePickerModal booking={invoicePicker}
           onClose={() => setInvoicePicker(null)}
@@ -687,6 +768,21 @@ export default function TicketsTab() {
       {noteView && (
         <TicketNoteModal passengerName={noteView.passengerName} note={noteView.note}
           onClose={() => setNoteView(null)} />
+      )}
+      {/* ── 2026-11-07: Picker 2 option báo cáo PDF ── */}
+      {exportPick && (
+        <ExportPickerModal
+          onClose={() => setExportPick(false)}
+          onPickToday={handleExportTodayReport}
+          onPickDebt={() => { setExportPick(false); setDebtOpen(true) }}
+        />
+      )}
+      {/* ── 2026-11-07: Modal báo cáo công nợ ── */}
+      {debtOpen && (
+        <DebtReportModal
+          companies={companies}
+          onClose={() => setDebtOpen(false)}
+        />
       )}
       {warnMissingDraft && (
         <Modal
@@ -1365,18 +1461,28 @@ function TdInvoiceAndFees({ withCollection, fees, currency, exchangeRate, segmen
             const labelTitleCase = titleCaseVi(label)
             // 2026-10-12: fee có currency riêng — display + copy đúng theo nó.
             const feeCur = (f.currency || currency || 'VND').toUpperCase()
-            const copyText = buildFeeCopyString(segments, ticketNumber, bookingCode, labelTitleCase)
+            // ── 2026-11-07 (rev): Ưu tiên số vé RIÊNG của dịch vụ nếu có,
+            //   nếu không thì dùng số vé chính của ticket (fallback cũ).
+            //   VD vé chính 11111111, phí hành lý có số vé riêng 11111112 →
+            //   copy: "SGNHAN - 11111112 (Phí Hành Lý)". Không có số riêng →
+            //   copy: "SGNHAN - 11111111 (Phí Hành Lý)".
+            const feeTicketForCopy = (f.ticketNumber || '').trim() || ticketNumber
+            const copyText = buildFeeCopyString(segments, feeTicketForCopy, bookingCode, labelTitleCase)
             const copyLabel = () => {
               navigator.clipboard.writeText(copyText)
                 .then(() => toast.success(`Đã copy: ${copyText}`))
                 .catch(() => toast.error('Không copy được'))
             }
+            // 2026-11-07 (rev): Mỗi phí render 2 DÒNG (dòng 1: tên phí, dòng
+            // 2: số tiền) để không bị chồng chéo khi tên phí dài. KHÔNG hiển
+            // thị số vé riêng (ticketNumber) của phí trên UI — số đó chỉ
+            // dùng ngầm trong copy (đã handle ở buildFeeCopyString phía trên).
             return (
-              <div key={i} className="flex items-center gap-2 text-[10px]">
+              <div key={i} className="text-[10px] leading-tight">
                 <button type="button"
                   onClick={copyLabel}
                   title={`Click để copy: "${copyText}"`}
-                  className="text-gray-600 truncate text-left hover:bg-blue-50 hover:text-blue-700 rounded px-1 -mx-1 cursor-copy">
+                  className="text-gray-600 truncate text-left block w-full hover:bg-blue-50 hover:text-blue-700 rounded px-1 -mx-1 cursor-copy">
                   {label}
                 </button>
                 <button type="button"
@@ -1385,7 +1491,7 @@ function TdInvoiceAndFees({ withCollection, fees, currency, exchangeRate, segmen
                   title={canCopy
                     ? (feeCur === 'USD' ? 'Click để copy (quy đổi VND)' : 'Click để copy')
                     : undefined}
-                  className={`font-mono tabular-nums text-left ${
+                  className={`font-mono tabular-nums text-left block w-full ${
                     feeCur !== currency ? 'text-amber-700 font-semibold' : 'text-gray-700'
                   } ${canCopy ? 'hover:bg-blue-50 hover:text-blue-700 rounded px-1 -mx-1 cursor-copy' : ''}`}>
                   {formatMoney(amt, feeCur, { withUnit: false })}
@@ -1715,4 +1821,524 @@ function buildFeeCopyString(segments, ticketNumber, bookingCode, feeLabelTitleCa
   const feePart = `(${feeLabelTitleCase})`
   if (!r) return id ? `${id} ${feePart}` : feePart
   return id ? `${r} - ${id} ${feePart}` : `${r} - ${feePart}`
+}
+// ═══════════════════════════════════════════════════════════════════════════
+//  2026-11-07 — Export PDF Picker + Debt Report Modal
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Picker 2 lựa chọn: Báo cáo vé hôm nay / Báo cáo công nợ.
+ * User không cần chọn ngày trước nữa — nếu chọn "hôm nay" thì ép range.
+ */
+function ExportPickerModal({ onClose, onPickToday, onPickDebt }) {
+  return (
+    <Modal open onClose={onClose} title="Xuất PDF" size="md">
+      <div className="space-y-3">
+        <button type="button" onClick={onPickToday}
+          className="w-full text-left p-4 rounded-xl border-2 border-emerald-200 bg-emerald-50 hover:bg-emerald-100 hover:border-emerald-400 transition">
+          <div className="flex items-center gap-3">
+            <div className="text-2xl">📅</div>
+            <div className="flex-1">
+              <div className="font-bold text-emerald-900">Báo cáo vé hôm nay</div>
+              <div className="text-xs text-emerald-700 mt-0.5">
+                Tải báo cáo vé bán trong ngày + hoá đơn nháp. Nếu có vé chưa tạo hoá đơn nháp → cảnh báo.
+              </div>
+            </div>
+          </div>
+        </button>
+        <button type="button" onClick={onPickDebt}
+          className="w-full text-left p-4 rounded-xl border-2 border-indigo-200 bg-indigo-50 hover:bg-indigo-100 hover:border-indigo-400 transition">
+          <div className="flex items-center gap-3">
+            <div className="text-2xl">💼</div>
+            <div className="flex-1">
+              <div className="font-bold text-indigo-900">Báo cáo công nợ</div>
+              <div className="text-xs text-indigo-700 mt-0.5">
+                Chọn công ty / chi nhánh → list các booking chưa thanh toán → nhập số hoá đơn → xuất PDF.
+              </div>
+            </div>
+          </div>
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * Modal build báo cáo công nợ:
+ *   1. User chọn công ty (bao gồm chi nhánh) qua CompanySearchSelect.
+ *   2. Component auto-fetch booking UNPAID + lọc client-side theo companyId.
+ *   3. Table: 1 row/booking với input "số hoá đơn" (chỉ nhận số).
+ *   4. Nút "Tạo PDF" → gọi exportDebtReport.
+ */
+function DebtReportModal({ companies, onClose }) {
+  const [companyId, setCompanyId] = useState(null)
+  const [bookings, setBookings]   = useState([])
+  const [loading, setLoading]     = useState(false)
+  const [building, setBuilding]   = useState(false)
+
+  // ── 2026-11-07 (rev2): Chỉ hiện CÔNG TY CHÍNH (root) trong dropdown ──
+  //   Chi nhánh KHÔNG hiển thị ở danh sách chọn. Khi user pick root, modal
+  //   sẽ tự group bookings theo từng công ty / chi nhánh để hiển thị section.
+  const rootOptions = useMemo(() => {
+    return companies
+      .filter(c => !c.parentId)
+      .sort((a, b) => a.name.localeCompare(b.name, 'vi'))
+      .map(c => ({ id: c.id, label: c.name }))
+  }, [companies])
+
+  // ID cần match khi fetch: ROOT + tất cả chi nhánh con của ROOT.
+  const matchIds = useMemo(() => {
+    if (companyId == null) return []
+    const picked = companies.find(x => x.id === companyId)
+    if (!picked) return [companyId]
+    const rootId = picked.parentId || picked.id
+    const branchIds = companies.filter(x => x.parentId === rootId).map(x => x.id)
+    return [rootId, ...branchIds]
+  }, [companyId, companies])
+
+  // Fetch booking UNPAID khi đổi công ty.
+  useEffect(() => {
+    if (companyId == null || matchIds.length === 0) {
+      setBookings([]); return
+    }
+    let cancel = false
+    setLoading(true)
+    ;(async () => {
+      try {
+        const mod = await import('../../lib/bookingsPdfExport')
+        const bs = await mod.fetchUnpaidBookingsByCompany(matchIds)
+        if (!cancel) setBookings(bs)
+      } catch (e) {
+        console.error('[debt fetch]', e)
+        toast.error('Không tải được danh sách booking')
+      } finally {
+        if (!cancel) setLoading(false)
+      }
+    })()
+    return () => { cancel = true }
+  }, [companyId, matchIds])
+
+  // ── 2026-11-07 (rev2): Group bookings theo companyId (dùng companyId của
+  //   VÉ đầu tiên trong booking để quyết định section). Thứ tự section:
+  //   ROOT đầu tiên, rồi các chi nhánh theo thứ tự tạo (createdAt).
+  const sections = useMemo(() => {
+    if (!companyId || bookings.length === 0) return []
+    const picked = companies.find(x => x.id === companyId)
+    if (!picked) return []
+    const rootId = picked.parentId || picked.id
+    const root = companies.find(x => x.id === rootId)
+    const branches = companies
+      .filter(x => x.parentId === rootId)
+      .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+    const orderedCompanies = [root, ...branches].filter(Boolean)
+    // Group bookings
+    const byCompany = new Map()
+    for (const b of bookings) {
+      // companyId = cty của vé đầu tiên (mỗi booking thường chỉ thuộc 1 cty)
+      const cid = (b.tickets || [])[0]?.companyId
+      if (cid == null) continue
+      if (!byCompany.has(cid)) byCompany.set(cid, [])
+      byCompany.get(cid).push(b)
+    }
+    const out = []
+    for (const c of orderedCompanies) {
+      const bs = byCompany.get(c.id)
+      if (bs && bs.length) out.push({ company: c, bookings: bs })
+    }
+    return out
+  }, [bookings, companyId, companies])
+
+  // Mỗi section có 1 checkbox (default checked). State: Set<companyId>.
+  const [excluded, setExcluded] = useState(new Set())
+  // Khi đổi công ty → reset exclusion (tránh trạng thái cũ dính lại).
+  useEffect(() => { setExcluded(new Set()) }, [companyId])
+  const toggleExcluded = (cid) => {
+    setExcluded(prev => {
+      const next = new Set(prev)
+      if (next.has(cid)) next.delete(cid)
+      else next.add(cid)
+      return next
+    })
+  }
+
+  const { rootName, rootCode } = useMemo(() => {
+    if (companyId == null) return { rootName: '', rootCode: '' }
+    const picked = companies.find(x => x.id === companyId)
+    if (!picked) return { rootName: '', rootCode: '' }
+    const root = picked.parentId
+      ? (companies.find(x => x.id === picked.parentId) || picked)
+      : picked
+    // ── 2026-11-07: Mã công ty cho filename — dùng shortName nếu có, else
+    //   abbreviation từ name (chữ cái đầu mỗi từ, bỏ dấu, viết hoa).
+    const toCode = (c) => {
+      if (c.shortName && c.shortName.trim()) {
+        return c.shortName.trim().replace(/[^A-Za-z0-9]/g, '')
+      }
+      // bỏ dấu
+      const noDia = (c.name || '').normalize('NFD').replace(/[̀-ͯ]/g, '')
+        .replace(/đ/g, 'd').replace(/Đ/g, 'D')
+      return noDia.split(/\s+/).map(w => w[0] || '').join('')
+        .toUpperCase().replace(/[^A-Z0-9]/g, '') || `C${c.id}`
+    }
+    return { rootName: root.name, rootCode: toCode(root) }
+  }, [companyId, companies])
+
+  const onBuild = async () => {
+    const active = sections.filter(s => !excluded.has(s.company.id))
+    if (!active.length) return toast.error('Chọn ít nhất 1 công ty để xuất')
+    setBuilding(true)
+    const tid = toast.loading('Đang tạo PDF công nợ…')
+    try {
+      const mod = await import('../../lib/bookingsPdfExport')
+      await mod.exportDebtReport({
+        rootName,
+        rootCode,
+        sections: active.map(s => ({
+          companyName: s.company.name,
+          bookings: s.bookings,
+        })),
+      })
+      toast.success('Đã tạo PDF công nợ', { id: tid })
+      onClose()
+    } catch (e) {
+      console.error('[debt build]', e)
+      toast.error(e?.message || 'Tạo PDF thất bại', { id: tid })
+    } finally {
+      setBuilding(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Báo cáo công nợ" size="debt"
+      footer={
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose}
+            className="px-4 py-2 rounded-md text-sm font-semibold text-gray-600 hover:bg-gray-100">
+            Huỷ
+          </button>
+          <button type="button" onClick={onBuild}
+            disabled={!sections.length || building}
+            className="px-4 py-2 rounded-md bg-indigo-600 text-white text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50">
+            {building ? '⏳ Đang tạo…' : '📄 Tạo PDF'}
+          </button>
+        </div>
+      }>
+      <div className="space-y-3">
+        <div>
+          <div className="text-[11px] font-semibold text-gray-600 mb-1">Chọn công ty (chi nhánh sẽ hiển thị bên dưới)</div>
+          <CompanySearchSelect
+            value={companyId}
+            options={rootOptions}
+            onChange={setCompanyId}
+            allowNone={false}
+            placeholder="— Chọn công ty —"
+            portal
+          />
+        </div>
+
+        {companyId == null ? (
+          <div className="text-xs text-gray-500 italic py-8 text-center">
+            Chọn công ty để xem danh sách booking chưa thanh toán.
+          </div>
+        ) : loading ? (
+          <div className="text-xs text-gray-500 italic py-8 text-center">Đang tải…</div>
+        ) : sections.length === 0 ? (
+          <div className="text-xs text-gray-500 italic py-8 text-center">
+            Công ty này (và các chi nhánh) không có booking chưa thanh toán.
+          </div>
+        ) : (
+          <div className="space-y-3 max-h-[60dvh] overflow-y-auto pr-1">
+            {sections.map(s => {
+              const isExcluded = excluded.has(s.company.id)
+              // 2026-11-07: Đếm số hoá đơn UNIQUE của section (không phải số booking).
+              const invSet = new Set()
+              for (const b of s.bookings) {
+                for (const inv of (b.invoices || [])) {
+                  if (!inv.invoiceNumbers) continue
+                  inv.invoiceNumbers.split(',').forEach(n => {
+                    const t = n.trim()
+                    if (t) invSet.add(t)
+                  })
+                }
+              }
+              const invCount = invSet.size
+              return (
+                <div key={s.company.id}
+                  className={`border rounded-lg overflow-hidden transition
+                    ${isExcluded ? 'border-gray-200 opacity-60' : 'border-indigo-200'}`}>
+                  <label className={`flex items-center gap-2 px-3 py-2 border-b cursor-pointer select-none
+                    ${isExcluded ? 'bg-gray-50' : 'bg-indigo-50'}`}>
+                    <input type="checkbox" checked={!isExcluded}
+                      onChange={() => toggleExcluded(s.company.id)}
+                      className="w-4 h-4 accent-indigo-600" />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-bold text-gray-900 truncate">{s.company.name}</div>
+                      <div className="text-[11px] text-gray-600">
+                        {invCount > 0 ? `${invCount} hoá đơn` : `Chưa có hoá đơn`}
+                      </div>
+                    </div>
+                  </label>
+                  {!isExcluded && (
+                    <div className="divide-y">
+                      {s.bookings.map(b => {
+                        const nums = collectBookingInvoiceNumbers(b)
+                        return (
+                          <div key={b.id} className="flex items-center gap-2 px-3 py-2 text-xs">
+                            <div className="w-24 font-mono font-bold text-gray-900">{b.bookingCode}</div>
+                            <div className="flex-1 text-gray-600 truncate">
+                              {(b.tickets || []).map(t => t.passengerName).join(' · ')}
+                            </div>
+                            <div className="w-16 text-right text-gray-500 font-mono tabular-nums">
+                              {(b.tickets || []).length} vé
+                            </div>
+                            {/* 2026-11-07 (rev): stack DỌC — dùng <div> block
+                                cho mỗi badge + w-fit + items-end để canh phải */}
+                            <div className="w-56 font-mono flex flex-col items-end gap-1 self-start">
+                              {nums.length === 0 ? (
+                                <span className="text-gray-400 italic text-[11px]">chưa có hoá đơn</span>
+                              ) : (
+                                nums.map(n => (
+                                  <div key={n}
+                                    className="block w-fit px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[11px] font-semibold whitespace-nowrap">
+                                    #C26MCB{n}
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+/**
+ * 2026-11-07: Gom các số hoá đơn của 1 booking từ booking.invoices.
+ *   invoice.invoiceNumbers là chuỗi CSV ("355,356"). Trả về list đã dedupe,
+ *   sort tăng dần theo số nếu parse được, else theo alpha.
+ */
+export function collectBookingInvoiceNumbers(b) {
+  const set = new Set()
+  for (const inv of (b.invoices || [])) {
+    if (!inv.invoiceNumbers) continue
+    inv.invoiceNumbers.split(',').forEach(n => {
+      const t = n.trim()
+      if (t) set.add(t)
+    })
+  }
+  return [...set].sort((a, c) => {
+    const na = Number(a), nc = Number(c)
+    if (Number.isFinite(na) && Number.isFinite(nc)) return na - nc
+    return a.localeCompare(c)
+  })
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  2026-11-07: PaidReceiptsModal — xem/xoá biên nhận cho booking đã thanh toán
+//    Open khi click "Đã thanh toán" badge: KHÔNG hiển thị form nhập thêm nữa.
+//    Chỉ list các payment (từ mọi invoice của booking) kèm file preview + nút
+//    xoá từng phiếu HOẶC "Xoá tất cả" (reset về Chưa thanh toán).
+// ═══════════════════════════════════════════════════════════════════════════
+function PaidReceiptsModal({ booking, onClose, onChanged, onCleared }) {
+  const [rows, setRows]       = useState([])        // [{ invoice, payments }]
+  const [loading, setLoading] = useState(true)
+  const [preview, setPreview] = useState(null)      // { url, name }
+  const [confirmDel, setConfirmDel]   = useState(null)   // { payment }
+  const [confirmAll, setConfirmAll]   = useState(false)
+  const [busy, setBusy]       = useState(false)
+
+  const reload = useCallback(async () => {
+    setLoading(true)
+    try {
+      const invs = booking.invoices || []
+      const results = await Promise.all(invs.map(async (inv) => {
+        try {
+          const res = await listInvoicePayments(inv.id)
+          return { invoice: inv, payments: res.data?.data || [] }
+        } catch { return { invoice: inv, payments: [] } }
+      }))
+      setRows(results)
+    } finally { setLoading(false) }
+  }, [booking])
+
+  useEffect(() => { reload() }, [reload])
+
+  const allPayments = useMemo(() =>
+    rows.flatMap(r => r.payments.map(p => ({ ...p, _invoice: r.invoice }))),
+    [rows])
+
+  const doDelOne = async () => {
+    if (!confirmDel) return
+    setBusy(true)
+    try {
+      await deletePayment(confirmDel.payment.id)
+      toast.success('Đã xoá phiếu thu')
+      setConfirmDel(null)
+      await reload()
+      onChanged?.()
+    } catch (e) {
+      toast.error(e?.response?.data?.message || 'Xoá thất bại')
+    } finally { setBusy(false) }
+  }
+
+  const doDelAll = async () => {
+    setBusy(true)
+    const tid = toast.loading('Đang xoá tất cả phiếu thu…')
+    try {
+      // Xoá tuần tự để BE rollup paidAmount đúng.
+      for (const p of allPayments) {
+        await deletePayment(p.id)
+      }
+      toast.success('Đã reset toàn bộ phiếu thu của booking này', { id: tid })
+      setConfirmAll(false)
+      onCleared?.()
+    } catch (e) {
+      toast.error(e?.response?.data?.message || 'Xoá thất bại', { id: tid })
+      await reload()
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <>
+      <Modal open onClose={onClose} title={`Biên nhận đã thu — ${booking.bookingCode || ''}`} size="lg"
+        // 2026-11-07: Khi ZoomablePreview / Confirm modal đang mở phía trên,
+        //   suppress ESC của modal này — tránh ESC "xuyên" đóng cả 2 cùng lúc.
+        disableEsc={!!preview || !!confirmDel || confirmAll}
+        footer={
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setConfirmAll(true)}
+              disabled={busy || allPayments.length === 0}
+              title="Xoá tất cả phiếu thu + ảnh của booking này; tự reset về Chưa thanh toán"
+              className="px-4 py-2 rounded-md text-sm font-semibold text-rose-700 hover:bg-rose-50 border border-rose-300 disabled:opacity-40">
+              🗑 Xoá trạng thái đã thu
+            </button>
+            <div className="flex-1" />
+            <button onClick={onClose}
+              className="px-4 py-2 text-sm text-gray-600 hover:bg-gray-100 rounded-md font-medium">
+              Đóng
+            </button>
+          </div>
+        }>
+        <div className="space-y-4">
+          <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
+            Booking này đã thu đủ. Dưới đây là <b>{allPayments.length}</b> phiếu thu đã ghi nhận.
+            Click <b>×</b> trên 1 phiếu để xoá riêng (sẽ trừ lại số tiền đã thu),
+            hoặc nút <b>Xoá trạng thái đã thu</b> để xoá sạch và reset về Chưa thanh toán.
+          </div>
+
+          {loading ? (
+            <div className="py-10 text-center text-xs text-gray-400 italic">Đang tải…</div>
+          ) : allPayments.length === 0 ? (
+            <div className="py-10 text-center text-xs text-gray-400 italic">
+              Không có phiếu thu nào (có thể booking miễn phí hoặc đã bị xoá hết).
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {allPayments.map(p => {
+                const inv = p._invoice
+                const invLabel = inv?.invoiceNumbers
+                  ? `#C26MCB${inv.invoiceNumbers.split(',')[0].trim()}`
+                  : `Nháp HĐ #${inv?.id}`
+                return (
+                  <div key={p.id}
+                    className="rounded-xl border border-gray-200 bg-white shadow-sm hover:shadow-md transition overflow-hidden flex flex-col">
+                    {/* Thumbnail (nếu có ảnh) */}
+                    {p.fileUrl ? (
+                      <button type="button"
+                        onClick={() => setPreview({ url: p.fileUrl, name: p.fileOriginal || 'Biên nhận' })}
+                        title="Click để phóng to xem"
+                        className="w-full h-40 bg-gray-50 border-b border-gray-200 flex items-center justify-center overflow-hidden group">
+                        {isImageUrl(p.fileUrl) ? (
+                          <img src={resolvePublicUrl(p.fileUrl)} alt="Biên nhận"
+                            className="w-full h-full object-contain group-hover:scale-105 transition-transform" />
+                        ) : (
+                          <div className="text-4xl text-gray-300 group-hover:text-gray-500">📄</div>
+                        )}
+                      </button>
+                    ) : (
+                      <div className="w-full h-40 bg-gray-50 border-b border-gray-200 flex items-center justify-center text-xs text-gray-400 italic">
+                        (không có ảnh biên nhận)
+                      </div>
+                    )}
+                    <div className="p-3 flex-1 flex items-start gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <span className="font-mono font-bold text-emerald-700 text-sm">+{p.amount}</span>
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 font-semibold whitespace-nowrap">
+                            {invLabel}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-gray-500">
+                          {p.createdAt ? new Date(p.createdAt).toLocaleString('vi-VN') : ''}
+                          {p.createdBy && <span className="ml-1 text-gray-400">· bởi {p.createdBy}</span>}
+                        </div>
+                        {p.note && (
+                          <div className="mt-1 text-xs text-gray-700 whitespace-pre-wrap break-words">
+                            {p.note}
+                          </div>
+                        )}
+                      </div>
+                      <button type="button" onClick={() => setConfirmDel({ payment: p })}
+                        title="Xoá phiếu thu này (trừ lại số tiền đã thu)"
+                        className="shrink-0 w-8 h-8 rounded-md text-rose-600 hover:bg-rose-50 text-lg leading-none">
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      {preview && (
+        <ZoomablePreview
+          filePath={preview.url}
+          fileName={preview.name}
+          title={`Biên nhận · ${preview.name}`}
+          onClose={() => setPreview(null)}
+        />
+      )}
+
+      {confirmDel && (
+        <ConfirmModal
+          open title="Xoá phiếu thu"
+          message={`Xoá phiếu thu +${confirmDel.payment.amount}? Số tiền đã thu sẽ bị trừ lại tương ứng; ảnh biên nhận cũng bị xoá.`}
+          confirmLabel="Xoá" danger
+          onConfirm={doDelOne}
+          onClose={() => setConfirmDel(null)}
+        />
+      )}
+      {confirmAll && (
+        <ConfirmModal
+          open title="Xoá trạng thái đã thu"
+          message={`Thao tác này xoá ${allPayments.length} phiếu thu + ảnh đính kèm, trừ sạch số tiền đã thu, reset booking về Chưa thanh toán. Không thể hoàn tác. Tiếp tục?`}
+          confirmLabel="Xoá tất cả" danger
+          onConfirm={doDelAll}
+          onClose={() => setConfirmAll(false)}
+        />
+      )}
+    </>
+  )
+}
+
+function isImageUrl(u) {
+  if (!u) return false
+  const s = u.split('?')[0].toLowerCase()
+  return /\.(png|jpe?g|gif|bmp|webp|heic|heif)$/.test(s)
+}
+function resolvePublicUrl(u) {
+  if (!u) return u
+  if (/^https?:\/\//i.test(u)) return u
+  const BASE = import.meta.env.VITE_API_URL || 'http://localhost:9009'
+  return BASE + (u.startsWith('/') ? u : '/' + u)
 }

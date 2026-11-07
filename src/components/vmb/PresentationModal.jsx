@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Modal from '../common/Modal'
 import VmbFilePreviewModal from './VmbFilePreviewModal'
 import { vmbFileUrl } from '../../services/api'
@@ -31,6 +31,22 @@ export default function PresentationModal({ open, booking, onClose }) {
   // 2026-10-09: preview inline bằng ZoomablePreview thay vì mở tab mới
   const [previewFile, setPreviewFile] = useState(null)   // { url, name }
 
+  // ── 2026-11-07: ESC xử lý theo lớp ─────────────────────
+  //   preview open → preview tự đóng (Modal của nó handle); outer disableEsc.
+  //   option selected (no preview) → outer disableEsc + bắt ESC ở đây → setOption(null).
+  //   picker (no option, no preview) → outer Modal xử lý ESC → gọi onClose.
+  useEffect(() => {
+    if (!open || !option || previewFile) return
+    const onKey = (e) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        setOption(null)
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open, option, previewFile])
+
   if (!open || !booking) return null
 
   // Xác định độ khả dụng của mỗi option
@@ -41,7 +57,8 @@ export default function PresentationModal({ open, booking, onClose }) {
   return (
     <Modal open onClose={onClose}
       title={option ? renderOptionTitle(option) : `Xuất trình — ${booking.bookingCode || '(chưa có mã)'}`}
-      size="lg">
+      size="lg"
+      disableEsc={!!previewFile || !!option}>
       {option == null ? (
         <OptionGrid cap={cap} onPick={setOption} />
       ) : (

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback, useLayoutEffect } fr
 import { createPortal } from 'react-dom'
 import toast from 'react-hot-toast'
 import { listTodo, deleteTodo } from '../../services/todoApi'
+import { getVnHolidayLabel, isWeekend } from '../../lib/vnHolidays'   // 2026-11-07
 import {
   TaskFormModal, TaskCompleteModal, TaskExtendModal,
   TaskCancelModal, TaskDetailModal
@@ -46,18 +47,34 @@ export default function TodoTab({ onTasksChanged }) {
     return () => clearInterval(id)
   }, [])
 
-  const [rangeStart, rangeEnd] = useMemo(() => {
-    const today = new Date()
-    const start = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime()
-    return [start, start + 7 * DAY_MS]
+  // ── 2026-11-07: rangeStart dynamic + nút Prev/Next/Today ──────────────
+  //   Mặc định = 00:00 hôm nay. User có thể lùi về quá khứ ~6 tháng,
+  //   tiến tới tương lai ~6 tháng. Mỗi lần bấm Prev/Next shift 7 ngày.
+  const todayMs = useMemo(() => {
+    const t = new Date()
+    return new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime()
   }, [])
+  const MIN_START = todayMs - 180 * DAY_MS   // 6 tháng past
+  const MAX_START = todayMs + 180 * DAY_MS   // 6 tháng future
+  const [rangeStart, setRangeStart] = useState(todayMs)
+  const rangeEnd = rangeStart + 7 * DAY_MS
+
+  const shift = (days) => {
+    setRangeStart(prev => {
+      const next = prev + days * DAY_MS
+      if (next < MIN_START) return MIN_START
+      if (next > MAX_START) return MAX_START
+      return next
+    })
+  }
+  const goToday = () => setRangeStart(todayMs)
 
   const days = useMemo(() => {
     const arr = []
-    const today = new Date(rangeStart)
+    const start = new Date(rangeStart)
     for (let i = 0; i < 7; i++) {
-      const d = new Date(today)
-      d.setDate(today.getDate() + i)
+      const d = new Date(start)
+      d.setDate(start.getDate() + i)
       arr.push(d)
     }
     return arr
@@ -113,9 +130,27 @@ export default function TodoTab({ onTasksChanged }) {
       {/* 2026-09-20: dùng fixed thay absolute vì absolute vào TodoTab
           bị calendar container "nuốt" (dù z-index cao). Fixed top-24
           nằm ngay dưới header + tab bar (~80px), lệch phải, luôn thấy. */}
+      {/* ── 2026-11-07 (rev): chỉ giữ nút "Hôm nay". Pan calendar bằng
+          mouse drag / touch swipe (xem CalendarGrid handlers). ── */}
+      <div className="flex items-center gap-2 mb-2 px-1">
+        <button type="button" onClick={goToday}
+          className="px-3 py-1.5 rounded-md bg-blue-600 text-white text-xs font-bold hover:bg-blue-700">
+          🏠 Hôm nay
+        </button>
+        <div className="text-[11px] text-gray-500 hidden sm:block">
+          Kéo chuột / vuốt sang trái-phải để xem ngày khác
+        </div>
+        <div className="flex-1" />
+        <div className="text-[11px] text-gray-500">
+          Hiện: <b className="text-gray-800">{fmtRangeDay(rangeStart)}</b> → <b className="text-gray-800">{fmtRangeDay(rangeEnd - DAY_MS)}</b>
+        </div>
+      </div>
+
+      {/* 2026-11-07 (rev): top-24 → top-16 (−15px) để nút Thêm task nổi
+          cao hơn, không bị thanh nav che. */}
       <button type="button" onClick={() => { setEditing(null); setShowForm(true) }}
         title="Thêm task mới"
-        className="fixed top-24 right-6 z-40 px-4 py-2 rounded-full
+        className="fixed top-16 right-6 z-40 px-4 py-2 rounded-full
                    bg-gradient-to-br from-blue-600 to-indigo-600 text-white
                    text-sm font-semibold shadow-lg shadow-blue-500/40
                    hover:scale-105 active:scale-95 transition-transform
@@ -129,6 +164,7 @@ export default function TodoTab({ onTasksChanged }) {
         <div className="text-center py-10 text-gray-400">Đang tải…</div>
       ) : (
         <CalendarGrid days={days} tasksByDay={tasksByDay} tick={tick}
+          onShift={shift}
           onCardAction={handleCardAction}
           onCardClick={(task) => setModal({ type: 'detail', task })}
           onEditPending={(task) => { setEditing(task); setShowForm(true) }}
@@ -159,7 +195,7 @@ export default function TodoTab({ onTasksChanged }) {
 //  CALENDAR GRID
 // ══════════════════════════════════════════════════════════════
 
-function CalendarGrid({ days, tasksByDay, tick, onCardAction, onCardClick, onEditPending, onDelete }) {
+function CalendarGrid({ days, tasksByDay, tick, onShift, onCardAction, onCardClick, onEditPending, onDelete }) {
   // Layout tasks + tính maxLane cho mỗi ngày → dùng làm chiều rộng cột
   const perDay = useMemo(() => {
     const m = new Map()
@@ -173,27 +209,76 @@ function CalendarGrid({ days, tasksByDay, tick, onCardAction, onCardClick, onEdi
   }, [days, tasksByDay])
 
   // Grid columns: cột đầu là thang giờ (60px), 7 cột ngày CHIA ĐỀU.
-  // ── 2026-09-20 fix ────────────────────────────────────
-  // Trước: mỗi ngày width riêng theo maxLane của ngày đó → cột không đều,
-  //        thừa hết space bên phải khi ngày nào cũng ít task.
-  // Nay: lấy MAX lanes qua tất cả ngày → min width chung, dùng minmax(min, 1fr)
-  //      → tất cả cột đều nhau + tự dãn ra để lấp đầy container.
   const maxLanesAllDays = Math.max(1, ...days.map(d => perDay.get(dayStart(d))?.maxLane || 1))
   const dayMinWidth = Math.max(DAY_MIN_WIDTH, maxLanesAllDays * DAY_MIN_WIDTH)
   const gridTemplateColumns = `60px repeat(7, minmax(${dayMinWidth}px, 1fr))`
 
   const bodyHeight = (HOUR_END - HOUR_START + 1) * HOUR_HEIGHT
 
+  // ── 2026-11-07 (rev): Drag & swipe để pan ngày ─────────────────────────
+  //   MOUSE: mousedown → track deltaX → mỗi full-column shift → gọi onShift(±1 day).
+  //   TOUCH: swipe left/right → ngưỡng 60px → shift ±1 day; đẩy mạnh hơn (120px) → 7 days.
+  //   Không chặn click vào task (threshold 8px trước khi coi là drag).
+  const dragRef = useRef(null)      // { startX, lastShiftX, colWidth }
+  const touchRef = useRef(null)     // { startX, startY, startRangeKey }
+
+  const onMouseDown = (e) => {
+    // Chỉ bắt chuột trái. Bỏ qua nếu click vào task (TaskCard dùng button)
+    if (e.button !== 0) return
+    const el = e.currentTarget
+    const colWidth = el.getBoundingClientRect().width / 8 // 1 col thang giờ + 7 cột ngày
+    dragRef.current = { startX: e.clientX, lastShiftX: 0, colWidth, dragged: false }
+  }
+  const onMouseMove = (e) => {
+    if (!dragRef.current) return
+    const d = dragRef.current
+    const dx = e.clientX - d.startX
+    if (Math.abs(dx) < 8) return
+    d.dragged = true
+    // Mỗi lần dx vượt thêm colWidth → shift 1 ngày (ngược chiều kéo).
+    const stepsNow = Math.round((dx - d.lastShiftX) / d.colWidth)
+    if (stepsNow !== 0) {
+      onShift?.(-stepsNow)
+      d.lastShiftX += stepsNow * d.colWidth
+    }
+  }
+  const onMouseUp = () => { dragRef.current = null }
+
+  const onTouchStart = (e) => {
+    if (e.touches.length !== 1) return
+    const t = e.touches[0]
+    touchRef.current = { startX: t.clientX, startY: t.clientY }
+  }
+  const onTouchEnd = (e) => {
+    const ref = touchRef.current
+    touchRef.current = null
+    if (!ref) return
+    const ct = e.changedTouches[0]
+    const dx = ct.clientX - ref.startX
+    const dy = ct.clientY - ref.startY
+    if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return  // chỉ nhận horizontal
+    const bigSwipe = Math.abs(dx) > 180
+    const step = bigSwipe ? 7 : 1
+    onShift?.(dx < 0 ? step : -step)   // swipe trái → tiến tới tương lai
+  }
+
   return (
-    <div className="rounded-xl border border-gray-200 bg-white overflow-auto"
-      style={{ maxHeight: 'calc(100vh - 140px)' }}>
+    <div className="rounded-xl border border-gray-200 bg-white overflow-auto select-none"
+      style={{ maxHeight: 'calc(100vh - 140px)', cursor: 'grab' }}
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMove}
+      onMouseUp={onMouseUp}
+      onMouseLeave={onMouseUp}
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}>
       <div className="grid relative"
         style={{ gridTemplateColumns, gridTemplateRows: 'auto 1fr' }}>
 
         {/* ── Row 1: header ── */}
         {/* Corner cell — sticky cả top và left, z cao nhất */}
+        {/* 2026-11-07: căn giữa cho đồng bộ với time labels bên dưới. */}
         <div className="sticky top-0 left-0 z-40 bg-gray-50 border-b border-r border-gray-200
-                        px-3 py-3 text-[10px] text-gray-500 font-semibold text-right">
+                        px-2 py-3 text-[10px] text-gray-500 font-semibold text-center">
           Giờ
         </div>
         {/* Day headers — sticky top */}
@@ -205,11 +290,11 @@ function CalendarGrid({ days, tasksByDay, tick, onCardAction, onCardClick, onEdi
         ))}
 
         {/* ── Row 2: body ── */}
-        {/* Time labels — sticky left */}
+        {/* Time labels — sticky left. 2026-11-07: padding L/R đều nhau (px-2) */}
         <div className="sticky left-0 z-20 bg-white border-r border-gray-100"
           style={{ height: bodyHeight }}>
           {range(HOUR_START, HOUR_END + 1).map(h => (
-            <div key={h} className="text-[11px] text-gray-500 font-mono text-right pr-3 pt-2 flex items-start"
+            <div key={h} className="text-[11px] text-gray-500 font-mono text-center px-2 pt-2 flex items-start justify-center"
               style={{ height: HOUR_HEIGHT }}>
               {String(h).padStart(2, '0')}:00
             </div>
@@ -238,12 +323,29 @@ function CalendarGrid({ days, tasksByDay, tick, onCardAction, onCardClick, onEdi
 
 function DayHeader({ day, count }) {
   const isToday = isSameDay(day, new Date())
+  const weekend = isWeekend(day)
+  const holiday = getVnHolidayLabel(day)
   const wd = ['CN', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7'][day.getDay()]
+  // ── 2026-11-07: Màu theo trạng thái ngày ──
+  //   today → blue; holiday → rose; weekend → amber; else neutral.
+  const bg = isToday ? 'bg-blue-50'
+           : holiday ? 'bg-rose-50'
+           : weekend ? 'bg-amber-50'
+           : ''
+  const dayColor = isToday ? 'text-blue-700'
+                 : holiday ? 'text-rose-700'
+                 : weekend ? 'text-amber-700'
+                 : 'text-gray-800'
   return (
-    <div className={`p-2 text-center ${isToday ? 'bg-blue-50' : ''}`}>
-      <div className="text-[11px] text-gray-500 font-semibold">{wd}</div>
-      <div className={`text-base font-bold ${isToday ? 'text-blue-700' : 'text-gray-800'}`}>{day.getDate()}</div>
+    <div className={`p-2 text-center ${bg}`}>
+      <div className={`text-[11px] font-semibold ${weekend || holiday ? 'text-rose-500' : 'text-gray-500'}`}>{wd}</div>
+      <div className={`text-base font-bold ${dayColor}`}>{day.getDate()}</div>
       <div className="text-[10px] text-gray-400">{day.getMonth() + 1}/{day.getFullYear()}</div>
+      {holiday && (
+        <div className="text-[9px] mt-0.5 font-semibold text-rose-700 truncate" title={holiday}>
+          {holiday}
+        </div>
+      )}
       {count > 0 && (
         <div className="text-[10px] mt-1 inline-block px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-600 font-semibold">
           {count} task
@@ -255,8 +357,15 @@ function DayHeader({ day, count }) {
 
 function DayColumn({ day, positioned, maxLane, height, tick, onCardAction, onCardClick, onEditPending, onDelete }) {
   const isToday = isSameDay(day, new Date())
+  const weekend = isWeekend(day)
+  const holiday = getVnHolidayLabel(day)
+  // 2026-11-07: tint nhẹ cho weekend/holiday để phân biệt với ngày thường.
+  const bg = isToday ? 'bg-blue-50/20'
+           : holiday ? 'bg-rose-50/30'
+           : weekend ? 'bg-amber-50/30'
+           : ''
   return (
-    <div className={`relative border-l border-gray-100 ${isToday ? 'bg-blue-50/20' : ''}`}
+    <div className={`relative border-l border-gray-100 ${bg}`}
       style={{ height }}>
       {range(HOUR_START, HOUR_END + 1).map(h => (
         <div key={h} className="border-b border-gray-100" style={{ height: HOUR_HEIGHT }} />
@@ -505,4 +614,11 @@ function layoutTasks(tasks) {
   }
   const laneTotal = lanes.length
   return out.map(o => ({ ...o, laneTotal }))
+}
+/** 2026-11-07: format "dd/MM" cho label range tuần. */
+function fmtRangeDay(ms) {
+  const d = new Date(ms)
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  return `${dd}/${mm}`
 }

@@ -82,6 +82,10 @@ const COLOR_HEADER_TEXT = '#FFFFFF'
 const CURRENCY_COLOR_VND = '#6B7280'   // gray-500
 const CURRENCY_COLOR_USD = '#0284C7'   // sky-600
 
+// ── 2026-11-07: Màu nền cho booking đã thanh toán ─────────
+//   Màu xanh lá NHẠT — đọc rõ chữ đen, không chọi với màu header.
+const COLOR_PAID_BG = '#DCFCE7'        // green-100 (tailwind)
+
 /**
  * Fetch toàn bộ booking match filter, phân trang tự động.
  */
@@ -137,7 +141,7 @@ function fmt(n, currency = 'VND') {
  */
 function currencyUnit(currency) {
   return {
-    text: currency === 'USD' ? 'USD' : 'VND',
+    text: currency === 'USD' ? 'USD' : 'VNĐ',
     fontSize: 6.5,
     color: CURRENCY_COLOR_VND,
     bold: true,
@@ -186,26 +190,51 @@ function routeLine(b) {
   }))
 }
 
+/**
+ * ── 2026-11-07 ────────────────────────────────────────────
+ * Bỏ tiền tố "Phí " ở đầu nhãn và viết hoa chữ cái đầu của phần còn lại.
+ *   "Phí hành lý"   → "Hành lý"
+ *   "Phí chỗ ngồi"  → "Chỗ ngồi"
+ *   "phí suất ăn"   → "Suất ăn"
+ *   "Hành lý ký gửi" (không có tiền tố) → "Hành lý ký gửi"
+ */
+function stripFeePrefix(label) {
+  if (!label) return ''
+  const m = /^\s*phí\s+(.+)$/i.exec(label)
+  if (!m) return label
+  const rest = m[1]
+  return rest.charAt(0).toUpperCase() + rest.slice(1)
+}
+
 function feesLines(t, currency) {
   const fees = t.fees || []
   if (fees.length === 0) return [{ text: '—', fontSize: 8, color: '#aaa' }]
-  // ── Mỗi dòng phí = 2 cột (nhãn trái, số tiền phải) ──
-  return fees.map(f => ({
-    columns: [
-      {
-        text: f.feeTypeLabel || FEE_LABEL[f.feeType] || f.feeType,
-        fontSize: 7.5,
-        alignment: 'left',
-      },
-      {
-        text: fmt(f.amount, currency),
-        fontSize: 7.5,
-        alignment: 'right',
-        width: 'auto',
-      },
-    ],
-    columnGap: 4,
-  }))
+  // ── 2026-11-07 (rev2): Full-width, cả tên phí lẫn số tiền đều CANH TRÁI
+  //   cho thẳng hàng. Bỏ "Phí " ở đầu nhãn.
+  //     Hành lý
+  //     1.000.000
+  //     Chỗ ngồi
+  //     1.000.000
+  // 2026-11-07 (rev3): canh PHẢI cả tên phí lẫn số tiền để thẳng hàng với
+  //   các cột tiền bên cạnh.
+  const out = []
+  fees.forEach((f, i) => {
+    if (i > 0) out.push({ text: '', fontSize: 2 })   // spacer giữa 2 cụm phí
+    const rawLabel = f.feeTypeLabel || FEE_LABEL[f.feeType] || f.feeType
+    out.push({
+      text: stripFeePrefix(rawLabel),
+      fontSize: 7.5,
+      alignment: 'right',
+      color: '#334155',
+    })
+    out.push({
+      text: fmt(f.amount, currency),
+      fontSize: 7.5,
+      alignment: 'right',
+      bold: true,
+    })
+  })
+  return out
 }
 
 function customerLabel(t) {
@@ -214,16 +243,26 @@ function customerLabel(t) {
   return 'Khách lẻ'
 }
 
-function kindLine(b) {
-  // ── 3 dòng — Loại, Hãng, Ngày bán (dd/MM/yy) ──
+/**
+ * ── 2026-11-07 (rev): kindLine giờ gộp luôn cột "Khách hàng" cũ ──
+ * Thứ tự dòng trong cell:
+ *   1. Loại           (Vé mới / Đổi / Dịch vụ / Hoàn) — bold
+ *   2. Khách hàng     (companyName hoặc "Khách lẻ") — medium
+ *   3. Ngày bán       (dd/MM/yy)
+ *   4. Hãng           (airlineCode) — small, xám
+ * Cột "Khách hàng" riêng đã bị bỏ, dữ liệu dời hết vào đây.
+ */
+function kindLine(b, t) {
   const lines = [
     { text: KIND_LABEL[b.kind] || b.kind || '—', bold: true, fontSize: 8 },
   ]
-  if (b.airlineCode) {
-    lines.push({ text: b.airlineCode, fontSize: 7, color: '#666' })
-  }
+  lines.push({ text: customerLabel(t), fontSize: 7.5, color: '#334155' })
   if (b.saleDate) {
     lines.push({ text: fmtDateShort(b.saleDate), fontSize: 7, color: '#888' })
+  }
+  if (b.airlineCode) {
+    // 2026-11-07 (rev): prefix "Hãng bay " trước mã hãng cho rõ.
+    lines.push({ text: `Hãng bay ${b.airlineCode}`, fontSize: 7, color: '#666' })
   }
   return lines
 }
@@ -281,7 +320,7 @@ function buildRows(bookings) {
         columns: [
           { text: fmt(total, b.currency), bold: true, fontSize: 8, alignment: 'right', width: '*' },
           {
-            text: isUsd ? 'USD' : 'VND',
+            text: isUsd ? 'USD' : 'VNĐ',
             bold: true,                       // in đậm cùng số tổng
             fontSize: 6.5,
             color: unitColor,
@@ -309,7 +348,7 @@ function buildRows(bookings) {
             },
             {
               // cùng style với số đã quy đổi: bold + màu xanh
-              text: 'VND',
+              text: 'VNĐ',
               fontSize: 6.5,
               color: CURRENCY_COLOR_USD,
               bold: true,
@@ -329,11 +368,18 @@ function buildRows(bookings) {
       )
     }
 
+    // ── 2026-11-07: Booking PAID → fillColor xanh lá nhạt ở mọi cell của
+    //   mọi dòng vé thuộc booking. Guard total ≈ 0 → coi là PAID (dữ liệu
+    //   cũ có thể chưa rollup nhưng về logic là đã thanh toán).
+    const isPaid = (b.paymentStatus === 'PAID') || (total <= 0.5)
+    const paidFill = isPaid ? { fillColor: COLOR_PAID_BG } : null
+
     tickets.forEach((t, i) => {
       const n = ticketNumbers(t)
       const isFirst = i === 0
       const cell = (content, extra = {}) => ({
         stack: Array.isArray(content) ? content : [content],
+        ...(paidFill || {}),
         ...extra,
       })
       // Ô số tiền: số ở trên (align right), đơn vị ở dưới (align right).
@@ -347,12 +393,13 @@ function buildRows(bookings) {
             ...(isEmpty ? [] : [{ ...currencyUnit(b.currency), alignment: 'right', margin: [0, 0, 0, 0] }]),
           ],
           alignment: 'right',
+          ...(paidFill || {}),
         }
       }
 
+      // 2026-11-07 (rev): bỏ cột "Khách hàng" — customerLabel gộp vào kindLine.
       const row = [
-        cell(kindLine(b)),
-        cell({ text: customerLabel(t), fontSize: 8 }),
+        cell(kindLine(b, t)),
       ]
       // Booking code — rowSpan, BỎ đơn vị tiền tệ
       if (isFirst) {
@@ -363,13 +410,13 @@ function buildRows(bookings) {
           { rowSpan: N }
         ))
       } else {
-        row.push({})
+        row.push(paidFill ? { ...paidFill } : {})
       }
       row.push(cell(passengerLine(t)))
       if (isFirst) {
         row.push(cell(routeLine(b), { rowSpan: N }))
       } else {
-        row.push({})
+        row.push(paidFill ? { ...paidFill } : {})
       }
       row.push(numCell(n.base))
       row.push(numCell(n.coll))
@@ -391,13 +438,13 @@ function buildRows(bookings) {
       if (isFirst) {
         row.push(cell(totalStack, { rowSpan: N, alignment: 'right' }))
       } else {
-        row.push({})
+        row.push(paidFill ? { ...paidFill } : {})
       }
       // Note — rowSpan
       if (isFirst) {
         row.push(cell(noteLine(b), { rowSpan: N }))
       } else {
-        row.push({})
+        row.push(paidFill ? { ...paidFill } : {})
       }
 
       rows.push(row)
@@ -418,8 +465,8 @@ function tableHeader() {
     alignment: 'center',
   })
   return [
+    // 2026-11-07 (rev): Bỏ cột "Khách hàng" — gộp vào "Loại/Hãng".
     h('Loại/Hãng'),
-    h('Khách hàng'),
     h('Mã BK'),
     h('Hành khách'),
     h('Hành trình'),
@@ -429,7 +476,7 @@ function tableHeader() {
     h('Thành tiền vé'),
     h('Phí xuất vé'),
     h('Giá bán'),
-    h('Tổng booking\n(quy đổi VND)'),
+    h('Tổng booking\n(quy đổi VNĐ)'),
     h('Ghi chú'),
   ]
 }
@@ -496,20 +543,24 @@ export async function exportBookingsReport(filterParams, { onProgress } = {}) {
   const body = [tableHeader(), ...buildRows(bookings)]
 
   // ── widths ────────────────────────────────────────────
+  // 2026-11-07 (rev): Customer -5pt, Route -10pt, Booking +15pt
+  //   (mã BK dài 6 ký tự + có khi 2 mã dạng STETEA/ETAET nên cần thêm chỗ).
+  // 2026-11-07 (rev3): Bỏ cột "Khách hàng" (63pt), redistribute theo % request.
+  //   % tính trên width CŨ của từng cột.
+  // 2026-11-07 (rev4): Fees -15 → Kind +15 (để chứa "Hãng bay <mã>").
   const widths = [
-    38,   // A Kind
-    68,   // B Customer
-    32,   // C Booking
-    78,   // D Passenger
-    75,   // E Route
-    48,   // F Base
-    42,   // G Coll
-    64,   // H Fees
-    52,   // I Subtotal
-    42,   // J Issuance
-    52,   // K Sell
-    78,   // L Total + VND (merged)
-    '*',  // M Note (~133pt)
+    57,   // A Kind + Customer      (42 +15)
+    47,   // B Booking
+    103,  // C Passenger
+    55,   // D Route
+    53,   // E Base
+    46,   // F Coll
+    74,   // G Fees                 (89 -15)
+    57,   // H Subtotal
+    42,   // I Issuance
+    57,   // J Sell
+    78,   // K Total + VND (merged)
+    '*',  // L Note
   ]
 
   const docDefinition = {
@@ -864,4 +915,345 @@ function sanitizeFilename(name) {
     .replace(/\s+/g, ' ')             // gom whitespace
     .trim()
     .slice(0, 200)                    // giới hạn độ dài cho an toàn
+}
+// ═══════════════════════════════════════════════════════════════════════════
+//  Báo cáo CÔNG NỢ — 2026-11-07
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Lấy mốc 00:00:00 và 23:59:59 của HÔM NAY ở local timezone.
+ * Dùng cho tùy chọn "Báo cáo vé hôm nay" để bỏ qua filter hiện tại.
+ */
+export function getTodayRangeMs() {
+  const now = new Date()
+  const y = now.getFullYear(), m = now.getMonth(), d = now.getDate()
+  const fromMs = new Date(y, m, d, 0, 0, 0, 0).getTime()
+  const toMs   = new Date(y, m, d, 23, 59, 59, 999).getTime()
+  return { fromMs, toMs }
+}
+
+/**
+ * Fetch toàn bộ booking CHƯA THANH TOÁN khớp một hay nhiều company id.
+ *
+ * ── 2026-11-07 (rev): `idOrIds` giờ nhận 1 ID hoặc mảng ID ──
+ *   - Chọn công ty mẹ (root) → caller truyền mảng [root, ...các chi nhánh].
+ *   - Chọn chi nhánh → caller truyền [branchId].
+ *   Booking match nếu có ≥ 1 vé có companyId thuộc mảng.
+ */
+export async function fetchUnpaidBookingsByCompany(idOrIds, onProgress) {
+  const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds]
+  const idSet = new Set(ids)
+  const base = { paymentStatus: 'UNPAID' }
+  const all = []
+  let page = 0
+  const MAX_PAGES = 50
+  while (page < MAX_PAGES) {
+    const res = await listBookings({ ...base, page, size: 200 })
+    const d = res.data?.data
+    const content = d?.content || []
+    all.push(...content)
+    if (onProgress) onProgress(all.length, d?.totalElements || all.length)
+    if (page + 1 >= (d?.totalPages || 1)) break
+    page++
+  }
+  return all.filter(b => (b.tickets || []).some(t => idSet.has(t.companyId)))
+}
+
+/**
+ * Format số hoá đơn thành chuỗi "#C26MCB<n>".
+ * '', null → chuỗi rỗng để cell không hiện mã rác.
+ */
+export function formatInvoiceCode(num) {
+  if (num == null) return ''
+  const s = String(num).trim()
+  if (!s) return ''
+  return `#C26MCB${s}`
+}
+
+/**
+ * ── 2026-11-07 (rev3): Build chuỗi hành trình gọn ──
+ *   - Nếu toCode của segment trước = fromCode của segment sau → nối thẳng.
+ *   - Nếu không → chèn "//" rồi viết đầy đủ fromCode+toCode của segment mới.
+ *   Ví dụ:
+ *     [SGN→HAN, HAN→SGN]   → "SGNHANSGN"      (khứ hồi)
+ *     [SGN→HAN, HPH→SGN]   → "SGNHAN//HPHSGN" (đa chặng không nối)
+ */
+function buildRouteStr(segments) {
+  const segs = [...(segments || [])].sort((a, b) =>
+    (a.segOrder ?? 0) - (b.segOrder ?? 0))
+  let out = ''
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i]
+    const from = s.fromCode || '?'
+    const to = s.toCode || '?'
+    if (i === 0) { out = from + to; continue }
+    const prev = segs[i - 1]
+    if ((prev.toCode || '') === from) out += to
+    else out += '//' + from + to
+  }
+  return out || '—'
+}
+
+/**
+ * 2026-11-07: Gom các số hoá đơn (CSV) của 1 booking thành array dedupe + sort.
+ * Dùng cho PDF báo cáo công nợ (auto-pull, không user nhập nữa).
+ */
+function collectInvoiceNumbers(b) {
+  const set = new Set()
+  for (const inv of (b.invoices || [])) {
+    if (!inv.invoiceNumbers) continue
+    inv.invoiceNumbers.split(',').forEach(n => {
+      const t = n.trim()
+      if (t) set.add(t)
+    })
+  }
+  return [...set].sort((a, c) => {
+    const na = Number(a), nc = Number(c)
+    if (Number.isFinite(na) && Number.isFinite(nc)) return na - nc
+    return a.localeCompare(c)
+  })
+}
+
+/**
+ * 2026-11-07: Quy đổi số tiền USD về VND theo tỷ giá đã lưu của booking.
+ * Nếu booking là VND → trả về số gốc. USD mà thiếu tỷ giá → 0 (thay vì NaN).
+ */
+function toVnd(amount, b) {
+  const n = typeof amount === 'number' ? amount : parseAmount(amount) || 0
+  if ((b.currency || 'VND') === 'USD') {
+    const r = parseAmount(b.exchangeRate) || 0
+    return Math.round(n * r)
+  }
+  return n
+}
+
+/**
+ * ── 2026-11-07 (rev2): Build & tải PDF Báo cáo công nợ dạng MULTI-SECTION ──
+ *
+ * Mỗi "section" = 1 công ty (chính hoặc 1 chi nhánh) kèm list booking UNPAID
+ * của công ty đó. Header của PDF in tên công ty mẹ. Trong body, mỗi section
+ * có 1 tiêu đề (tên công ty + số booking) rồi bảng của section, cuối bảng có
+ * subtotal của section. Hết các section → 1 dòng GRAND TOTAL tổng cộng.
+ *
+ * @param opts.rootName         Tên công ty mẹ (cho header PDF)
+ * @param opts.sections         [{ companyName, bookings }]
+ * @param opts.invoiceNumbers   Map<bookingId, string>
+ */
+export async function exportDebtReport({ rootName, rootCode, sections }) {
+  if (!sections || sections.length === 0) throw new Error('Không có section nào để xuất')
+
+  // ── 2026-11-07 (rev5): 9 cột, FIT 1 TRANG ──
+  //   Usable: 842 - 2*20 (margin) = 802pt.
+  //   pdfmake paddingLeft/Right 3 + border 0.5 → mỗi col chiếm thêm ~7pt.
+  //   9 cột × 7 = 63pt overhead. Budget cho widths ≈ 802 - 63 = 739pt.
+  //   Scale từ bộ cũ (802) × (739/802 ≈ 0.921).
+  const widths = [55, 30, 44, 117, 158, 79, 78, 72, 105]
+  const colCount = widths.length
+  const headL = (t) => ({
+    text: t, bold: true, fontSize: 8,
+    color: COLOR_HEADER_TEXT, fillColor: COLOR_HEADER, alignment: 'left',
+  })
+  const headR = (t) => ({
+    text: t, bold: true, fontSize: 8,
+    color: COLOR_HEADER_TEXT, fillColor: COLOR_HEADER, alignment: 'right',
+  })
+  const headerRow = [
+    headL('Ngày xuất vé'),     // A (ngày + loại 2 dòng)
+    headL('Hãng'),              // B
+    headL('Mã BK'),             // C
+    headL('Hành trình'),        // D
+    headL('Tên hành khách'),    // E (đổi label)
+    headL('Số vé'),             // F
+    headR('Giá bán'),           // G
+    headR('Tổng booking'),      // H
+    headR('Số hoá đơn'),        // I
+  ]
+
+  // Build body cho 1 section → table riêng.
+  const buildSectionTable = (section) => {
+    const body = [headerRow]
+    let sumSellVnd = 0
+    let sumBookingVnd = 0
+    for (const b of section.bookings) {
+      const tickets = b.tickets || []
+      if (tickets.length === 0) continue
+      const N = tickets.length
+      const bookingTotalVnd = toVnd(bookingTotals(b), b)
+      sumBookingVnd += bookingTotalVnd
+      const route = buildRouteStr(b.segments)
+      const invNums = collectInvoiceNumbers(b)   // ["355", "356"]
+      tickets.forEach((t, i) => {
+        const n = ticketNumbers(t)
+        const sellVnd = toVnd(n.sellPrice, b)
+        sumSellVnd += sellVnd
+        const isFirst = i === 0
+        const cellL = (content, extra = {}) => ({
+          stack: Array.isArray(content) ? content : [content],
+          alignment: 'left',
+          ...extra,
+        })
+        const cellR = (content, extra = {}) => ({
+          stack: Array.isArray(content) ? content : [content],
+          alignment: 'right',
+          ...extra,
+        })
+        const row = []
+        // A Ngày xuất vé + Loại (2 dòng, rowSpan)
+        if (isFirst) row.push(cellL(
+          [
+            { text: b.saleDate ? fmtDateShort(b.saleDate) : '—', fontSize: 8 },
+            { text: KIND_LABEL[b.kind] || b.kind || '—', fontSize: 7, bold: true, color: '#475569' },
+          ],
+          { rowSpan: N }
+        ))
+        else row.push({})
+        // B Hãng
+        if (isFirst) row.push(cellL({ text: b.airlineCode || '—', fontSize: 8 }, { rowSpan: N }))
+        else row.push({})
+        // C Mã BK
+        if (isFirst) row.push(cellL({ text: b.bookingCode || '—', fontSize: 8, bold: true }, { rowSpan: N }))
+        else row.push({})
+        // D Hành trình
+        if (isFirst) row.push(cellL({ text: route, fontSize: 8, bold: true, color: '#1e40af' }, { rowSpan: N }))
+        else row.push({})
+        // E Tên hành khách
+        row.push(cellL({ text: (t.passengerName || '—').toUpperCase(), fontSize: 8 }))
+        // F Số vé
+        row.push(cellL({ text: t.ticketNumber || '—', fontSize: 8, color: t.ticketNumber ? '#111' : '#aaa' }))
+        // G Giá bán (VND, đơn vị INLINE cùng style với số)
+        row.push(cellR({
+          text: `${formatMoney(sellVnd, 'VND', { withUnit: false })} VNĐ`,
+          fontSize: 8, bold: true, alignment: 'right',
+        }))
+        // H Tổng booking (VND, inline, rowSpan)
+        if (isFirst) row.push(cellR({
+          text: `${formatMoney(bookingTotalVnd, 'VND', { withUnit: false })} VNĐ`,
+          fontSize: 8, bold: true, alignment: 'right',
+        }, { rowSpan: N }))
+        else row.push({})
+        // I Số hoá đơn (rowSpan)
+        if (isFirst) {
+          if (invNums.length === 0) {
+            row.push(cellR({ text: '—', fontSize: 8, color: '#aaa' }, { rowSpan: N }))
+          } else {
+            row.push(cellR(
+              invNums.map(nn => ({
+                text: `#C26MCB${nn}`,
+                fontSize: 8, bold: true, color: '#0f172a', alignment: 'right',
+              })),
+              { rowSpan: N }
+            ))
+          }
+        } else row.push({})
+        body.push(row)
+      })
+    }
+    // Subtotal row (nền indigo nhạt) — gộp 6 cột đầu cho label "Cộng".
+    const subRow = new Array(colCount).fill(null).map(() => ({ text: '', fillColor: '#eef2ff' }))
+    subRow[0] = { text: 'Cộng', bold: true, fontSize: 8, fillColor: '#eef2ff', colSpan: 6, alignment: 'right' }
+    for (let i = 1; i < 6; i++) subRow[i] = { text: '', fillColor: '#eef2ff' }
+    subRow[6] = { text: `${formatMoney(sumSellVnd, 'VND', { withUnit: false })} VNĐ`,
+      bold: true, fontSize: 8, fillColor: '#eef2ff', alignment: 'right' }
+    subRow[7] = { text: `${formatMoney(sumBookingVnd, 'VND', { withUnit: false })} VNĐ`,
+      bold: true, fontSize: 8, fillColor: '#eef2ff', alignment: 'right' }
+    subRow[8] = { text: '', fillColor: '#eef2ff' }
+    body.push(subRow)
+    return { body, sumSellVnd, sumBookingVnd, invNumCount: (() => {
+      const set = new Set()
+      for (const b of section.bookings) {
+        for (const n of collectInvoiceNumbers(b)) set.add(n)
+      }
+      return set.size
+    })() }
+  }
+
+  // Build nội dung: mỗi section = title + table
+  const content = []
+  let grandSell = 0
+  let grandBooking = 0
+  let grandInv = 0
+  sections.forEach((s, idx) => {
+    const built = buildSectionTable(s)
+    grandSell += built.sumSellVnd
+    grandBooking += built.sumBookingVnd
+    grandInv += built.invNumCount
+    content.push({
+      text: s.companyName,
+      fontSize: 10, bold: true, color: '#1e293b',
+      margin: [0, idx === 0 ? 0 : 10, 0, 2],
+    })
+    // ── 2026-11-07 (rev5): chỉ hiển thị "N hoá đơn" ──
+    content.push({
+      text: built.invNumCount > 0
+        ? `${built.invNumCount} hoá đơn`
+        : `Chưa có hoá đơn`,
+      fontSize: 8, color: '#64748b',
+      margin: [0, 0, 0, 4],
+    })
+    content.push({
+      table: { headerRows: 1, widths, body: built.body, dontBreakRows: true },
+      layout: {
+        hLineWidth: () => 0.5, vLineWidth: () => 0.5,
+        hLineColor: () => '#CBD5E1', vLineColor: () => '#CBD5E1',
+        paddingLeft: () => 3, paddingRight: () => 3,
+        paddingTop: () => 2, paddingBottom: () => 2,
+      },
+    })
+  })
+
+  // Grand total nếu > 1 section — khớp 10 cột, canh phải.
+  if (sections.length > 1) {
+    const totalRow = new Array(widths.length).fill(null).map(() =>
+      ({ text: '', fillColor: '#1e293b' }))
+    totalRow[0] = { text: 'TỔNG CỘNG TẤT CẢ', bold: true, fontSize: 10,
+      fillColor: '#1e293b', color: '#fff', colSpan: 6, alignment: 'right' }
+    for (let i = 1; i < 6; i++) totalRow[i] = { text: '', fillColor: '#1e293b' }
+    totalRow[6] = { text: `${formatMoney(grandSell, 'VND', { withUnit: false })} VNĐ`,
+      bold: true, fontSize: 10, fillColor: '#1e293b', color: '#fff', alignment: 'right' }
+    totalRow[7] = { text: `${formatMoney(grandBooking, 'VND', { withUnit: false })} VNĐ`,
+      bold: true, fontSize: 10, fillColor: '#1e293b', color: '#fff', alignment: 'right' }
+    totalRow[8] = { text: '', fillColor: '#1e293b' }
+    content.push({
+      table: { widths, body: [totalRow] },
+      layout: { hLineWidth: () => 0, vLineWidth: () => 0,
+        paddingLeft: () => 3, paddingRight: () => 3,
+        paddingTop: () => 4, paddingBottom: () => 4 },
+      margin: [0, 8, 0, 0],
+    })
+  }
+
+  const totalBookings = sections.reduce((s, x) => s + x.bookings.length, 0)
+  const docDefinition = {
+    pageSize: 'A4',
+    pageOrientation: 'landscape',
+    pageMargins: [20, 65, 20, 30],
+    header: {
+      margin: [20, 18, 20, 0],
+      stack: [
+        { text: 'BÁO CÁO CÔNG NỢ', fontSize: 14, bold: true, alignment: 'center' },
+        { text: rootName || '—', fontSize: 10, alignment: 'center', margin: [0, 2, 0, 0] },
+        { text: `Xuất ngày ${fmtDate(Date.now())}`, fontSize: 9, alignment: 'center',
+          color: '#666', margin: [0, 2, 0, 0] },
+      ],
+    },
+    footer: (currentPage, pageCount) => ({
+      text: `Trang ${currentPage}/${pageCount}  ·  ${sections.length} công ty / chi nhánh  ·  ${grandInv} hoá đơn chưa thanh toán`,
+      fontSize: 7, alignment: 'center', color: '#666', margin: [0, 10, 0, 0],
+    }),
+    content,
+    defaultStyle: { fontSize: 8 },
+  }
+
+  const pdfMakeMod = await import('pdfmake/build/pdfmake')
+  const vfsMod = await import('pdfmake/build/vfs_fonts')
+  const pdfMake = pdfMakeMod.default || pdfMakeMod
+  const vfs = vfsMod?.pdfMake?.vfs ?? vfsMod?.default?.pdfMake?.vfs
+    ?? vfsMod?.default?.vfs ?? vfsMod?.vfs ?? vfsMod?.default ?? vfsMod
+  pdfMake.vfs = vfs
+
+  // ── 2026-11-07 (rev4): filename dùng MÃ CÔNG TY (không dấu, ASCII) ──
+  //   Pattern: Cong_no_<rootCode>.pdf
+  const safeCode = (rootCode || 'UNKNOWN').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 60)
+  const fn = `Cong_no_${safeCode || 'UNKNOWN'}.pdf`
+  pdfMake.createPdf(docDefinition).download(fn)
 }

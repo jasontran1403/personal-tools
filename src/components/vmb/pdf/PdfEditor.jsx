@@ -40,7 +40,12 @@ export default function PdfEditor() {
   // zoom = 1 → fit page (mỗi trang fit WIDTH viewport, giữ aspect). > 1 phóng
   // to, viewport scroll. Nhiều trang stack dọc → fit page có nghĩa fit chiều
   // ngang viewport cho mỗi trang.
-  const [zoom, setZoom] = useState(1)
+  // ── 2026-11-07: mặc định 60% để nhiều trang vào 1 màn hình, dễ scan ──
+  const [zoom, setZoom] = useState(0.6)
+  // ── 2026-11-07: Trang đã xoá bị bỏ khỏi UI; trash giữ lại để hoàn tác ──
+  // Mỗi phần tử trong trash giữ nguyên object page + vị trí (idx) ban đầu
+  // trong `pages` để khi undo có thể chèn lại đúng chỗ.
+  const [trash, setTrash] = useState([])    // [{ page, atIdx }]
 
   const fileInputRef = useRef(null)
   // callback-ref API — xem useContainerSize.js
@@ -114,8 +119,49 @@ export default function PdfEditor() {
     return () => { cancelled = true }
   }, [fileBuf])
 
-  const toggleDelete = (idx) => {
-    setPages(ps => ps.map(p => p.index === idx ? { ...p, deleted: !p.deleted } : p))
+  // ── 2026-11-07 rework: xoá trang = bỏ hẳn khỏi `pages` (UI collapse để
+  // user không phải scroll qua ảnh grey mờ). Trang bị xoá được push vào
+  // `trash` kèm vị trí cũ, user có thể hoàn tác (LIFO) hoặc "restore all".
+  const deletePage = (idx) => {
+    setPages(ps => {
+      const at = ps.findIndex(p => p.index === idx)
+      if (at < 0) return ps
+      const removed = ps[at]
+      setTrash(tr => [...tr, { page: { ...removed, deleted: true }, atIdx: at }])
+      return ps.filter((_, i) => i !== at)
+    })
+  }
+
+  const undoDelete = () => {
+    setTrash(tr => {
+      if (tr.length === 0) return tr
+      const last = tr[tr.length - 1]
+      setPages(ps => {
+        const copy = [...ps]
+        // Chèn lại gần đúng vị trí cũ (clamp vào bounds).
+        const at = Math.min(last.atIdx, copy.length)
+        const restored = { ...last.page, deleted: false }
+        copy.splice(at, 0, restored)
+        return copy
+      })
+      return tr.slice(0, -1)
+    })
+  }
+
+  const restoreAllDeleted = () => {
+    setTrash(tr => {
+      if (tr.length === 0) return tr
+      setPages(ps => {
+        let copy = [...ps]
+        // Hoàn tác theo đúng thứ tự FIFO để vị trí gần như nguyên vẹn.
+        for (const item of [...tr].sort((a, b) => a.atIdx - b.atIdx)) {
+          const at = Math.min(item.atIdx, copy.length)
+          copy.splice(at, 0, { ...item.page, deleted: false })
+        }
+        return copy
+      })
+      return []
+    })
   }
 
   const addRect = (idx, rect) => {
@@ -130,7 +176,8 @@ export default function PdfEditor() {
 
   const save = async () => {
     if (!fileBuf) return
-    const kept = pages.filter(p => !p.deleted)
+    // 2026-11-07: `pages` giờ chỉ chứa trang CÒN LẠI; trang bị xoá nằm trong `trash`.
+    const kept = pages
     if (kept.length === 0) {
       toast.error('Phải giữ lại ít nhất 1 trang')
       return
@@ -141,8 +188,7 @@ export default function PdfEditor() {
       const doc = await PDFDocument.load(fileBuf.slice(0))
 
       // Vẽ hộp trắng trên các trang GIỮ LẠI (dùng index gốc)
-      for (const p of pages) {
-        if (p.deleted) continue
+      for (const p of kept) {
         if (!p.rects || p.rects.length === 0) continue
         const page = doc.getPage(p.index)
         const { width: pw, height: ph } = page.getSize()
@@ -163,7 +209,7 @@ export default function PdfEditor() {
       }
 
       // Xoá trang — đi NGƯỢC từ cuối để index không shift
-      const toRemove = pages.filter(p => p.deleted).map(p => p.index).sort((a, b) => b - a)
+      const toRemove = trash.map(t => t.page.index).sort((a, b) => b - a)
       for (const idx of toRemove) doc.removePage(idx)
 
       const bytes = await doc.save()
@@ -187,6 +233,7 @@ export default function PdfEditor() {
     setFileBuf(null)
     setFileName('')
     setPages([])
+    setTrash([])
     setRenderedCount(0)
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
@@ -206,17 +253,32 @@ export default function PdfEditor() {
             </span>
           )}
           <div className="flex-1" />
-          {pages.length > 0 && (
+          {(pages.length > 0 || trash.length > 0) && (
             <>
               <span className="text-[11px] text-gray-500">
-                Giữ lại {pages.filter(p => !p.deleted).length}/{pages.length} trang
+                Giữ lại {pages.length}/{pages.length + trash.length} trang
               </span>
+              {/* ── 2026-11-07: Undo xoá trang ── */}
+              {trash.length > 0 && (
+                <>
+                  <button type="button" onClick={undoDelete}
+                    title="Hoàn tác xoá trang gần nhất"
+                    className="px-2.5 py-1.5 text-xs font-semibold rounded-md bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-200">
+                    ↶ Hoàn tác ({trash.length})
+                  </button>
+                  <button type="button" onClick={restoreAllDeleted}
+                    title="Khôi phục tất cả trang đã xoá"
+                    className="px-2.5 py-1.5 text-xs font-semibold rounded-md text-amber-700 hover:bg-amber-50">
+                    Khôi phục tất cả
+                  </button>
+                </>
+              )}
               <ZoomBar zoom={zoom} onZoom={setZoom} />
               <button type="button" onClick={reset}
                 className="px-3 py-1.5 text-sm font-semibold rounded-lg text-gray-600 hover:bg-gray-100">
                 Huỷ
               </button>
-              <button type="button" onClick={save} disabled={saving}
+              <button type="button" onClick={save} disabled={saving || pages.length === 0}
                 className="px-3 py-1.5 text-sm font-semibold rounded-lg bg-emerald-600 text-white
                   hover:bg-emerald-700 disabled:opacity-50">
                 {saving ? 'Đang lưu…' : '💾 Lưu PDF'}
@@ -250,7 +312,7 @@ export default function PdfEditor() {
               <div className="p-4 space-y-4 flex flex-col items-center">
                 {pages.map(p => (
                   <PageEditor key={p.index} page={p} renderWidth={pageRenderW}
-                    onToggleDelete={() => toggleDelete(p.index)}
+                    onDelete={() => deletePage(p.index)}
                     onAddRect={(r) => addRect(p.index, r)}
                     onRemoveRect={(ri) => removeRect(p.index, ri)}
                   />
@@ -272,7 +334,7 @@ export default function PdfEditor() {
 //  PageEditor — 1 trang: thumbnail + overlay vẽ hộp
 // ═══════════════════════════════════════════════════════════════
 
-function PageEditor({ page, renderWidth, onToggleDelete, onAddRect, onRemoveRect }) {
+function PageEditor({ page, renderWidth, onDelete, onAddRect, onRemoveRect }) {
   const [drag, setDrag] = useState(null)  // { x0, y0, x1, y1 } đang vẽ
   const wrapRef = useRef(null)
 
@@ -292,7 +354,7 @@ function PageEditor({ page, renderWidth, onToggleDelete, onAddRect, onRemoveRect
   }
 
   const onPointerDown = (e) => {
-    if (page.deleted) return
+    // 2026-11-07: trang bị xoá đã bị bỏ khỏi `pages` → không còn flag deleted
     // Ignore if clicking on an existing rect (handled by rect's own click)
     if (e.target.dataset.rectIdx !== undefined) return
     e.preventDefault()
@@ -329,27 +391,20 @@ function PageEditor({ page, renderWidth, onToggleDelete, onAddRect, onRemoveRect
     : 0
 
   return (
-    <div className={`rounded-xl border ${page.deleted ? 'border-rose-300 bg-rose-50' : 'border-gray-200 bg-white'} p-2`}
+    <div className="rounded-xl border border-gray-200 bg-white p-2"
       style={{ width: renderWidth || 'auto' }}>
       <div className="flex items-center gap-2 mb-2">
         <span className="text-xs font-bold text-gray-700">Trang {page.index + 1}</span>
-        {page.deleted && (
-          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-rose-600 text-white">
-            SẼ BỊ XOÁ
-          </span>
-        )}
-        {page.rects.length > 0 && !page.deleted && (
+        {page.rects.length > 0 && (
           <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-blue-100 text-blue-700">
             {page.rects.length} hộp trắng
           </span>
         )}
         <div className="flex-1" />
-        <button type="button" onClick={onToggleDelete}
-          className={`text-xs px-2.5 py-1 rounded-md font-semibold
-            ${page.deleted
-              ? 'bg-white border border-rose-300 text-rose-700 hover:bg-rose-100'
-              : 'bg-white border border-gray-300 text-gray-700 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-300'}`}>
-          {page.deleted ? '↩ Giữ lại' : '🗑 Xoá trang này'}
+        {/* 2026-11-07: Xoá = loại luôn khỏi UI, dùng Undo toolbar để hoàn tác */}
+        <button type="button" onClick={onDelete}
+          className="text-xs px-2.5 py-1 rounded-md font-semibold bg-white border border-gray-300 text-gray-700 hover:bg-rose-50 hover:text-rose-700 hover:border-rose-300">
+          🗑 Xoá trang này
         </button>
       </div>
 
@@ -366,14 +421,13 @@ function PageEditor({ page, renderWidth, onToggleDelete, onAddRect, onRemoveRect
             position: 'relative',
             width: renderWidth || page.width,
             height: renderHeight || 'auto',
-            cursor: page.deleted ? 'not-allowed' : 'crosshair',
+            cursor: 'crosshair',
             userSelect: 'none',
             touchAction: 'none',
           }}>
           <img src={page.canvasDataUrl} alt=""
             style={{
               display: 'block', width: '100%', height: '100%',
-              filter: page.deleted ? 'grayscale(0.8) opacity(0.5)' : 'none',
               border: '1px solid #e5e7eb',
             }} draggable={false} />
 
@@ -412,11 +466,9 @@ function PageEditor({ page, renderWidth, onToggleDelete, onAddRect, onRemoveRect
           )}
         </div>
       </div>
-      {!page.deleted && (
-        <div className="text-[10px] text-gray-500 text-center mt-1">
-          Kéo chuột để vẽ hộp trắng che thông tin · click hộp để xoá
-        </div>
-      )}
+      <div className="text-[10px] text-gray-500 text-center mt-1">
+        Kéo chuột để vẽ hộp trắng che thông tin · click hộp để xoá
+      </div>
     </div>
   )
 }

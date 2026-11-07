@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 /**
  * CompanySearchSelect — combobox typeahead cho công ty, dùng chung cho:
@@ -30,13 +31,18 @@ export default function CompanySearchSelect({
   noneLabel = '— Khách lẻ —',
   size = 'md',
   className = '',
+  // ── 2026-11-07: render dropdown qua portal để không bị cắt bởi overflow:hidden
+  //   của modal cha. Dropdown position tính theo bounding rect của nút trigger.
+  portal = false,
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [activeIdx, setActiveIdx] = useState(0)
+  const [portalRect, setPortalRect] = useState(null)   // {left, top, width}
   const wrapRef = useRef(null)
   const inputRef = useRef(null)
   const listRef = useRef(null)
+  const dropdownRef = useRef(null)   // 2026-11-07: trỏ tới panel (portal hoặc inline)
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -53,7 +59,10 @@ export default function CompanySearchSelect({
   useEffect(() => {
     if (!open) return
     const onDown = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
+      const inTrigger = wrapRef.current && wrapRef.current.contains(e.target)
+      // 2026-11-07: Dropdown portal nằm NGOÀI wrapRef → check thêm dropdownRef
+      const inDropdown = dropdownRef.current && dropdownRef.current.contains(e.target)
+      if (!inTrigger && !inDropdown) {
         setOpen(false)
         setQuery('')
       }
@@ -67,6 +76,24 @@ export default function CompanySearchSelect({
     const el = listRef.current.querySelector(`[data-idx="${activeIdx}"]`)
     if (el) el.scrollIntoView({ block: 'nearest' })
   }, [activeIdx, open])
+
+  // ── 2026-11-07: Tính lại vị trí dropdown khi mở hoặc scroll/resize ──
+  useEffect(() => {
+    if (!open || !portal) return
+    const recompute = () => {
+      const el = wrapRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      setPortalRect({ left: r.left, top: r.bottom, width: r.width })
+    }
+    recompute()
+    window.addEventListener('scroll', recompute, true)
+    window.addEventListener('resize', recompute)
+    return () => {
+      window.removeEventListener('scroll', recompute, true)
+      window.removeEventListener('resize', recompute)
+    }
+  }, [open, portal])
 
   const selected = useMemo(
     () => options.find(o => String(o.id) === String(value)) || null,
@@ -110,44 +137,83 @@ export default function CompanySearchSelect({
         <span className="text-gray-400 text-xs shrink-0">▾</span>
       </button>
 
-      {open && (
-        <div className="absolute z-50 left-0 right-0 mt-1 rounded-lg bg-white shadow-lg border border-gray-200 overflow-hidden">
-          <div className="p-1.5 border-b border-gray-100 bg-gray-50">
-            <input ref={inputRef}
-              type="text" value={query}
-              onChange={e => setQuery(e.target.value)}
-              onKeyDown={onKeyDown}
-              placeholder="Tìm công ty…"
-              className="w-full px-2 py-1.5 rounded-md border border-gray-200 bg-white text-sm
-                focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none" />
-          </div>
-
-          <div ref={listRef} className="max-h-56 overflow-y-auto py-0.5">
-            {allowNone && (
-              <OptionRow
-                idx={0} activeIdx={activeIdx} setActiveIdx={setActiveIdx}
-                onPick={() => pick(null)}
-                isSelected={value == null || value === ''}
-                label={noneLabel} italic
-              />
-            )}
-
-            {filtered.length === 0 ? (
-              <div className="px-3 py-3 text-xs text-gray-400 italic text-center">
-                Không tìm thấy công ty phù hợp
-              </div>
-            ) : filtered.map((o, i) => (
-              <OptionRow
-                key={o.id}
-                idx={i + noneOffset} activeIdx={activeIdx} setActiveIdx={setActiveIdx}
-                onPick={() => pick(o)}
-                isSelected={String(o.id) === String(value)}
-                label={o.label}
-              />
-            ))}
-          </div>
-        </div>
+      {open && !portal && (
+        <DropdownPanel
+          panelRef={dropdownRef}
+          inputRef={inputRef} listRef={listRef}
+          query={query} setQuery={setQuery} onKeyDown={onKeyDown}
+          allowNone={allowNone} activeIdx={activeIdx} setActiveIdx={setActiveIdx}
+          value={value} noneLabel={noneLabel} filtered={filtered}
+          noneOffset={noneOffset} pick={pick}
+          className="absolute z-50 left-0 right-0 mt-1"
+        />
       )}
+      {open && portal && portalRect && createPortal(
+        <DropdownPanel
+          panelRef={dropdownRef}
+          inputRef={inputRef} listRef={listRef}
+          query={query} setQuery={setQuery} onKeyDown={onKeyDown}
+          allowNone={allowNone} activeIdx={activeIdx} setActiveIdx={setActiveIdx}
+          value={value} noneLabel={noneLabel} filtered={filtered}
+          noneOffset={noneOffset} pick={pick}
+          style={{
+            position: 'fixed',
+            left: portalRect.left,
+            top: portalRect.top + 4,
+            width: portalRect.width,
+            zIndex: 2000,
+          }}
+        />,
+        document.body
+      )}
+    </div>
+  )
+}
+
+function DropdownPanel({
+  panelRef,
+  inputRef, listRef, query, setQuery, onKeyDown,
+  allowNone, activeIdx, setActiveIdx, value, noneLabel, filtered,
+  noneOffset, pick, className = '', style,
+}) {
+  return (
+    <div ref={panelRef}
+      className={`${className} rounded-lg bg-white shadow-lg border border-gray-200 overflow-hidden`}
+      style={style}
+      // Chặn modal "click outside" đóng theo (modal nghe mousedown ngoài panel)
+      onMouseDown={e => e.stopPropagation()}>
+      <div className="p-1.5 border-b border-gray-100 bg-gray-50">
+        <input ref={inputRef}
+          type="text" value={query}
+          onChange={e => setQuery(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="Tìm công ty…"
+          className="w-full px-2 py-1.5 rounded-md border border-gray-200 bg-white text-sm
+            focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none" />
+      </div>
+      <div ref={listRef} className="max-h-56 overflow-y-auto py-0.5">
+        {allowNone && (
+          <OptionRow
+            idx={0} activeIdx={activeIdx} setActiveIdx={setActiveIdx}
+            onPick={() => pick(null)}
+            isSelected={value == null || value === ''}
+            label={noneLabel} italic
+          />
+        )}
+        {filtered.length === 0 ? (
+          <div className="px-3 py-3 text-xs text-gray-400 italic text-center">
+            Không tìm thấy công ty phù hợp
+          </div>
+        ) : filtered.map((o, i) => (
+          <OptionRow
+            key={o.id}
+            idx={i + noneOffset} activeIdx={activeIdx} setActiveIdx={setActiveIdx}
+            onPick={() => pick(o)}
+            isSelected={String(o.id) === String(value)}
+            label={o.label}
+          />
+        ))}
+      </div>
     </div>
   )
 }

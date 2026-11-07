@@ -7,20 +7,26 @@ import { copyText } from '../../lib/clipboard'
  * CCCD / hộ chiếu / họ tên rồi paste sang hệ thống check-in.
  *
  * Props:
- *   label     — nhãn ngắn ("Số CCCD", "Họ tên"...)
- *   value     — giá trị hiển thị + copy
- *   mono      — dùng font mono (số CCCD/PP nên bật)
- *   display   — nếu muốn hiển thị khác giá trị copy
- *   copyLabel — toast text, mặc định "Đã copy {label}"
- *   suffix    — ReactNode chèn ngay cạnh value (VD: badge "còn lại")
+ *   label         — nhãn ngắn ("Số CCCD", "Họ tên"...)
+ *   value         — giá trị hiển thị
+ *   mono          — dùng font mono (số CCCD/PP nên bật)
+ *   display       — nếu muốn hiển thị khác giá trị copy
+ *   copyValue     — nếu muốn copy khác value (VD: bỏ dấu)
+ *   copyLabel     — toast text, mặc định "Đã copy {label}"
+ *   suffix        — ReactNode chèn ngay cạnh value (VD: badge "còn lại")
+ *   displayUpper  — hiển thị in HOA (áp vào shown, không áp vào copy)
  */
-export default function CopyableField({ label, value, display, mono, copyLabel, suffix }) {
-  const shownText = display != null ? display : (value || '—')
+export default function CopyableField({ label, value, display, copyValue, mono, copyLabel, suffix, displayUpper }) {
+  const rawShown = display != null ? display : (value || '—')
+  const shownText = displayUpper && typeof rawShown === 'string'
+    ? rawShown.toUpperCase()
+    : rawShown
   const hasValue = value != null && value !== ''
+  const effectiveCopy = copyValue != null ? copyValue : value
 
   const doCopy = async () => {
     if (!hasValue) return
-    const ok = await copyText(String(value))
+    const ok = await copyText(String(effectiveCopy))
     if (ok) toast.success(copyLabel || `Đã copy ${label.toLowerCase()}`)
     else toast.error('Không copy được')
   }
@@ -31,7 +37,7 @@ export default function CopyableField({ label, value, display, mono, copyLabel, 
         ${hasValue
           ? 'bg-white border-gray-200 hover:border-blue-400 hover:bg-blue-50/60 cursor-pointer'
           : 'bg-gray-50 border-gray-100 cursor-default'}`}
-      title={hasValue ? `Click để copy "${value}"` : 'Chưa có dữ liệu'}>
+      title={hasValue ? `Click để copy "${effectiveCopy}"` : 'Chưa có dữ liệu'}>
       <div className="flex items-center justify-between gap-2 mb-0.5">
         <div className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
           {label}

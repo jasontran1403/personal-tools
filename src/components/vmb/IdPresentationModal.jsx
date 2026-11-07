@@ -1,8 +1,11 @@
 import { useState } from 'react'
+import toast from 'react-hot-toast'
 import Modal from '../common/Modal'
 import ZoomablePreview from './ZoomablePreview'
 import CopyableField from './CopyableField'
 import { formatDateVn } from '../../lib/expiry'
+import { removeVnDiacritics, buildSrDocs } from '../../lib/vnText'
+import { copyText } from '../../lib/clipboard'
 
 /**
  * Xuất trình giấy tờ hành khách — dùng cho quầy check-in / kiểm tra nhanh.
@@ -135,11 +138,21 @@ export default function IdPresentationModal({ passenger, onClose }) {
 
         {/* Panel phải: các field click-to-copy */}
         <div className="lg:col-span-2 space-y-2 lg:h-full lg:overflow-y-auto lg:pr-1">
-          <div className="text-xs font-bold text-gray-600 uppercase tracking-wide mb-1">
-            Thông tin — bấm để copy
+          <div className="flex items-center justify-between mb-1 gap-2">
+            <div className="text-xs font-bold text-gray-600 uppercase tracking-wide">
+              Thông tin — bấm để copy
+            </div>
+            {/* ── 2026-11-07: Copy Ama (SR DOCS HK1) — chỉ có nghĩa khi là Hộ chiếu ── */}
+            {pick === 'pp' && (
+              <CopyAmaButton passenger={passenger} doc={doc} />
+            )}
           </div>
 
-          <CopyableField label="Họ tên" value={passenger?.fullName} />
+          {/* ── 2026-11-07: "Họ tên" hiển thị in HOA, copy ra bỏ dấu tiếng Việt ── */}
+          <CopyableField label="Họ tên"
+            value={passenger?.fullName}
+            copyValue={removeVnDiacritics(passenger?.fullName || '').toUpperCase()}
+            displayUpper />
 
           {pick === 'cccd' ? (
             <>
@@ -184,6 +197,38 @@ export default function IdPresentationModal({ passenger, onClose }) {
         </div>
       </div>
     </Modal>
+  )
+}
+
+/**
+ * ── 2026-11-07: Nút Copy Ama ─────────────────────────────
+ * Build chuỗi SR DOCS HK1 (Amadeus) từ hộ chiếu + nhân thân khách rồi copy
+ * vào clipboard. Chỉ bật khi đủ dữ liệu bắt buộc (iso3, số PP, DOB, expiry,
+ * tên khách).
+ */
+function CopyAmaButton({ passenger, doc }) {
+  const payload = buildSrDocs(passenger, doc)
+  const disabled = !payload
+
+  const onClick = async () => {
+    if (!payload) {
+      toast.error('Thiếu dữ liệu (quốc tịch / số hộ chiếu / ngày sinh / ngày hết hạn / họ tên)')
+      return
+    }
+    const ok = await copyText(payload)
+    if (ok) toast.success('Đã copy chuỗi SR DOCS (Ama)')
+    else toast.error('Không copy được')
+  }
+
+  return (
+    <button type="button" onClick={onClick} disabled={disabled}
+      title={payload || 'Thiếu dữ liệu để build SR DOCS'}
+      className={`px-2.5 py-1.5 rounded-md text-[11px] font-bold whitespace-nowrap transition
+        ${disabled
+          ? 'bg-gray-100 text-gray-400 cursor-not-allowed'
+          : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-sm'}`}>
+      📋 Copy Ama
+    </button>
   )
 }
 

@@ -42,12 +42,56 @@ import PassengerIdPickerModal from './PassengerIdPickerModal'
  *
  * _originalTotal KHÔNG bao giờ được gửi lên BE (bị strip trong submit).
  */
+// ── 2026-11-07: Autosave draft khi đang tạo mới ──────────────
+//   LocalStorage key dùng chung cho mọi user trên máy này. Chỉ áp cho
+//   mode === 'create': người dùng click ra ngoài / tắt modal / đổi tab
+//   không bị mất data đã nhập. Mở lại → tự load draft.
+const DRAFT_KEY = 'vmb.bookingForm.draft.v1'
+const INITIAL_FORM = () => ({
+  kind: 'NEW',
+  airlineCode: '',
+  bookingCode: '',
+  routeStr: '',
+  currency: 'VND',
+  exchangeRate: '',
+  note: '',
+  sharedTicketFace: false,
+  segments: [],
+  tickets: [newTicket()],
+  linkedBookingCode: '',
+  invoiceGroupId: null,
+  isInvoiceGroupOwner: false,
+  ownerBookingCode: null,
+  linkedBookings: [],
+  clearInvoiceGroup: false,
+})
+
+/** True nếu form khác default (có data user đã nhập). Dùng để quyết định autosave. */
+function isFormDirty(f) {
+  if (!f) return false
+  if (f.airlineCode || f.bookingCode || f.routeStr || f.note) return true
+  if (f.linkedBookingCode) return true
+  if (f.sharedTicketFace) return true
+  if (f.currency && f.currency !== 'VND') return true
+  if (f.exchangeRate) return true
+  if ((f.segments || []).length > 0) return true
+  const t = (f.tickets || [])[0]
+  if (!t) return (f.tickets || []).length > 1
+  if ((f.tickets || []).length > 1) return true
+  if (t.passengerName || t.ticketNumber || t.basePrice || t.collectionFee ||
+      t.issuanceFee || t.note || t.companyId != null ||
+      (t.fees || []).length > 0) return true
+  return false
+}
+
 export default function BookingFormModal({ mode = 'create', bookingId, onClose, onSaved }) {
   const isEdit = mode === 'edit'
   const [loading, setLoading] = useState(isEdit)
   const [busy, setBusy] = useState(false)
   const [companies, setCompanies] = useState([])
   const [feeTypes, setFeeTypes] = useState([])
+  // ── 2026-11-07: flag đánh dấu đã khôi phục từ draft (để show badge nhẹ) ──
+  const [restoredFromDraft, setRestoredFromDraft] = useState(false)
 
   useEffect(() => {
     listCompanies()
@@ -58,29 +102,50 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
       .catch(() => { })
   }, [])
 
-  const [form, setForm] = useState(() => ({
-    kind: 'NEW',
-    airlineCode: '',
-    bookingCode: '',
-    routeStr: '',
-    currency: 'VND',
-    exchangeRate: '',
-    note: '',
-    sharedTicketFace: false,
-    segments: [],
-    tickets: [newTicket()],
-    // ── 2026-10-16: invoice group link ──
-    //   linkedBookingCode: mã booking để gộp hóa đơn (user nhập).
-    //   invoiceGroupId: id group hiện tại (chỉ hiển thị khi edit).
-    //   linkedBookings: list [{id, bookingCode}] các booking cùng group khác.
-    //   clearInvoiceGroup: toggle bỏ link.
-    linkedBookingCode: '',
-    invoiceGroupId: null,
-    isInvoiceGroupOwner: false,
-    ownerBookingCode: null,
-    linkedBookings: [],
-    clearInvoiceGroup: false,
-  }))
+  // ── 2026-11-07: Init form — nếu create mode và có draft trong localStorage
+  //   thì khôi phục. Edit mode luôn khởi tạo trống rồi load từ BE.
+  const [form, setForm] = useState(() => {
+    if (!isEdit && typeof window !== 'undefined') {
+      try {
+        const raw = localStorage.getItem(DRAFT_KEY)
+        if (raw) {
+          const parsed = JSON.parse(raw)
+          if (parsed && typeof parsed === 'object') {
+            // Trả về draft, nhưng vẫn merge với default để chắc có đủ field
+            return { ...INITIAL_FORM(), ...parsed }
+          }
+        }
+      } catch (_) { /* ignore corrupt draft */ }
+    }
+    return INITIAL_FORM()
+  })
+
+  // ── 2026-11-07: Sau khi state đã khởi tạo, set flag nếu khôi phục được ──
+  useEffect(() => {
+    if (!isEdit && isFormDirty(form)) setRestoredFromDraft(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // ── 2026-11-07: Autosave draft mỗi khi form đổi (create mode, không
+  //   đang loading). Clear draft nếu form rỗng (user Reset).
+  useEffect(() => {
+    if (isEdit) return
+    if (loading) return
+    try {
+      if (isFormDirty(form)) {
+        localStorage.setItem(DRAFT_KEY, JSON.stringify(form))
+      } else {
+        localStorage.removeItem(DRAFT_KEY)
+      }
+    } catch (_) { /* quota/etc → im lặng */ }
+  }, [form, isEdit, loading])
+
+  // Reset về INITIAL_FORM + clear draft.
+  const resetForm = () => {
+    setForm(INITIAL_FORM())
+    setRestoredFromDraft(false)
+    try { localStorage.removeItem(DRAFT_KEY) } catch (_) {}
+  }
 
   useEffect(() => {
     if (!isEdit) return
@@ -129,6 +194,8 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
               // khi là data cũ → fallback booking.currency ở TicketFeesEditor.
               currency: f.currency || b.currency || 'VND',
               note: f.note || '',
+              // 2026-11-07: Số vé riêng của dịch vụ (optional) — round-trip.
+              ticketNumber: f.ticketNumber || '',
               orderIdx: f.orderIdx ?? 0,
             })),
             // Load lên với _originalTotal = null → chưa track. User paste
@@ -384,6 +451,8 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
       } else {
         await createBooking(body)
         toast.success('Đã tạo booking')
+        // ── 2026-11-07: Tạo thành công → xoá draft trong localStorage ──
+        try { localStorage.removeItem(DRAFT_KEY) } catch (_) {}
       }
       onSaved()
     } catch (err) {
@@ -403,7 +472,25 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
       size="xl"
       closeOnBackdrop={!busy}
       footer={
-        <div className="flex justify-end gap-2">
+        <div className="flex items-center gap-2">
+          {/* ── 2026-11-07: badge báo đã khôi phục draft + nút Reset ── */}
+          {!isEdit && restoredFromDraft && (
+            <span className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-1 rounded-md">
+              📝 Đã khôi phục bản nháp
+            </span>
+          )}
+          <div className="flex-1" />
+          {!isEdit && (
+            <button type="button" onClick={() => {
+              if (!isFormDirty(form)) return
+              if (!window.confirm('Xoá hết dữ liệu đã nhập và bắt đầu lại?')) return
+              resetForm()
+            }} disabled={busy}
+              title="Xoá toàn bộ data đã nhập, bắt đầu lại từ đầu"
+              className="px-4 py-2 text-sm rounded-lg text-rose-600 hover:bg-rose-50 disabled:opacity-50 font-semibold">
+              🔄 Reset
+            </button>
+          )}
           <button type="button" onClick={onClose} disabled={busy}
             className="px-4 py-2 text-sm rounded-lg text-gray-600 hover:bg-gray-200 disabled:opacity-50">
             Hủy
@@ -451,14 +538,11 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
               />
             </div>
 
+            {/* 2026-11-07 (rev): Đồng tiền → toggle VND/USD; USD mới hiện tỷ giá */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
               <Field label="Đồng tiền">
-                <select value={form.currency}
-                  onChange={e => setField('currency', e.target.value)}
-                  className="input">
-                  <option value="VND">VND</option>
-                  <option value="USD">USD</option>
-                </select>
+                <CurrencyToggle value={form.currency}
+                  onChange={v => setField('currency', v)} />
               </Field>
               {form.currency === 'USD' && (
                 <Field label="Tỷ giá (1 USD = ? VND)" span={3}>
@@ -764,6 +848,28 @@ function Field({ label, span, children }) {
       <div className="text-[11px] font-semibold text-gray-600 mb-1">{label}</div>
       {children}
     </label>
+  )
+}
+
+/**
+ * ── 2026-11-07 ────────────────────────────────────────────
+ * Toggle 2 lựa chọn VND / USD. Thay <select> 2-option bằng 2 pill liền kề,
+ * tap 1 phát là đổi. Height bằng chiều cao control chuẩn (h-10) để khớp với
+ * các input xung quanh.
+ */
+function CurrencyToggle({ value, onChange }) {
+  return (
+    <div className="inline-flex h-10 w-full rounded-lg bg-gray-100 p-0.5 border border-gray-300">
+      {['VND', 'USD'].map(cur => (
+        <button key={cur} type="button" onClick={() => onChange(cur)}
+          className={`flex-1 h-full rounded-md text-sm font-bold transition
+            ${value === cur
+              ? 'bg-white shadow text-blue-700'
+              : 'text-gray-500 hover:text-gray-800'}`}>
+          {cur}
+        </button>
+      ))}
+    </div>
   )
 }
 

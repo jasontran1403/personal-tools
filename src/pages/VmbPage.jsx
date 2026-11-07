@@ -5,6 +5,7 @@ import Tabs from '../components/common/Tabs'
 import UserMenu from '../components/auth/UserMenu'
 import TicketsTab   from '../components/vmb/TicketsTab'
 import PassengersTab from '../components/vmb/PassengersTab'
+import CustomersTab  from '../components/vmb/CustomersTab'   // 2026-11-07
 import LookupTab    from '../components/vmb/LookupTab'
 import TodoTab      from '../components/vmb/TodoTab'
 import PdfTab       from '../components/vmb/pdf/PdfTab'
@@ -26,16 +27,18 @@ import useTodayTaskStats from '../hooks/useTodayTaskStats'
  * hook {@link useTodayTaskStats}. Badge tự cập nhật mỗi 30s (poll BE) + tick
  * countdown mỗi giây.
  */
+// ── 2026-11-07 ────────────────────────────────────────────
+// Thêm tab "Khách hàng" (customers) chèn sau "Vé máy bay".
+// Đổi tên "Thông tin khách" → "Thông tin".
 const BASE_TABS = [
-  { key: 'tickets',     label: 'Vé máy bay',      icon: '✈️' },
-  { key: 'passengers',  label: 'Thông tin khách', icon: '👥' },
-  { key: 'lookup',      label: 'Tra cứu',         icon: '🔎' },
-  // 2026-10-08: tab Pdf chèn trước Todo. Hai chức năng con: PDF editor
-  // (whiteout + xoá trang) và Scan ảnh → PDF (warp phối cảnh + xoá bóng).
-  { key: 'pdf',         label: 'Pdf',             icon: '📄' },
-  { key: 'office',      label: 'Office',          icon: '📊' },
-  { key: 'files',       label: 'Tệp',             icon: '📁' },
-  { key: 'todo',        label: 'Todo',            icon: '📋' },
+  { key: 'tickets',     label: 'Vé máy bay',  icon: '✈️' },
+  { key: 'customers',   label: 'Khách hàng',  icon: '🏢' },
+  { key: 'passengers',  label: 'Thông tin',   icon: '👥' },
+  { key: 'lookup',      label: 'Tra cứu',     icon: '🔎' },
+  { key: 'pdf',         label: 'Pdf',         icon: '📄' },
+  { key: 'office',      label: 'Office',      icon: '📊' },
+  { key: 'files',       label: 'Tệp',         icon: '📁' },
+  { key: 'todo',        label: 'Todo',        icon: '📋' },
 ]
 
 export default function VmbPage() {
@@ -108,6 +111,7 @@ export default function VmbPage() {
           toolbar `shrink-0` và vùng cuộn `flex-1 overflow-auto`. */}
       <main className="flex-1 overflow-hidden w-full px-2 sm:px-3 py-3">
         {tab === 'tickets'    && <TicketsTab />}
+        {tab === 'customers'  && <CustomersTab />}
         {tab === 'passengers' && <PassengersTab />}
         {tab === 'lookup'     && <LookupTab />}
         {tab === 'pdf'        && <PdfTab />}
