@@ -5,7 +5,7 @@ import Tabs from '../components/common/Tabs'
 import UserMenu from '../components/auth/UserMenu'
 import TicketsTab   from '../components/vmb/TicketsTab'
 import PassengersTab from '../components/vmb/PassengersTab'
-import CustomersTab  from '../components/vmb/CustomersTab'   // 2026-11-07
+import CustomersTab  from '../components/vmb/CustomersTab'
 import LookupTab    from '../components/vmb/LookupTab'
 import TodoTab      from '../components/vmb/TodoTab'
 import PdfTab       from '../components/vmb/pdf/PdfTab'
