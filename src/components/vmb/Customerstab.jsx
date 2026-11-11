@@ -752,10 +752,7 @@ export default function CustomersTab() {
           presets={['thisMonth', 'thisQuarter', 'thisYear']}
           align="left"
           placeholder="Tất cả thời gian"
-          className="w-[250px] shrink-0" />
-        <div className="text-xs text-gray-500">
-          {loading ? 'Đang tải…' : `${filtered.length} khách hàng`}
-        </div>
+          className="w-[300px] shrink-0" />
         <div className="flex-1" />
         <button type="button" onClick={() => setSortPick(true)}
           disabled={loading || exporting}

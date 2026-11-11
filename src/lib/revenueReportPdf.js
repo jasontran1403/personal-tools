@@ -138,9 +138,8 @@ export function buildRevenueReportDoc({ rows, fromDate, toDate, exportedAt = new
       italics: true, color: C.mute, alignment: 'center', margin: [0, 12, 0, 12] }]
     while (row.length < N) row.push({})
     body.push(row)
-  } else {
-    body.push(sumRow('TỔNG CỘNG', total, { fill: C.totalBg, color: '#ffffff', big: true }))
   }
+  // 2026-11-11 (rev3): bỏ dòng TỔNG CỘNG cuối bảng — số tổng đã có ở 4 ô phía trên.
 
   // 4 ô số liệu tổng quan phía trên bảng.
   const tile = (label, value, color) => ({
@@ -154,10 +153,13 @@ export function buildRevenueReportDoc({ rows, fromDate, toDate, exportedAt = new
     table: {
       widths: ['*', '*', '*', '*'],
       body: [[
-        tile('TỔNG TIỀN VÉ ĐÃ MUA (VND)', vnd(total.revenue), C.money),
-        tile('TỔNG PHÍ XUẤT VÉ ĐÃ THU (VND)', vnd(total.iss), C.ink),
+        tile('TỔNG TIỀN VÉ ĐÃ MUA', vnd(total.revenue), C.money),
+        tile('TỔNG PHÍ XUẤT VÉ ĐÃ THU', vnd(total.iss), C.ink),
+        // Công nợ kèm số ngày của hoá đơn nợ lâu nhất: "232.931.747 (14 ngày)".
+        tile('CÔNG NỢ HIỆN TẠI (VND)',
+          vnd(total.debt) + (total.debt > 0.5 && total.debtDays >= 0 ? ` (${total.debtDays} ngày)` : ''),
+          total.debt > 0.5 ? C.debt : C.ink),
         tile('TỔNG SỐ VÉ ĐÃ MUA', String(total.ticketCount), C.ink),
-        tile('CÔNG NỢ HIỆN TẠI (VND)', vnd(total.debt), total.debt > 0.5 ? C.debt : C.ink),
       ]],
     },
     layout: {
