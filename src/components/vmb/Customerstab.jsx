@@ -4,7 +4,8 @@
  *   • Tổng tiền vé  (base + collectionFee + fees của mọi vé)
  *   • Tổng phí xuất vé (issuanceFee của mọi vé)
  *   • Tổng doanh thu = Tổng tiền vé + Tổng phí xuất vé
- *   • Công nợ hiện tại = tổng doanh thu của các booking UNPAID
+ *   • Công nợ hiện tại = tổng giá bán của các VÉ chưa thu đủ (2026-11-11: tính
+ *     theo từng vé / hoá đơn tách, không theo cả booking)
  *   • Các ngày quan trọng sắp tới (within 3 months) — mỗi công ty có thể gắn
  *     N ngày (sinh nhật sếp, sinh nhật người đặt vé...).
  *
@@ -26,6 +27,9 @@ import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { listBookings, listCompanies, listPassengers, updatePassengerReferrer } from '../../services/vmbApi'
 import { parseAmount, formatMoney } from '../../lib/money'
+import { isTicketUnpaid, narrowBooking } from '../../lib/ticketDebt'
+import DateRangePicker, { presetRange } from '../common/DateRangePicker'
+import Modal from '../common/Modal'
 
 // ── Config ─────────────────────────────────────────────────
 // 2026-11-07 (rev): bump schema version — giờ lưu { dates, notes } thay vì array.
@@ -215,8 +219,11 @@ function ticketSums(t, b) {
   const coll = parseAmount(t.collectionFee) || 0
   const feesSum = (t.fees || []).reduce((s, f) => s + (parseAmount(f.amount) || 0), 0)
   const iss = parseAmount(t.issuanceFee) || 0
+  // 2026-11-11: cộng phí xuất vé HNH (luôn VND, không quy đổi) để doanh thu /
+  //   công nợ khớp tổng hoá đơn BE tính và khớp báo cáo công nợ.
+  const hnh = parseAmount(t.hnhFee) || 0
   return {
-    ticketPrice: toVnd(base + coll + feesSum, b),
+    ticketPrice: toVnd(base + coll + feesSum, b) + hnh,
     issuanceFee: toVnd(iss, b),
   }
 }
@@ -348,6 +355,13 @@ export default function CustomersTab() {
   //   mode='referrer'  → click vào tên khách lẻ: chỉ show người giới thiệu.
   //   mode='revenue'   → click vào cột doanh thu: chỉ show phí xuất vé QT/QN.
   const [detailFor, setDetailFor] = useState(null)   // { row, mode }
+  // 2026-11-11: Khoảng ngày (theo ngày bán của booking). Mặc định = tháng hiện
+  //   tại. { from:'', to:'' } = tất cả thời gian. Chỉ áp cho tiền vé / phí
+  //   xuất vé / số vé / doanh thu — công nợ luôn là số HIỆN TẠI.
+  const [range, setRange]         = useState(() => presetRange('thisMonth'))
+  const [exporting, setExporting] = useState(false)
+  // 2026-11-11 (rev2): modal chọn cách sắp xếp trước khi xuất báo cáo.
+  const [sortPick, setSortPick]   = useState(false)
 
   // Load companies + fetch toàn bộ booking (phân trang).
   useEffect(() => {
@@ -376,36 +390,45 @@ export default function CustomersTab() {
     return () => { cancel = true }
   }, [])
 
-  // 2026-11-08: Lazy fetch theo tab hiện tại.
-  //   - Tab "Công ty" → listCompanies.
-  //   - Tab "Khách lẻ" → listPassengers({walkInOnly:true}).
-  //   Mỗi lần toggle tab là 1 lần reload (đảm bảo data mới nhất, tránh cache cũ
-  //   sau khi tạo/sửa khách ở tab khác).
+  // 2026-11-11: Tải CẢ công ty lẫn khách lẻ mỗi lần đổi tab (trước đây chỉ
+  //   tải list của tab đang mở). Báo cáo doanh thu cần đủ cả 2 nhóm, và việc
+  //   ghép vé ↔ khách lẻ cũng cần list khách lẻ ngay cả khi đang ở tab Công ty.
+  //   Vẫn reload theo `kind` để lấy data mới sau khi tạo/sửa ở tab khác.
   useEffect(() => {
     let cancel = false
-    if (kind === 'company') {
-      ;(async () => {
-        try {
-          const cRes = await listCompanies()
-          if (!cancel) setCompanies(cRes.data?.data || [])
-        } catch (e) {
-          console.error('[customers load companies]', e)
-          toast.error('Không tải được công ty')
-        }
-      })()
-    } else if (kind === 'walkin') {
-      ;(async () => {
-        try {
-          const pRes = await listPassengers({ walkInOnly: true, size: 500 })
-          if (!cancel) setWalkInPassengers(pRes.data?.data?.content || [])
-        } catch (e) {
-          console.error('[customers load walk-in]', e)
-          toast.error('Không tải được khách lẻ')
-        }
-      })()
-    }
+    ;(async () => {
+      try {
+        const cRes = await listCompanies()
+        if (!cancel) setCompanies(cRes.data?.data || [])
+      } catch (e) {
+        console.error('[customers load companies]', e)
+        toast.error('Không tải được công ty')
+      }
+    })()
+    ;(async () => {
+      try {
+        const pRes = await listPassengers({ walkInOnly: true, size: 500 })
+        if (!cancel) setWalkInPassengers(pRes.data?.data?.content || [])
+      } catch (e) {
+        console.error('[customers load walk-in]', e)
+        toast.error('Không tải được khách lẻ')
+      }
+    })()
     return () => { cancel = true }
   }, [kind])
+
+  // 2026-11-11: Mốc ms của khoảng ngày đang chọn (đầu ngày from → cuối ngày to).
+  //   Thiếu đầu nào thì đầu đó không giới hạn.
+  const { fromMs, toMs } = useMemo(() => {
+    const at = (iso, end) => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '')
+      if (!m) return null
+      return end
+        ? new Date(+m[1], +m[2] - 1, +m[3], 23, 59, 59, 999).getTime()
+        : new Date(+m[1], +m[2] - 1, +m[3], 0, 0, 0, 0).getTime()
+    }
+    return { fromMs: at(range.from, false), toMs: at(range.to, true) }
+  }, [range])
 
   // Gộp theo công ty (các công ty có booking) + mỗi khách-lẻ ĐÃ TẠO là 1 row.
   //   2026-11-08: Row khách-lẻ dựng từ `walkInPassengers` (đã tạo trong hệ thống)
@@ -430,7 +453,7 @@ export default function CustomersTab() {
         isWalkIn: true,
         ticketCount: 0,
         ticket: 0, iss: 0, revenue: 0, debt: 0,
-        unpaidBookings: [],
+        unpaidBookings: [], paxNames: new Set(),
         // 2026-11-08: Phí xuất vé GẦN NHẤT theo loại tuyến.
         latestDomestic: null,
         latestInternational: null,
@@ -458,8 +481,13 @@ export default function CustomersTab() {
     //      3) passengerName match tên walk-in đã tạo → walk-in row
     //      4) Không match gì → skip (ko tạo row ảo)
     for (const b of bookings) {
-      const isUnpaid = (b.paymentStatus || 'UNPAID') !== 'PAID'
-      const relatedKeys = new Set()
+      // 2026-11-11: Booking có nằm trong khoảng ngày đang chọn không (theo ngày
+      //   bán, fallback ngày tạo). Ngoài khoảng → không cộng doanh thu / số vé
+      //   nhưng VẪN tính công nợ (công nợ là số hiện tại).
+      const soldAt = b.saleDate || b.createdAt || 0
+      const inRange = (fromMs == null || soldAt >= fromMs) && (toMs == null || soldAt <= toMs)
+      // key → các vé CÒN NỢ của khách hàng đó trong booking này.
+      const unpaidByKey = new Map()
       for (const t of (b.tickets || [])) {
         const cid = t.companyId
         const paxName = (t.passengerName || '').trim().toUpperCase()
@@ -473,7 +501,7 @@ export default function CustomersTab() {
             map.set(key, {
               key, companyId: cid, name: c?.name || `#${cid}`, isWalkIn: false,
               ticketCount: 0, ticket: 0, iss: 0, revenue: 0, debt: 0,
-              unpaidBookings: [],
+              unpaidBookings: [], paxNames: new Set(),
               latestDomestic: null, latestInternational: null, referrerName: null,
             })
           }
@@ -485,12 +513,26 @@ export default function CustomersTab() {
         const sums = ticketSums(t, b)
         const r = map.get(key)
         const sellPrice = sums.ticketPrice + sums.issuanceFee
-        if (sellPrice > 0.5) r.ticketCount += 1
-        r.ticket  += sums.ticketPrice
-        r.iss     += sums.issuanceFee
-        r.revenue += sellPrice
-        if (isUnpaid) r.debt += sellPrice
-        relatedKeys.add(key)
+        if (inRange) {
+          if (sellPrice > 0.5) {
+            r.ticketCount += 1
+            // Số người đã mua vé: unique theo TÊN (1 người mua 4 vé = 1).
+            const paxKey = paxName.replace(/\s+/g, ' ')
+            if (paxKey) r.paxNames.add(paxKey)
+          }
+          r.ticket  += sums.ticketPrice
+          r.iss     += sums.issuanceFee
+          r.revenue += sellPrice
+        }
+        // 2026-11-11: Công nợ theo TỪNG VÉ — vé còn nợ khi hoá đơn (tách) của
+        //   vé đó chưa thu đủ. Trước đây dựa vào booking.paymentStatus nên công
+        //   ty đã trả hoá đơn của mình vẫn bị tính nợ khi công ty khác trong
+        //   cùng booking chưa trả.
+        if (isTicketUnpaid(b, t)) {
+          r.debt += sellPrice
+          if (!unpaidByKey.has(key)) unpaidByKey.set(key, [])
+          unpaidByKey.get(key).push(t)
+        }
 
         // 2026-11-08: Theo dõi BOOKING GẦN NHẤT theo nội địa / quốc tế.
         //   "Gần nhất" dựa trên saleDate (fallback createdAt).
@@ -520,8 +562,11 @@ export default function CustomersTab() {
           // Cũ hơn → bỏ.
         }
       }
-      if (isUnpaid) {
-        for (const k of relatedKeys) map.get(k).unpaidBookings.push(b)
+      // Mỗi khách hàng chỉ nhận phần booking gồm ĐÚNG các vé còn nợ của mình
+      //   (+ các hoá đơn chưa thu của các vé đó) → chi tiết công nợ không lẫn
+      //   vé của công ty khác.
+      for (const [k, ts] of unpaidByKey) {
+        map.get(k).unpaidBookings.push(narrowBooking(b, ts))
       }
     }
     // 2026-11-07 (rev): Attach dates (within window) + noteCount.
@@ -539,9 +584,10 @@ export default function CustomersTab() {
       r.upcoming = upcoming
       r.noteCount = notes.length
       r.nearestDays = upcoming.length ? daysUntil(upcoming[0]._date, nowMs) : Infinity
+      r.paxCount = r.paxNames.size
     }
     return list
-  }, [bookings, companies, walkInPassengers, meta])
+  }, [bookings, companies, walkInPassengers, meta, fromMs, toMs])
 
   // Filter + sort.
   const filtered = useMemo(() => {
@@ -589,6 +635,76 @@ export default function CustomersTab() {
     })
   }
 
+  /**
+   * ── 2026-11-11: Xuất báo cáo doanh thu (PDF ngang) ──
+   *   Xuất theo khoảng ngày UI đang chọn, gồm CẢ công ty lẫn khách lẻ (không
+   *   phụ thuộc tab / ô tìm kiếm). Chỉ lấy khách hàng có mua vé trong kỳ hoặc
+   *   đang còn công nợ. Đang chọn "tất cả" → kỳ báo cáo = từ ngày bán của
+   *   booking đầu tiên đến hôm nay.
+   *
+   * ── rev2: `sortBy` do user chọn ở ReportSortModal ──
+   *   'revenue' | 'iss' | 'debt' — đều từ CAO đến THẤP. Sắp xếp RIÊNG trong
+   *   từng nhóm (công ty trước, khách lẻ sau), không trộn chung 2 nhóm.
+   */
+  const onExportRevenue = async (sortBy = 'revenue') => {
+    if (loading) return toast.error('Dữ liệu đang tải, thử lại sau giây lát')
+    const sortOpt = REPORT_SORTS.find(x => x.key === sortBy) || REPORT_SORTS[0]
+    setExporting(true)
+    const tid = toast.loading('Đang tạo báo cáo doanh thu…')
+    try {
+      const now = new Date()
+      let firstSold = Infinity
+      for (const b of bookings) {
+        const w = b.saleDate || b.createdAt
+        if (w && w < firstSold) firstSold = w
+      }
+      const fromDate = fromMs != null ? new Date(fromMs)
+        : new Date(Number.isFinite(firstSold) ? firstSold : now.getTime())
+      const toDate = toMs != null ? new Date(toMs) : now
+
+      const isSentinel = (r) => !r.isWalkIn && /^kh[aá]ch\s+l[eẻ]$/i.test((r.name || '').trim())
+      const out = rows
+        .filter(r => !isSentinel(r) && (r.ticketCount > 0 || r.revenue > 0.5 || r.debt > 0.5))
+        // Nhóm trước (công ty → khách lẻ), rồi mới tới tiêu chí user chọn;
+        //   bằng nhau thì theo tổng tiền vé, cuối cùng theo tên cho ổn định.
+        .sort((a, b) => (Number(a.isWalkIn) - Number(b.isWalkIn))
+          || (b[sortOpt.key] - a[sortOpt.key])
+          || (b.revenue - a.revenue)
+          || a.name.localeCompare(b.name, 'vi'))
+        .map(r => {
+          // Số ngày công nợ của hoá đơn LÂU NHẤT: tính từ ngày phát hành (nếu
+          //   hoá đơn đã có số), ngược lại từ ngày xuất vé — cùng quy tắc với
+          //   cột "Số ngày CN" trong modal chi tiết công nợ.
+          let oldest = null
+          for (const it of buildDebtItems(r.unpaidBookings)) {
+            const ms = it.type === 'invoice' && it.issueDate ? it.issueDate : it.saleDate
+            if (ms && (oldest == null || ms < oldest)) oldest = ms
+          }
+          return {
+            name: r.name,
+            isWalkIn: !!r.isWalkIn,
+            revenue: r.revenue,
+            iss: r.iss,
+            ticketCount: r.ticketCount,
+            debt: r.debt,
+            debtDays: oldest == null ? null
+              : Math.max(0, Math.floor((now.getTime() - oldest) / 86400000)),
+            note: r.isWalkIn ? '' : `${r.paxCount} hành khách`,
+          }
+        })
+      const mod = await import('../../lib/revenueReportPdf')
+      await mod.exportRevenueReport({
+        rows: out, fromDate, toDate, exportedAt: now, sortLabel: sortOpt.label,
+      })
+      toast.success('Đã tạo báo cáo doanh thu', { id: tid })
+    } catch (e) {
+      console.error('[revenue report]', e)
+      toast.error(e?.message || 'Tạo báo cáo thất bại', { id: tid })
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const SortH = ({ k, children, align = 'left', style }) => {
     const active = sortKey === k
     const arrow = active ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'
@@ -630,9 +746,24 @@ export default function CustomersTab() {
             👤 Khách lẻ
           </button>
         </div>
+        {/* ── 2026-11-11: Khoảng ngày (mặc định tháng này; × = tất cả) ── */}
+        <DateRangePicker
+          value={range} onChange={setRange}
+          presets={['thisMonth', 'thisQuarter', 'thisYear']}
+          align="left"
+          placeholder="Tất cả thời gian"
+          className="w-[250px] shrink-0" />
         <div className="text-xs text-gray-500">
           {loading ? 'Đang tải…' : `${filtered.length} khách hàng`}
         </div>
+        <div className="flex-1" />
+        <button type="button" onClick={() => setSortPick(true)}
+          disabled={loading || exporting}
+          title="Xuất PDF báo cáo doanh thu theo khoảng ngày đang chọn (cả công ty và khách lẻ)"
+          className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-xs font-semibold whitespace-nowrap
+            hover:bg-emerald-700 disabled:opacity-50">
+          {exporting ? '⏳ Đang tạo…' : '📄 Xuất báo cáo doanh thu'}
+        </button>
       </div>
 
       <div className="flex-1 overflow-auto rounded-xl border border-gray-200 bg-white">
@@ -752,6 +883,11 @@ export default function CustomersTab() {
         </table>
       </div>
 
+      {sortPick && (
+        <ReportSortModal
+          onClose={() => setSortPick(false)}
+          onPick={(key) => { setSortPick(false); onExportRevenue(key) }} />
+      )}
       {debtFor && (
         <DebtDetailModal row={debtFor} onClose={() => setDebtFor(null)} />
       )}
@@ -791,6 +927,46 @@ export default function CustomersTab() {
         />
       )}
     </div>
+  )
+}
+
+// ═══════════════════════════════════════════════════════════
+//  2026-11-11 (rev2): ReportSortModal — chọn cách sắp xếp báo cáo
+//    Bấm "Xuất báo cáo doanh thu" → mở modal này. Bấm nút nào thì file PDF
+//    sắp xếp theo kiểu đó (cao → thấp), riêng từng nhóm công ty / khách lẻ.
+// ═══════════════════════════════════════════════════════════
+const REPORT_SORTS = [
+  { key: 'revenue', icon: '🎫', label: 'Tổng tiền vé đã mua (cao đến thấp)',
+    hint: 'Khách mua nhiều tiền vé nhất đứng đầu.' },
+  { key: 'iss',     icon: '🧾', label: 'Tổng phí xuất vé đã thu (cao đến thấp)',
+    hint: 'Khách đóng nhiều phí xuất vé nhất đứng đầu.' },
+  { key: 'debt',    icon: '💰', label: 'Công nợ (cao đến thấp)',
+    hint: 'Khách còn nợ nhiều nhất đứng đầu.' },
+]
+
+function ReportSortModal({ onClose, onPick }) {
+  return (
+    <Modal open onClose={onClose} title="Xuất báo cáo doanh thu" size="md">
+      <div className="text-xs text-gray-600 mb-3">
+        Chọn cách sắp xếp dữ liệu trong báo cáo. Khách <b>công ty</b> và <b>khách lẻ</b> được
+        sắp xếp riêng từng nhóm.
+      </div>
+      <div className="space-y-2">
+        {REPORT_SORTS.map(o => (
+          <button key={o.key} type="button" onClick={() => onPick(o.key)}
+            className="w-full text-left p-3 rounded-xl border border-gray-200 bg-white
+              hover:border-emerald-400 hover:bg-emerald-50 transition flex items-center gap-3">
+            <span className="w-9 h-9 shrink-0 rounded-lg bg-emerald-100 flex items-center justify-center text-lg">
+              {o.icon}
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-bold text-gray-900">{o.label}</span>
+              <span className="block text-[11px] text-gray-500">{o.hint}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+    </Modal>
   )
 }
 
@@ -1413,6 +1589,32 @@ function buildDebtItems(bookings) {
         })
       }
       continue
+    }
+    // ── 2026-11-11: Vé còn nợ nhưng KHÔNG thuộc hoá đơn có số nào (hoá đơn
+    //   tách của vé đó còn là nháp / chưa có) → gom 1 dòng theo booking, để
+    //   tổng các dòng luôn khớp số công nợ.
+    const covered = new Set()
+    for (const inv of invs) {
+      const ids = (inv.ticketIds && inv.ticketIds.length > 0)
+        ? inv.ticketIds : [...bookingTicketMap.keys()]
+      ids.forEach(id => covered.add(id))
+    }
+    {
+      let total = 0
+      const paxs = []
+      for (const t of (b.tickets || [])) {
+        if (covered.has(t.id)) continue
+        const s = ticketSums(t, b)
+        total += s.ticketPrice + s.issuanceFee
+        paxs.push(buildPassenger(t, b))
+      }
+      if (total > 0.5) {
+        out.push({
+          type: 'booking', code: b.bookingCode || '—',
+          bookingCode: b.bookingCode, airlineCode, saleDate, issueDate: null,
+          amount: total, route, passengers: paxs,
+        })
+      }
     }
     // ── Đã phát hành → MỖI SỐ HOÁ ĐƠN = 1 DÒNG RIÊNG ──
     //   Nếu 1 invoice có N số (CSV) → chia amount đều cho N để tổng không đổi.

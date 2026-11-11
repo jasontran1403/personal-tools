@@ -50,6 +50,7 @@
 
 import { parseAmount, formatMoney } from '../lib/money'
 import { listBookings } from '../services/vmbApi'
+import { unpaidTicketsOf } from './ticketDebt'
 
 const KIND_LABEL = {
   NEW: 'Vé mới',
@@ -954,7 +955,7 @@ export function getTodayRangeMs() {
  * ── 2026-11-07 (rev): `idOrIds` giờ nhận 1 ID hoặc mảng ID ──
  *   - Chọn công ty mẹ (root) → caller truyền mảng [root, ...các chi nhánh].
  *   - Chọn chi nhánh → caller truyền [branchId].
- *   Booking match nếu có ≥ 1 vé có companyId thuộc mảng.
+ *   Booking match nếu có ≥ 1 vé CHƯA THU có companyId thuộc mảng.
  */
 export async function fetchUnpaidBookingsByCompany(idOrIds, onProgress) {
   const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds]
@@ -972,7 +973,9 @@ export async function fetchUnpaidBookingsByCompany(idOrIds, onProgress) {
     if (page + 1 >= (d?.totalPages || 1)) break
     page++
   }
-  return all.filter(b => (b.tickets || []).some(t => idSet.has(t.companyId)))
+  // 2026-11-11: chỉ giữ booking còn ít nhất 1 VÉ CHƯA THU thuộc các công ty
+  //   này (công nợ tính theo từng vé / hoá đơn tách, không theo cả booking).
+  return all.filter(b => unpaidTicketsOf(b, t => idSet.has(t.companyId)).length > 0)
 }
 
 /**

@@ -11,6 +11,7 @@ import TicketNoteModal from './TicketNoteModal'
 import BookingTotalsCard from './BookingTotalsCard'
 import PaymentModal from './PaymentModal'
 import InvoicePickerModal from './InvoicePickerModal'
+import { unpaidTicketsOf, narrowBooking } from '../../lib/ticketDebt'
 import BatchPaymentModal from './BatchPaymentModal'
 import DateRangePicker from '../common/DateRangePicker'
 import CompanySearchSelect, { companyOptions } from '../common/CompanySearchSelect'
@@ -435,9 +436,17 @@ export default function TicketsTab() {
    * 2026-10-12: Thu tiền giờ ở cấp HÓA ĐƠN.
    *   - Booking không có invoice → warning (user phải upload hóa đơn trước)
    *   - Booking có 1 invoice → mở PaymentModal thẳng
-   *   - Booking có >1 invoice → mở picker để user chọn hóa đơn nào
+   *   - Booking có >1 invoice → mỗi hoá đơn 1 nút riêng trên bảng (2026-11-11);
+ *     picker chỉ còn là fallback khi gọi openPay(b) không kèm invoice.
    */
-  const openPay = (b) => {
+  const openPay = (b, invoice) => {
+    // ── 2026-11-11: Booking tách nhiều hoá đơn → mỗi hoá đơn 1 nút riêng,
+    //   bấm nút nào mở thẳng PaymentModal của hoá đơn đó (thu / xem & xoá
+    //   phiếu thu). Phục vụ case công ty này trả, công ty kia còn công nợ.
+    if (invoice) {
+      setPayFor({ booking: b, invoice })
+      return
+    }
     // 2026-10-13: Booking tổng = 0 → đã PAID auto, không cần thu/tạo invoice.
     const bookingTotal = sumAmounts(...(b.tickets || []).map(t =>
       sumAmounts(t.basePrice, t.collectionFee,
@@ -1289,6 +1298,10 @@ function autoShort(name) {
 }
 
 function PaymentCell({ booking, bookingTotal, onPay }) {
+  // 2026-11-11: Booking tách ≥ 2 hoá đơn → mỗi hoá đơn 1 nút thanh toán riêng.
+  if (bookingTotal > 0.5 && (booking.invoices || []).length > 1) {
+    return <InvoicePayButtons booking={booking} onPay={onPay} />
+  }
   const stRaw = booking.paymentStatus || 'UNPAID'
   const paid = parseAmount(booking.paidAmount) || 0
   const remain = Math.max(0, bookingTotal - paid)
@@ -1319,6 +1332,96 @@ function PaymentCell({ booking, bookingTotal, onPay }) {
         </div>
       )}
     </button>
+  )
+}
+
+/**
+ * ── 2026-11-11: Tên hiển thị của 1 hoá đơn trên nút thanh toán ──
+ *   Ưu tiên tên viết tắt công ty của các vé mà hoá đơn áp cho (hoá đơn tách
+ *   theo công ty). Vé không có công ty → "Khách lẻ". Hoá đơn chung (ticketIds
+ *   rỗng) → "Chung". Nhiều hoá đơn trùng nhãn → thêm số hoá đơn / tên khách
+ *   để phân biệt.
+ */
+function invoicePayLabels(booking) {
+  const invs = booking.invoices || []
+  const tickets = booking.tickets || []
+  const byId = new Map(tickets.map(t => [t.id, t]))
+  const base = invs.map(inv => {
+    const ids = inv.ticketIds || []
+    if (ids.length === 0) return { label: 'Chung', full: 'Hoá đơn chung cả booking', paxs: tickets }
+    const paxs = ids.map(id => byId.get(id)).filter(Boolean)
+    const names = []
+    const fulls = []
+    for (const t of paxs) {
+      const label = (t.companyName || t.companyShortName)
+        ? (t.companyShortName || autoShort(t.companyName))
+        : 'Khách lẻ'
+      if (!names.includes(label)) {
+        names.push(label)
+        fulls.push(t.companyName || label)
+      }
+    }
+    return {
+      label: names.join(' + ') || `${ids.length} vé`,
+      full: fulls.join(' + '),
+      paxs,
+    }
+  })
+  const count = new Map()
+  for (const x of base) count.set(x.label, (count.get(x.label) || 0) + 1)
+  return base.map((x, i) => {
+    const inv = invs[i]
+    let label = x.label
+    if (count.get(x.label) > 1) {
+      const num = (inv.invoiceNumbers || '').split(',')[0].trim()
+      if (num) label += ` #${num}`
+      else if (x.paxs.length === 1) {
+        // Tên gọi (từ cuối) của hành khách: "NGUYỄN VĂN A" → "A".
+        const last = (x.paxs[0].passengerName || '').trim().split(/\s+/).pop()
+        label += last ? ` · ${last}` : ` (${i + 1})`
+      } else label += ` (${i + 1})`
+    }
+    const who = x.paxs.map(t => t.passengerName).filter(Boolean).join(', ')
+    return { label, title: [x.full, who].filter(Boolean).join(' — ') }
+  })
+}
+
+/**
+ * ── 2026-11-11: Mỗi hoá đơn tách = 1 nút thanh toán ──
+ *   Booking tách N hoá đơn → N nút xếp dọc, mỗi nút có nhãn công ty + trạng
+ *   thái riêng (Chưa thanh toán / Đã thu một phần / Đã thanh toán). Bấm nút →
+ *   onPay(booking, invoice) mở PaymentModal của đúng hoá đơn đó.
+ */
+function InvoicePayButtons({ booking, onPay }) {
+  const invs = booking.invoices || []
+  const labels = invoicePayLabels(booking)
+  return (
+    <div className="flex flex-col gap-1 w-full">
+      {invs.map((inv, i) => {
+        const total  = parseAmount(inv.grandTotal) || 0
+        const paid   = parseAmount(inv.paidAmount) || 0
+        const remain = Math.max(0, total - paid)
+        const st = (total <= 0.5 || remain <= 0.5) ? 'PAID' : (inv.paymentStatus || 'UNPAID')
+        const cls =
+            st === 'PAID'    ? 'bg-green-100 text-green-700'
+          : st === 'PARTIAL' ? 'bg-amber-100 text-amber-700'
+          :                    'bg-rose-100 text-rose-700'
+        const money = (v) => formatMoney(v, booking.currency, { withUnit: false })
+        const line =
+            st === 'PAID'    ? 'Đã thanh toán'
+          : st === 'PARTIAL' ? `Còn ${money(remain)}`
+          :                    `Chưa thu ${money(total)}`
+        return (
+          <button key={inv.id} type="button"
+            onClick={() => onPay(booking, inv)}
+            title={`${labels[i].title}\nTổng hoá đơn: ${money(total)} · Đã thu: ${money(paid)}`}
+            className={`px-2 py-1 rounded-md ${cls} hover:brightness-95 transition text-left w-full`}>
+            <div className="text-[10px] font-bold truncate">{labels[i].label}</div>
+            <div className="text-[10px] font-mono tabular-nums opacity-80 whitespace-nowrap">{line}</div>
+          </button>
+        )
+      })}
+    </div>
   )
 }
 
@@ -1643,10 +1746,17 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
       </div>
 
       <div className="mt-2 pt-2 border-t border-gray-100 flex items-center justify-between gap-2 flex-wrap">
-        <button type="button" onClick={() => onPay(b)}
-          className={`px-2 py-1 rounded-md ${stCls} text-[11px] font-bold`}>
-          {stLabel}
-        </button>
+        {/* 2026-11-11: tách ≥ 2 hoá đơn → mỗi hoá đơn 1 nút thanh toán riêng. */}
+        {bookingTotal > 0.5 && (b.invoices || []).length > 1 ? (
+          <div className="w-full">
+            <InvoicePayButtons booking={b} onPay={onPay} />
+          </div>
+        ) : (
+          <button type="button" onClick={() => onPay(b)}
+            className={`px-2 py-1 rounded-md ${stCls} text-[11px] font-bold`}>
+            {stLabel}
+          </button>
+        )}
         <button type="button" onClick={() => onPresent(b)}
           className="text-[11px] px-2 py-1 rounded-md bg-blue-100 text-blue-700 font-semibold inline-flex items-center gap-1">
           <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1923,9 +2033,12 @@ function DebtReportModal({ companies, onClose }) {
     return () => { cancel = true }
   }, [companyId, matchIds])
 
-  // ── 2026-11-07 (rev2): Group bookings theo companyId (dùng companyId của
-  //   VÉ đầu tiên trong booking để quyết định section). Thứ tự section:
-  //   ROOT đầu tiên, rồi các chi nhánh theo thứ tự tạo (createdAt).
+  // ── 2026-11-11: Group theo công ty của TỪNG VÉ (không còn lấy công ty của
+  //   vé đầu tiên). 1 booking có thể có khách của nhiều công ty, mỗi công ty
+  //   1 hoá đơn tách riêng → mỗi section chỉ nhận ĐÚNG các vé còn nợ thuộc
+  //   công ty đó; booking được thu hẹp (narrowBooking) nên tổng tiền + số
+  //   hoá đơn phía sau cũng chỉ tính trên phần vé này.
+  //   Thứ tự section: ROOT đầu tiên, rồi các chi nhánh theo createdAt.
   const sections = useMemo(() => {
     if (!companyId || bookings.length === 0) return []
     const picked = companies.find(x => x.id === companyId)
@@ -1936,19 +2049,14 @@ function DebtReportModal({ companies, onClose }) {
       .filter(x => x.parentId === rootId)
       .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
     const orderedCompanies = [root, ...branches].filter(Boolean)
-    // Group bookings
-    const byCompany = new Map()
-    for (const b of bookings) {
-      // companyId = cty của vé đầu tiên (mỗi booking thường chỉ thuộc 1 cty)
-      const cid = (b.tickets || [])[0]?.companyId
-      if (cid == null) continue
-      if (!byCompany.has(cid)) byCompany.set(cid, [])
-      byCompany.get(cid).push(b)
-    }
     const out = []
     for (const c of orderedCompanies) {
-      const bs = byCompany.get(c.id)
-      if (bs && bs.length) out.push({ company: c, bookings: bs })
+      const bs = []
+      for (const b of bookings) {
+        const mine = unpaidTicketsOf(b, t => t.companyId === c.id)
+        if (mine.length) bs.push(narrowBooking(b, mine))
+      }
+      if (bs.length) out.push({ company: c, bookings: bs })
     }
     return out
   }, [bookings, companyId, companies])
@@ -2049,7 +2157,7 @@ function DebtReportModal({ companies, onClose }) {
           <div className="text-xs text-gray-500 italic py-8 text-center">Đang tải…</div>
         ) : sections.length === 0 ? (
           <div className="text-xs text-gray-500 italic py-8 text-center">
-            Công ty này (và các chi nhánh) không có booking chưa thanh toán.
+            Công ty này (và các chi nhánh) không có vé nào chưa thanh toán.
           </div>
         ) : (
           <div className="space-y-3 max-h-[60dvh] overflow-y-auto pr-1">

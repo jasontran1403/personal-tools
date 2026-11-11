@@ -23,11 +23,54 @@ import { useState, useRef, useEffect, useMemo } from 'react'
  *   - Hover 1 cell khi đã có from → highlight preview
  *
  * Trigger: 1 button, hiển thị "dd/MM/yyyy — dd/MM/yyyy" hoặc placeholder.
+ *
+ * ── 2026-11-11: props mới (đều optional, default giữ hành vi cũ) ──
+ *   presets — danh sách nút chọn nhanh ở footer, theo thứ tự hiển thị:
+ *             'today' | 'thisMonth' | 'lastMonth' | 'thisQuarter' | 'thisYear'
+ *             Default: ['today', 'thisMonth', 'lastMonth'].
+ *   align   — 'right' (default) | 'left': mép popup bám theo mép nào của trigger.
+ *
+ * Helper export kèm: {@link presetRange}(key) → { from, to } dạng YYYY-MM-DD.
  */
 
 const WEEKDAYS = ['T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'CN']
 const MONTHS_VI = ['Tháng 1', 'Tháng 2', 'Tháng 3', 'Tháng 4', 'Tháng 5', 'Tháng 6',
                    'Tháng 7', 'Tháng 8', 'Tháng 9', 'Tháng 10', 'Tháng 11', 'Tháng 12']
+
+const DEFAULT_PRESETS = ['today', 'thisMonth', 'lastMonth']
+const PRESET_LABEL = {
+  today: 'Hôm nay',
+  thisMonth: 'Tháng này',
+  lastMonth: 'Tháng trước',
+  thisQuarter: 'Quý này',
+  thisYear: 'Năm này',
+}
+
+/**
+ * Khoảng ngày của 1 nút chọn nhanh, tính theo giờ local.
+ *   today       — hôm nay
+ *   thisMonth   — ngày 1 → ngày cuối của tháng hiện tại
+ *   lastMonth   — ngày 1 → ngày cuối của tháng trước
+ *   thisQuarter — ngày 1 của tháng đầu quý → ngày cuối của tháng cuối quý
+ *   thisYear    — 01/01 → 31/12 của năm hiện tại
+ */
+export function presetRange(key, now = new Date()) {
+  const y = now.getFullYear(), m = now.getMonth()
+  let first, last
+  switch (key) {
+    case 'today':       first = last = new Date(y, m, now.getDate()); break
+    case 'lastMonth':   first = new Date(y, m - 1, 1); last = new Date(y, m, 0); break
+    case 'thisQuarter': {
+      const q0 = Math.floor(m / 3) * 3          // tháng đầu quý (0-based)
+      first = new Date(y, q0, 1); last = new Date(y, q0 + 3, 0)
+      break
+    }
+    case 'thisYear':    first = new Date(y, 0, 1); last = new Date(y, 12, 0); break
+    case 'thisMonth':
+    default:            first = new Date(y, m, 1); last = new Date(y, m + 1, 0)
+  }
+  return { from: fmtISO(first), to: fmtISO(last) }
+}
 
 export default function DateRangePicker({
   value = { from: '', to: '' },
@@ -35,6 +78,8 @@ export default function DateRangePicker({
   placeholder = 'Chọn khoảng ngày',
   disabled = false,
   className = '',
+  presets = DEFAULT_PRESETS,
+  align = 'right',
 }) {
   const [open, setOpen] = useState(false)
   const [isDesktop, setIsDesktop] = useState(() =>
@@ -129,25 +174,9 @@ export default function DateRangePicker({
     onChange?.({ from: '', to: '' })
     setHoverDate(null)
   }
-  const setToday = () => {
-    const iso = fmtISO(new Date())
-    onChange?.({ from: iso, to: iso })
-    setHoverDate(null)
-    setOpen(false)
-  }
-  const setThisMonth = () => {
-    const now = new Date()
-    const first = new Date(now.getFullYear(), now.getMonth(), 1)
-    const last = new Date(now.getFullYear(), now.getMonth() + 1, 0)
-    onChange?.({ from: fmtISO(first), to: fmtISO(last) })
-    setHoverDate(null)
-    setOpen(false)
-  }
-  const setLastMonth = () => {
-    const now = new Date()
-    const first = new Date(now.getFullYear(), now.getMonth() - 1, 1)
-    const last = new Date(now.getFullYear(), now.getMonth(), 0)
-    onChange?.({ from: fmtISO(first), to: fmtISO(last) })
+  // 2026-11-11: mọi nút chọn nhanh đi qua 1 hàm — range lấy từ presetRange().
+  const applyPreset = (key) => {
+    onChange?.(presetRange(key))
     setHoverDate(null)
     setOpen(false)
   }
@@ -184,9 +213,9 @@ export default function DateRangePicker({
       </button>
 
       {open && (
-        <div className="absolute z-50 top-full mt-1 right-0
+        <div className={`absolute z-50 top-full mt-1 ${align === 'left' ? 'left-0' : 'right-0'}
                         rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden
-                        animate-slide-down">
+                        animate-slide-down`}>
           <div className="flex">
             {isDesktop && (
               <MonthPane
@@ -209,18 +238,18 @@ export default function DateRangePicker({
 
           {/* Footer shortcuts */}
           <div className="px-3 py-2 border-t border-gray-100 bg-gray-50 flex flex-wrap items-center gap-1.5 text-[11px]">
-            <button type="button" onClick={setToday}
-              className="px-2 py-1 rounded-md bg-white border border-gray-200 hover:bg-blue-50 hover:border-blue-300">
-              Hôm nay
-            </button>
-            <button type="button" onClick={setThisMonth}
-              className="px-2 py-1 rounded-md bg-white border border-gray-200 hover:bg-blue-50 hover:border-blue-300">
-              Tháng này
-            </button>
-            <button type="button" onClick={setLastMonth}
-              className="px-2 py-1 rounded-md bg-white border border-gray-200 hover:bg-blue-50 hover:border-blue-300">
-              Tháng trước
-            </button>
+{presets.map(key => {
+              const cur = presetRange(key)
+              const active = value?.from === cur.from && value?.to === cur.to
+              return (
+                <button key={key} type="button" onClick={() => applyPreset(key)}
+                  className={`px-2 py-1 rounded-md border ${active
+                    ? 'bg-blue-600 border-blue-600 text-white font-semibold'
+                    : 'bg-white border-gray-200 hover:bg-blue-50 hover:border-blue-300'}`}>
+                  {PRESET_LABEL[key] || key}
+                </button>
+              )
+            })}
             <div className="flex-1" />
             {(value?.from || value?.to) && (
               <button type="button" onClick={clearRange}
