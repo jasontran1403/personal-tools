@@ -698,7 +698,7 @@ export default function CustomersTab() {
             note: r.isWalkIn ? '' : `${r.paxCount} hành khách`,
           }
         })
-      const mod = await import('../../lib/revenueReportpdf')
+      const mod = await import('../../lib/revenueReportPdf')
       await mod.exportRevenueReport({
         rows: out, fromDate, toDate, exportedAt: now, sortLabel: sortOpt.label,
       })
