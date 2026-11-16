@@ -3,6 +3,7 @@ import toast from 'react-hot-toast'
 import ConfirmModal from '../common/ConfirmModal'
 import LookupFormModal from './LookupFormModal'
 import TotpModal from './TotpModal'
+import TwoFaSection from './TwoFaSection'
 import { listLookup, deleteLookup, reorderLookup } from '../../services/vmbApi'
 import { copyText } from '../../lib/clipboard'
 
@@ -131,6 +132,7 @@ export default function LookupTab() {
         <div className="flex gap-1 shrink-0 p-0.5 rounded-lg bg-gray-100">
           {[
             { key: '',        label: 'Tất cả' },
+            { key: '2FA',     label: '2FA' },
             { key: 'PLAIN',   label: 'Thông tin' },
             { key: 'ACCOUNT', label: 'Tài khoản' },
           ].map(t => (
@@ -150,6 +152,10 @@ export default function LookupTab() {
 
       {/* 2026-10-10: Wrapper flex-1 overflow-auto để chỉ nội dung cuộn, toolbar đứng yên. */}
       <div className="flex-1 min-h-0 overflow-auto">
+      {/* 2026-11-12: Mục 2FA — hiện đầu tiên khi "Tất cả", hoặc khi lọc 2FA. */}
+      <TwoFaSection active={type === '' || type === '2FA'} query={q} />
+      {type !== '2FA' && (
+      <>
       {loading ? (
         <div className="bg-white rounded-2xl shadow border border-gray-100 py-16 text-center text-gray-400 text-sm">
           Đang tải…
@@ -233,6 +239,8 @@ export default function LookupTab() {
       )}
 
       <Pagination page={page} totalPages={totalPages} total={total} onPage={setPage} />
+      </>
+      )}
       </div>{/* /flex-1 overflow-auto */}
 
       {form && (
@@ -312,7 +320,7 @@ function AccountCard({ row, onCopy, onReveal, onEdit, onDelete }) {
           <div className="flex items-center gap-2">
             <span className="flex-1 font-mono text-gray-400 tracking-widest select-none">••••••••</span>
             <button type="button" onClick={onReveal}
-              title="Xem mật khẩu (cần 2FA)"
+              title="Xem mật khẩu (nhập mã 6 số)"
               className="px-2 py-1 rounded-md bg-blue-600 text-white text-[10px] font-bold hover:bg-blue-700 shrink-0">
               👁 Xem
             </button>

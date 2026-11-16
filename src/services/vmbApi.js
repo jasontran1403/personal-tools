@@ -9,6 +9,9 @@
  *   Trên FE truyền {ticketIds: [1,2,3]}; hoặc omit hẳn cho create/update
  *   nghĩa là không đổi. updateInvoice để chuyển sang "chung" thì gửi
  *   {clearTicketIds: true}.
+ *
+ * ── 2026-11-15 ────────────────────────────────────────────────
+ * - THÊM: listInvoices — list phẳng cho trang "Quản lý hóa đơn".
  */
 import api from './api'
 
@@ -101,11 +104,13 @@ export const setTicketPaid = (ticketId, status) =>
  * @param opts.ticketIds    number[]  — empty [] = chung cả booking
  * @param opts.draftFile / issuedFile / adjustmentFile / adjustmentRecordFile : File
  */
-export const createInvoice = (bookingId, { status, note, invoiceNumbers, ticketIds = [], ...files } = {}) => {
+export const createInvoice = (bookingId, { status, note, invoiceNumbers, ticketIds = [], issuedDate, ...files } = {}) => {
   const fd = new FormData()
   fd.append('status', status)
   if (note) fd.append('note', note)
   if (invoiceNumbers) fd.append('invoiceNumbers', invoiceNumbers)
+  if (issuedDate != null) fd.append('issuedDate', String(issuedDate))
+
   for (const tid of ticketIds) fd.append('ticketIds', String(tid))
   for (const [k, v] of Object.entries(files)) {
     if (v instanceof File) fd.append(k, v)
@@ -121,11 +126,12 @@ export const createInvoice = (bookingId, { status, note, invoiceNumbers, ticketI
  *   - Truyền {clearTicketIds: true} để đổi thành "chung cả booking" (empty).
  *   - Không truyền cả hai → giữ nguyên ticket scope hiện tại.
  */
-export const updateInvoice = (invoiceId, { status, note, invoiceNumbers, ticketIds, clearTicketIds, ...files } = {}) => {
+export const updateInvoice = (invoiceId, { status, note, invoiceNumbers, ticketIds, clearTicketIds, issuedDate, ...files } = {}) => {
   const fd = new FormData()
   if (status) fd.append('status', status)
   if (note != null) fd.append('note', note)
   if (invoiceNumbers != null) fd.append('invoiceNumbers', invoiceNumbers)
+  if (issuedDate != null) fd.append('issuedDate', String(issuedDate))
   if (clearTicketIds) fd.append('clearTicketIds', '1')
   else if (Array.isArray(ticketIds)) {
     for (const tid of ticketIds) fd.append('ticketIds', String(tid))
@@ -140,6 +146,18 @@ export const updateInvoice = (invoiceId, { status, note, invoiceNumbers, ticketI
 
 export const deleteInvoice = (invoiceId) =>
   api.delete(`/api/tools/vmb/invoices/${invoiceId}`)
+
+// ── 2026-11-15: trang "Quản lý hóa đơn" (list phẳng, phân trang) ──
+//   params: { page, size, q, status, fromDate, toDate }
+//     status   : 'DRAFT' | 'ISSUED' | 'ADJUSTED' | '' (tất cả)
+//     fromDate / toDate : epoch ms (lọc theo ngày tạo)
+export const listInvoices = (params = {}) =>
+  api.get('/api/tools/vmb/invoices', { params })
+
+// 2026-11-15: Bản thể hiện hóa đơn NHÁP (xem tạm) của 1 đơn vị hóa đơn.
+//   kind = 'GROUP' (hóa đơn group) | 'BOOKING' (vé chưa link của booking)
+export const getInvoiceDraft = (bookingId, kind = 'BOOKING') =>
+  api.get('/api/tools/vmb/invoices/draft', { params: { bookingId, kind } })
 
 // ── COMPANIES & PASSENGERS & MEMBERSHIP ──────────────────────
 
@@ -179,11 +197,11 @@ export const deletePassenger = (id) =>
 
 export const upsertPassengerDocument = (passengerId, type, fields = {}, file = null) => {
   const fd = new FormData()
-  if (fields.docNumber   != null) fd.append('docNumber',   fields.docNumber)
+  if (fields.docNumber != null) fd.append('docNumber', fields.docNumber)
   if (fields.nationality != null) fd.append('nationality', fields.nationality)
-  if (fields.issueDate   != null) fd.append('issueDate',   fields.issueDate)
-  if (fields.expiryDate  != null) fd.append('expiryDate',  fields.expiryDate)
-  if (file instanceof File)       fd.append('file', file)
+  if (fields.issueDate != null) fd.append('issueDate', fields.issueDate)
+  if (fields.expiryDate != null) fd.append('expiryDate', fields.expiryDate)
+  if (file instanceof File) fd.append('file', file)
   return api.put(`/api/tools/vmb/passengers/${passengerId}/documents/${type}`, fd, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
@@ -240,15 +258,19 @@ export const adminUnlockLookup = () =>
 /**
  * Thu tiền cho 1 HÓA ĐƠN. Thay cho recordPayment(bookingId) cũ.
  */
-export const recordInvoicePayment = (invoiceId, { amount, note, file } = {}) => {
+export const recordInvoicePayment = (invoiceId, { amount, note, file, accountCode } = {}) => {
   const fd = new FormData()
   fd.append('amount', amount)
   if (note) fd.append('note', note)
+  if (accountCode) fd.append('accountCode', accountCode)   // 2026-11-16: tài khoản nhận tiền
   if (file instanceof File) fd.append('file', file)
   return api.post(`/api/tools/vmb/invoices/${invoiceId}/payments`, fd, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
 }
+
+export const ensureBookingInvoice = (bookingId) =>
+  api.post(`/api/tools/vmb/bookings/${bookingId}/ensure-invoice`)
 
 export const batchPay = ({ bookingIds, note, file } = {}) => {
   const fd = new FormData()
@@ -270,3 +292,28 @@ export const listInvoicePayments = (invoiceId) =>
 
 export const deletePayment = (paymentId) =>
   api.delete(`/api/tools/vmb/payments/${paymentId}`)
+
+// ══════════════════════════════════════════════════════════════
+// FINANCE (Tài chính) — 2026-11-16
+// ══════════════════════════════════════════════════════════════
+
+/** Danh sách 5 tài khoản (Cash, HD, VCB, HNH_DEBT, VJ_DEPOSIT) kèm số dư. */
+export const listFinanceAccounts = () =>
+  api.get('/api/tools/vmb/finance/accounts')
+
+/** Set số dư đầu kỳ cho 1 tài khoản. */
+export const setAccountInitial = (accountId, amount) =>
+  api.put(`/api/tools/vmb/finance/accounts/${accountId}/initial`, { amount })
+
+/** Lịch sử giao dịch của 1 tài khoản, mới nhất trước. */
+export const listAccountHistory = (accountId) =>
+  api.get(`/api/tools/vmb/finance/accounts/${accountId}/transactions`)
+
+/**
+ * Tạo phiếu chi.
+ *   body = { sourceCode, amount, beneficiary, beneficiaryCode?, note? }
+ *     sourceCode      : 'CASH' | 'HD' | 'VCB'
+ *     beneficiaryCode : null | 'HNH_DEBT' | 'VJ_DEPOSIT'
+ */
+export const createFinanceExpense = (body) =>
+  api.post('/api/tools/vmb/finance/expense', body)

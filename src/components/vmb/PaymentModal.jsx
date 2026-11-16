@@ -3,30 +3,29 @@ import toast from 'react-hot-toast'
 import Modal from '../common/Modal'
 import ConfirmModal from '../common/ConfirmModal'
 import ZoomablePreview from './ZoomablePreview'
-import { recordInvoicePayment, listInvoicePayments, deletePayment } from '../../services/vmbApi'
+import { recordInvoicePayment, listInvoicePayments, deletePayment, listFinanceAccounts } from '../../services/vmbApi'
 import { parseAmount, formatMoney, sumAmounts } from '../../lib/money'
 
 /**
- * Thu tiền 1 HÓA ĐƠN (rework 2026-10-12).
+ * Thu tiền 1 HÓA ĐƠN.
  *
- * Props:
- *   booking   — booking chứa invoice
- *   invoice   — invoice đang thu (BẮT BUỘC; parent đã xử lý case nhiều invoice)
- *
- * Tổng tiền hóa đơn (grandTotal) do BE tính và trả về trong invoice.grandTotal
- * — logic multi-currency (phí VND trong booking USD được quy đổi về booking
- * currency). FE không tự tính lại để tránh lệch.
+ * ── 2026-11-16 (bổ sung) ──────────────────────────────────────────
+ * Khi lưu, user phải chọn tài khoản nhận tiền (CASH / HD / VCB). BE sẽ cộng
+ * đúng số tiền vừa thu vào tài khoản đó và lưu 1 txn ở lịch sử tài khoản.
  */
 export default function PaymentModal({ booking, invoice, onClose, onSaved }) {
-  // BE đã format: grandTotal / paidAmount là chuỗi "27.245.670".
   const total   = parseAmount(invoice?.grandTotal) || 0
   const paidNum = parseAmount(invoice?.paidAmount) || 0
   const remain  = Math.max(0, total - paidNum)
 
   const [amount, setAmount] = useState('')
-  const [note, setNote] = useState('')
-  const [file, setFile] = useState(null)
-  const [busy, setBusy] = useState(false)
+  const [note, setNote]   = useState('')
+  const [file, setFile]   = useState(null)
+  const [busy, setBusy]   = useState(false)
+
+  // 2026-11-16: tài khoản nhận tiền
+  const [accounts, setAccounts] = useState([])
+  const [accountCode, setAccountCode] = useState('CASH')
 
   const [history, setHistory] = useState([])
   const [loadingHist, setLoadingHist] = useState(true)
@@ -46,6 +45,17 @@ export default function PaymentModal({ booking, invoice, onClose, onSaved }) {
 
   useEffect(() => { loadHistory() }, [loadHistory])
 
+  useEffect(() => {
+    listFinanceAccounts().then(res => {
+      const list = (res.data?.data || []).filter(a => !a.isVirtual)
+      setAccounts(list)
+      if (list.length && !list.some(a => a.code === accountCode)) {
+        setAccountCode(list[0].code)
+      }
+    }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const setMax = () => setAmount(formatMoney(remain, booking.currency, { withUnit: false }))
 
   const scopeLabel = useMemo(() => scopeLabelOf(invoice, booking), [invoice, booking])
@@ -54,12 +64,13 @@ export default function PaymentModal({ booking, invoice, onClose, onSaved }) {
     e.preventDefault()
     const n = parseAmount(amount)
     if (!(n > 0)) return toast.error('Số tiền phải > 0')
+    if (!accountCode) return toast.error('Chọn tài khoản nhận tiền')
     if (n > remain + 0.5 && remain > 0) {
       if (!window.confirm(`Số thu (${formatMoney(n, booking.currency)}) LỚN HƠN số còn lại (${formatMoney(remain, booking.currency)}). Tiếp tục?`)) return
     }
     setBusy(true)
     try {
-      await recordInvoicePayment(invoice.id, { amount, note, file })
+      await recordInvoicePayment(invoice.id, { amount, note, file, accountCode })
       toast.success('Đã ghi nhận')
       onSaved?.()
     } catch (e) {
@@ -90,17 +101,13 @@ export default function PaymentModal({ booking, invoice, onClose, onSaved }) {
         footer={
           <div className="flex justify-end gap-2">
             <button type="button" onClick={onClose} disabled={busy}
-              className="px-4 py-2 text-sm rounded-lg text-gray-600 hover:bg-gray-200 disabled:opacity-50">
-              Đóng
-            </button>
+              className="px-4 py-2 text-sm rounded-lg text-gray-600 hover:bg-gray-200">Đóng</button>
             <button type="submit" form="payment-form" disabled={busy || remain <= 0}
-              className="px-4 py-2 text-sm font-semibold rounded-lg bg-blue-600 text-white
-                hover:bg-blue-700 disabled:opacity-50">
+              className="px-4 py-2 text-sm font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50">
               {busy ? 'Đang ghi…' : (remain <= 0 ? 'Đã thu đủ' : 'Thu tiền')}
             </button>
           </div>
         }>
-        {/* Scope info */}
         <div className="mb-2 flex items-center gap-2 text-xs">
           <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-700 font-bold">
             🧾 {invoiceLabel(invoice)}
@@ -108,13 +115,10 @@ export default function PaymentModal({ booking, invoice, onClose, onSaved }) {
           <span className="text-gray-600">{scopeLabel}</span>
         </div>
 
-        {/* Summary */}
         <div className="mb-3 p-3 rounded-xl bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200">
           <div className="grid grid-cols-3 gap-2 text-center">
-            <SumCol label="Tổng hóa đơn" value={formatMoney(total, booking.currency)}
-              cls="text-gray-900" />
-            <SumCol label="Đã thu" value={formatMoney(paidNum, booking.currency)}
-              cls="text-green-700" />
+            <SumCol label="Tổng hóa đơn" value={formatMoney(total, booking.currency)} cls="text-gray-900" />
+            <SumCol label="Đã thu" value={formatMoney(paidNum, booking.currency)} cls="text-green-700" />
             <SumCol label="Còn lại" value={formatMoney(remain, booking.currency)}
               cls={remain <= 0 ? 'text-gray-400' : 'text-rose-700 font-bold'} />
           </div>
@@ -134,20 +138,34 @@ export default function PaymentModal({ booking, invoice, onClose, onSaved }) {
                 }}
                 placeholder="VD: 500.000"
                 className="input flex-1 font-mono tabular-nums text-lg" required />
-              <button type="button" onClick={setMax}
-                disabled={remain <= 0}
-                title={`Điền = số còn lại (${formatMoney(remain, booking.currency)})`}
-                className="px-3 py-2 rounded-lg bg-gray-800 text-white text-xs font-bold
-                  hover:bg-gray-900 disabled:opacity-40 shrink-0">
+              <button type="button" onClick={setMax} disabled={remain <= 0}
+                className="px-3 py-2 rounded-lg bg-gray-800 text-white text-xs font-bold hover:bg-gray-900 disabled:opacity-40 shrink-0">
                 MAX
               </button>
             </div>
           </div>
 
+          {/* ── 2026-11-16: chọn tài khoản nhận tiền ── */}
           <div>
             <label className="text-[11px] font-semibold text-gray-600 mb-1 block">
-              Ghi chú (tùy)
+              Thanh toán vào tài khoản
             </label>
+            <div className="grid grid-cols-3 gap-2">
+              {accounts.map(a => (
+                <button key={a.id} type="button"
+                  onClick={() => setAccountCode(a.code)}
+                  className={`px-2 py-2 rounded-lg text-xs font-semibold border transition
+                    ${accountCode === a.code
+                      ? 'bg-emerald-600 text-white border-emerald-600'
+                      : 'bg-white text-gray-700 border-gray-200 hover:border-emerald-300'}`}>
+                  {a.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="text-[11px] font-semibold text-gray-600 mb-1 block">Ghi chú (tùy)</label>
             <input type="text" value={note}
               onChange={e => setNote(e.target.value)}
               placeholder="VD: Chuyển khoản Vietcombank, đợt 1"
@@ -155,9 +173,7 @@ export default function PaymentModal({ booking, invoice, onClose, onSaved }) {
           </div>
 
           <div>
-            <label className="text-[11px] font-semibold text-gray-600 mb-1 block">
-              Ảnh biên nhận (tùy)
-            </label>
+            <label className="text-[11px] font-semibold text-gray-600 mb-1 block">Ảnh biên nhận (tùy)</label>
             <div className="flex items-center gap-2">
               <input ref={fileInputRef} type="file" hidden
                 accept="image/*,application/pdf"
@@ -177,7 +193,6 @@ export default function PaymentModal({ booking, invoice, onClose, onSaved }) {
           </div>
         </form>
 
-        {/* Lịch sử thu */}
         <div className="mt-5 pt-4 border-t border-gray-200">
           <div className="text-xs font-bold text-gray-700 uppercase mb-2">
             Lịch sử thu (hóa đơn này) {loadingHist && <span className="text-gray-400 normal-case">(đang tải…)</span>}
@@ -190,30 +205,20 @@ export default function PaymentModal({ booking, invoice, onClose, onSaved }) {
                 <div key={p.id} className="p-2 rounded-lg bg-gray-50 border border-gray-100 flex items-center gap-2">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
-                      <span className="font-mono tabular-nums text-sm font-bold text-green-700">
-                        + {p.amount}
-                      </span>
-                      <span className="text-[10px] text-gray-500">
-                        {new Date(p.createdAt).toLocaleString('vi-VN')}
-                      </span>
-                      {p.createdBy && (
-                        <span className="text-[10px] text-gray-400">bởi {p.createdBy}</span>
-                      )}
+                      <span className="font-mono tabular-nums text-sm font-bold text-green-700">+ {p.amount}</span>
+                      <span className="text-[10px] text-gray-500">{new Date(p.createdAt).toLocaleString('vi-VN')}</span>
+                      {p.createdBy && <span className="text-[10px] text-gray-400">bởi {p.createdBy}</span>}
                     </div>
-                    {p.note && (
-                      <div className="text-xs text-gray-600 truncate">{p.note}</div>
-                    )}
+                    {p.note && <div className="text-xs text-gray-600 truncate">{p.note}</div>}
                   </div>
                   {p.fileUrl && (
                     <button type="button"
                       onClick={() => setPreview({ url: p.fileUrl, name: p.fileOriginal || 'Biên nhận' })}
-                      title="Xem ảnh biên nhận"
                       className="text-blue-600 hover:text-blue-800 text-xs px-2 py-1 rounded-md hover:bg-blue-50">
                       📎
                     </button>
                   )}
                   <button type="button" onClick={() => setConfirmDel(p)}
-                    title="Xóa phiếu thu"
                     className="text-rose-500 hover:text-rose-700 w-7 h-7 rounded-md hover:bg-rose-50 flex items-center justify-center">
                     ×
                   </button>
@@ -239,22 +244,14 @@ export default function PaymentModal({ booking, invoice, onClose, onSaved }) {
       </Modal>
 
       {preview && (
-        <ZoomablePreview
-          filePath={preview.url}
-          fileName={preview.name}
-          title={`Biên nhận · ${preview.name}`}
-          onClose={() => setPreview(null)}
-        />
+        <ZoomablePreview filePath={preview.url} fileName={preview.name}
+          title={`Biên nhận · ${preview.name}`} onClose={() => setPreview(null)} />
       )}
 
       {confirmDel && (
-        <ConfirmModal
-          open title="Xóa phiếu thu"
-          message={`Xóa phiếu thu ${confirmDel.amount}? Ảnh biên nhận (nếu có) cũng bị xóa nếu không hóa đơn khác dùng chung.`}
-          confirmLabel="Xóa" danger
-          onConfirm={doDelete}
-          onCancel={() => setConfirmDel(null)}
-        />
+        <ConfirmModal open title="Xóa phiếu thu"
+          message={`Xóa phiếu thu ${confirmDel.amount}?`}
+          confirmLabel="Xóa" danger onConfirm={doDelete} onCancel={() => setConfirmDel(null)} />
       )}
     </>
   )

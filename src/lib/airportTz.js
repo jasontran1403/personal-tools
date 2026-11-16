@@ -31,6 +31,7 @@ const MAP = {
   PKX: 'Asia/Shanghai', CAN: 'Asia/Shanghai', SZX: 'Asia/Shanghai',
   CTU: 'Asia/Shanghai', HGH: 'Asia/Shanghai', NKG: 'Asia/Shanghai',
   KMG: 'Asia/Shanghai', XIY: 'Asia/Shanghai', TAO: 'Asia/Shanghai',
+  TNA: 'Asia/Shanghai', WUH: 'Asia/Shanghai', CKG: 'Asia/Shanghai',
   HKG: 'Asia/Hong_Kong', MFM: 'Asia/Macau',
   TPE: 'Asia/Taipei', TSA: 'Asia/Taipei', KHH: 'Asia/Taipei',
 
@@ -67,6 +68,10 @@ const MAP = {
   ORD: 'America/Chicago',     DFW: 'America/Chicago',     ATL: 'America/New_York',
   YVR: 'America/Vancouver',   YYZ: 'America/Toronto',
   SYD: 'Australia/Sydney',    MEL: 'Australia/Melbourne', BNE: 'Australia/Brisbane',
+  // 2026-11-11: bổ sung sân bay gặp trong log
+  PER: 'Australia/Perth',     // Perth, Úc
+  NGB: 'Asia/Shanghai',       // Ninh Ba (Ningbo), Trung Quốc
+  LYG: 'Asia/Shanghai',       // Liên Vân Cảng (Lianyungang), Trung Quốc
 }
 
 /** ZoneId cho FE. Fallback về giờ VN nếu chưa có trong bảng. */
@@ -98,6 +103,25 @@ export function formatDepart(msUtc, iata) {
     }).formatToParts(new Date(msUtc))
     const p = (t) => parts.find(x => x.type === t)?.value || ''
     return `${p('day')}${p('month')} ${p('hour')}:${p('minute')}`
+  } catch {
+    return new Date(msUtc).toISOString().slice(0, 16).replace('T', ' ')
+  }
+}
+
+/**
+ * 2026-11-12: Giờ khởi hành đầy đủ "HH:mm dd/MM/yyyy" theo giờ ĐỊA PHƯƠNG của
+ * sân bay đi. Dùng cho card vé trên mobile.
+ */
+export function formatDepartFull(msUtc, iata) {
+  if (!msUtc) return ''
+  const tz = zoneOf(iata)
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: tz, day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: false,
+    }).formatToParts(new Date(msUtc))
+    const p = (t) => parts.find(x => x.type === t)?.value || ''
+    return `${p('hour')}:${p('minute')} ${p('day')}/${p('month')}/${p('year')}`
   } catch {
     return new Date(msUtc).toISOString().slice(0, 16).replace('T', ' ')
   }

@@ -48,7 +48,7 @@
  *    tất cả đơn vị. CHỈ giữ màu xanh ở cột Tổng booking.
  */
 
-import { parseAmount, formatMoney } from '../lib/money'
+import { parseAmount, formatMoney, sumTicketFees } from '../lib/money'
 import { listBookings } from '../services/vmbApi'
 import { unpaidTicketsOf } from './ticketDebt'
 
@@ -289,7 +289,7 @@ function noteLine(b) {
 
 // ── Tính toán từng dòng vé ────────────────────────────────
 
-function ticketNumbers(t) {
+function ticketNumbers(t, b) {
   const base = parseAmount(t.basePrice) || 0
   const coll = parseAmount(t.collectionFee) || 0
   const iss = parseAmount(t.issuanceFee) || 0
@@ -297,7 +297,8 @@ function ticketNumbers(t) {
   //   hưởng cột Giá gốc hiển thị). Nếu booking có currency khác VND, FE không
   //   quy đổi ở đây — sẽ bỏ qua trong report (BE tính chính xác hơn).
   const hnh = parseAmount(t.hnhFee) || 0
-  const feesSum = (t.fees || []).reduce((s, f) => s + (parseAmount(f.amount) || 0), 0)
+  // 2026-11-11: quy đổi phí theo currency của từng dòng (xem sumTicketFees).
+  const feesSum = sumTicketFees(t.fees, b?.currency || 'VND', b?.exchangeRate)
   const subTotal = base + coll + feesSum + hnh
   const sellPrice = subTotal + iss
   return { base, coll, iss, feesSum, hnh, subTotal, sellPrice }
@@ -306,7 +307,7 @@ function ticketNumbers(t) {
 function bookingTotals(b) {
   let total = 0
   for (const t of (b.tickets || [])) {
-    total += ticketNumbers(t).sellPrice
+    total += ticketNumbers(t, b).sellPrice
   }
   return total
 }
@@ -392,7 +393,7 @@ function buildRows(bookings) {
     const paidFill = isPaid ? { fillColor: COLOR_PAID_BG } : null
 
     tickets.forEach((t, i) => {
-      const n = ticketNumbers(t)
+      const n = ticketNumbers(t, b)
       const isFirst = i === 0
       const cell = (content, extra = {}) => ({
         stack: Array.isArray(content) ? content : [content],
@@ -783,126 +784,184 @@ export function findTicketsMissingDraftInvoice(bookings) {
  *
  * Lưu ý: Chrome sẽ hiện prompt "Site này đang tải nhiều file" ở file thứ 2
  * — user allow 1 lần là các file sau download thẳng.
+ *
+ * ── 2026-11-11: ZIP TOÀN BỘ ──
+ * Trước đây mỗi hóa đơn là một lệnh click `<a download>`, trình duyệt bật
+ * popup "Lưu ở đâu?" riêng cho từng file. Nay gộp tất cả vào 1 file ZIP và
+ * tải 1 lần → trình duyệt chỉ hỏi (hoặc không hỏi) 1 lần duy nhất. Tên ZIP:
+ *   Hoa-don-nhap-<dd-MM-yyyy>.zip
+ * Nếu người dùng tải ZIP cùng tên 2 lần, trình duyệt tự thêm `(1)`, `(2)` —
+ * không cần FE xử lý.
+ *
+ * Trường hợp chỉ có 1 hóa đơn: tải thẳng file đó, không ZIP cho đỡ dư thao tác.
  */
 export async function downloadDraftInvoices(bookings, { onProgress } = {}) {
   const jobs = collectDraftInvoiceJobs(bookings)
   if (jobs.length === 0) throw new Error('Không có hóa đơn nháp nào để tải')
 
-  let done = 0
+  // Fetch tất cả file song song (giới hạn 4 concurrent cho khỏi nghẽn).
+  const blobs = []
   const errors = []
-  for (const job of jobs) {
-    try {
-      const resp = await fetch(job.url)
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
-      const blob = await resp.blob()
-
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = job.filename
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
-
-      // Delay nhỏ giữa các file để trình duyệt xử lý — nếu bấm liên tục
-      // Chrome có thể drop file sau.
-      await new Promise(r => setTimeout(r, 250))
-
-      done++
-    } catch (err) {
-      console.warn('[Draft invoice download]', job.filename, err)
-      errors.push({ filename: job.filename, error: err?.message || String(err) })
-    }
-    onProgress?.(done, jobs.length)
+  let fetched = 0
+  const CONC = 4
+  for (let i = 0; i < jobs.length; i += CONC) {
+    const batch = jobs.slice(i, i + CONC).map(async (job) => {
+      try {
+        const resp = await fetch(job.url)
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
+        const blob = await resp.blob()
+        blobs.push({ job, blob })
+      } catch (err) {
+        console.warn('[Draft invoice fetch]', job.filename, err)
+        errors.push({ filename: job.filename, error: err?.message || String(err) })
+      } finally {
+        fetched++
+        onProgress?.(fetched, jobs.length)
+      }
+    })
+    await Promise.all(batch)
   }
-  return { total: jobs.length, done, errors }
+
+  const saveBlob = (blob, filename) => {
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a); a.click(); a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  if (blobs.length === 0) {
+    return { total: jobs.length, done: 0, errors, zipped: false }
+  }
+  if (blobs.length === 1) {
+    // 1 file → không cần zip, tải thẳng.
+    saveBlob(blobs[0].blob, blobs[0].job.filename)
+    return { total: jobs.length, done: 1, errors, zipped: false }
+  }
+
+  // Nhiều file → gom vào 1 ZIP để chỉ hỏi "Lưu ở đâu?" đúng 1 lần.
+  const JSZipMod = await import('jszip')
+  const JSZip = JSZipMod.default || JSZipMod
+  const zip = new JSZip()
+  const used = new Map()         // phòng trường hợp tên file trùng
+  for (const { job, blob } of blobs) {
+    let name = job.filename
+    const n = (used.get(name) || 0) + 1
+    used.set(name, n)
+    if (n > 1) {
+      // thêm (n) trước đuôi mở rộng
+      const dot = name.lastIndexOf('.')
+      name = dot > 0
+        ? `${name.slice(0, dot)} (${n - 1})${name.slice(dot)}`
+        : `${name} (${n - 1})`
+    }
+    zip.file(name, blob)
+  }
+  const zipBlob = await zip.generateAsync({ type: 'blob' })
+  const now = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const zipName = `Hoa-don-nhap-${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear()}.zip`
+  saveBlob(zipBlob, zipName)
+
+  return { total: jobs.length, done: blobs.length, errors, zipped: true, zipName }
 }
 
 /**
- * ── 2026-10-16: Convention mới cho tên file hóa đơn nháp ──
+ * ── 2026-11-11 (rev3): Convention tên file hóa đơn nháp ──
  *
- *   • Hóa đơn CHUNG 1 booking:              Draft-Invoice-<bookingCode>
- *   • Hóa đơn gộp N booking (invoice group) qua link:
- *                                           Draft-Invoice-<code1>-<code2>-...
- *   • Hóa đơn tách theo tập vé:             Draft-Invoice-<ownerCode>-<pax1>-<pax2>-...
- *   • Hóa đơn gộp N booking + tách theo vé: Draft-Invoice-<code1>-<code2>-...-<pax1>-<pax2>-...
+ *   • 1 booking, hóa đơn CHUNG cả booking:
+ *           Draft-Invoice-<bookingCode>.pdf
+ *   • 1 booking, có nhiều hóa đơn TÁCH theo vé:
+ *           Draft-Invoice-<bookingCode>-<idx>-<N>pax.pdf
+ *       `idx` là thứ tự hóa đơn tách trong booking (1-based, theo id invoice).
+ *       `N`   là số vé mà hóa đơn này áp cho.
+ *   • Hóa đơn GỘP nhiều booking (ví dụ DZRAG7 + 5JW8XD dùng chung 1 file):
+ *       Tải 1 lần duy nhất, tên gộp tất cả mã booking và tổng số vé:
+ *           Draft-Invoice-<codeA>-<codeB>-<N>pax.pdf
+ *     Cách này tránh tải trùng file giống nhau dưới 2 tên, và vẫn cho biết
+ *     file cover những booking nào.
  *
- * Dedupe theo invoice.id — khi 1 invoice group hiển thị ở nhiều booking cùng
- * lúc trong `bookings`, chỉ tải MỘT lần (owner trước).
+ * Dedupe theo file nguồn — khi cùng 1 file nháp xuất hiện ở nhiều booking
+ * (mirror, invoice group) chỉ tải MỘT lần, owner trước nếu có.
  */
 function collectDraftInvoiceJobs(bookings) {
-  // 1. Dedupe invoices theo id. Mỗi invoice gom "danh sách booking share".
-  //    sourceBookingId = booking GỐC (upload file). Các booking khác là "ké".
-  // ── 2026-10-16 v2: Dedupe theo invoice GỐC ──
-  //   Mirror invoice có `sourceBookingId` chỉ về owner booking (có `sourceBookingCode`).
-  //   Key dedupe = `sourceBookingId + sourceBookingCode` (chung cho owner + mirror).
-  //   Khi `bookings` list chứa cả owner & member → mỗi booking có record Invoice
-  //   riêng (vật lý), nhưng vì cùng key → chỉ tải 1 lần.
-  const invByKey = new Map()  // key → { inv (owner preferred), ownerCode, codes: Set }
+  // ── 1. Dedupe theo file nguồn ────────────────────────────
+  //   Mirror invoice (sourceBookingId != null) trỏ về bản owner — cùng file
+  //   vật lý. Key dedupe gồm cả owner id và tên file để an toàn khi 2 booking
+  //   trong group dùng chung file.
+  const invByKey = new Map()
   for (const b of bookings || []) {
     for (const inv of b.invoices || []) {
       if (!inv.draftUrl) continue
       const isOwner = inv.sourceBookingId == null || inv.sourceBookingId === b.id
-      const ownerBookingCode = inv.sourceBookingCode || b.bookingCode || `booking-${b.id}`
-      // key: ưu tiên sourceBookingId (owner booking) + inv.sourceBookingId
-      // Nếu là owner invoice thì sourceBookingId = chính b.id (từ mapper BE)
+      const ownerCode = inv.sourceBookingCode || b.bookingCode || `booking-${b.id}`
       const key = `${inv.sourceBookingId || b.id}::${inv.draftOriginal || inv.draftUrl}`
       const bCode = b.bookingCode || `booking-${b.id}`
       if (!invByKey.has(key)) {
         invByKey.set(key, {
-          inv,
-          ownerCode: ownerBookingCode,
-          codes: new Set([bCode]),
+          inv, ownerCode, codes: new Set([bCode]),
+          // Toàn bộ vé mà hóa đơn này áp cho (gom khi nhiều booking share).
+          ticketIds: new Set(inv.ticketIds || []),
         })
       } else {
         const rec = invByKey.get(key)
         rec.codes.add(bCode)
-        // Nếu record cũ là mirror, mà record mới là owner → prefer owner
-        if (isOwner) {
-          rec.inv = inv
-          rec.ownerCode = ownerBookingCode
-        }
+        for (const tid of (inv.ticketIds || [])) rec.ticketIds.add(tid)
+        if (isOwner) { rec.inv = inv; rec.ownerCode = ownerCode }
       }
     }
   }
-  const invById = invByKey  // alias cho đoạn code dưới
 
+  // ── 2. Đánh số hóa đơn TÁCH trong cùng 1 booking (idx 1..M) ──────
+  //   Hóa đơn tách = có ticketIds cụ thể và KHÔNG cover toàn bộ vé. Hóa đơn
+  //   chung booking (ticketIds rỗng) không được đánh số. Thứ tự: theo id
+  //   invoice tăng dần cho ổn định giữa các lần chạy.
+  const splitSeq = new Map()    // bookingCode → [{key, invId}, ...] (đã sort)
+  for (const [key, rec] of invByKey) {
+    if (rec.codes.size !== 1) continue              // cross-booking → tính riêng
+    const bCode = [...rec.codes][0]
+    if (rec.ticketIds.size === 0) continue          // hóa đơn chung
+    if (!splitSeq.has(bCode)) splitSeq.set(bCode, [])
+    splitSeq.get(bCode).push({ key, invId: rec.inv.id || 0 })
+  }
+  for (const list of splitSeq.values()) list.sort((a, b) => a.invId - b.invId)
+
+  // Số vé của 1 booking → để biết hóa đơn có cover hết không.
+  const ticketCount = new Map()
+  for (const b of bookings || []) {
+    ticketCount.set(b.bookingCode, (b.tickets || []).length)
+  }
+
+  // ── 3. Dựng tên file ─────────────────────────────────────
   const jobs = []
-  for (const rec of invById.values()) {
-    const { inv, ownerCode, codes } = rec
-
-    // Danh sách mã booking: owner trước, các booking member sau (loại trùng).
-    const codeList = [ownerCode, ...[...codes].filter(c => c !== ownerCode)]
-    const codePart = codeList.join('-')
-
-    const scopeIds = inv.ticketIds || []
-    const isBookingWide = scopeIds.length === 0
-    const isGrouped = codes.size > 1   // 2026-10-16: >1 booking → đã gộp
+  for (const [key, rec] of invByKey) {
+    const { inv, ticketIds, codes } = rec
+    const codeList = [...codes].sort()               // ổn định
+    const paxCount = ticketIds.size
+    const ext = extensionOf(inv.draftOriginal) || extensionOf(inv.draftUrl) || '.pdf'
 
     let baseName
-    if (isGrouped) {
-      // Hóa đơn gộp nhiều booking: luôn hiểu là FULL khách (của cả nhóm) →
-      // chỉ cần mã các booking, không liệt kê tên.
-      baseName = `Draft-Invoice-${codePart}`
-    } else if (isBookingWide) {
-      // 1 booking, chung → chỉ mã booking.
-      baseName = `Draft-Invoice-${codePart}`
+    if (codes.size > 1) {
+      // Hóa đơn GỘP nhiều booking → 1 file duy nhất, tên ghép tất cả mã.
+      // Luôn kèm "-<N>pax" để phân biệt với hóa đơn chung đơn lẻ.
+      baseName = `Draft-Invoice-${codeList.join('-')}-${paxCount}pax`
     } else {
-      // 1 booking, tách theo vé → mã booking + tên các khách.
-      const nameFor = (tid) => {
-        for (const b of bookings || []) {
-          const t = (b.tickets || []).find(x => x.id === tid)
-          if (t) return t.passengerName
-        }
-        return null
+      const bCode = codeList[0]
+      const total = ticketCount.get(bCode) || 0
+      const isBookingWide = ticketIds.size === 0 || (total > 0 && ticketIds.size === total
+        && [...ticketIds].every(() => true))
+      if (isBookingWide) {
+        // Cả booking 1 hóa đơn (dù 1 vé hay nhiều vé).
+        baseName = `Draft-Invoice-${bCode}`
+      } else {
+        // Booking tách nhiều hóa đơn → <code>-<idx>-<N>pax
+        const seq = splitSeq.get(bCode) || []
+        const idx = Math.max(1, seq.findIndex(x => x.key === key) + 1)
+        baseName = `Draft-Invoice-${bCode}-${idx}-${paxCount}pax`
       }
-      const names = scopeIds.map(nameFor).filter(Boolean)
-      const paxPart = names.length > 0 ? names.join('-') : `booking-${inv.id}`
-      baseName = `Draft-Invoice-${codePart}-${paxPart}`
     }
 
-    const ext = extensionOf(inv.draftOriginal) || extensionOf(inv.draftUrl) || '.pdf'
     jobs.push({
       url: resolveFileUrl(inv.draftUrl),
       filename: sanitizeFilename(baseName) + ext,
@@ -1102,7 +1161,7 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
       const route = buildRouteStr(b.segments)
       const invNums = collectInvoiceNumbers(b)   // ["355", "356"]
       tickets.forEach((t, i) => {
-        const n = ticketNumbers(t)
+        const n = ticketNumbers(t, b)
         const sellVnd = toVnd(n.sellPrice, b)
         sumSellVnd += sellVnd
         const isFirst = i === 0

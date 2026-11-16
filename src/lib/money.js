@@ -108,3 +108,33 @@ export function toVnd(amount, currency, exchangeRate) {
   if (!Number.isFinite(r) || r <= 0) return NaN
   return n * r
 }
+/**
+ * ── 2026-11-11: Cộng các dòng phí của 1 vé, CÓ quy đổi theo tiền tệ ──
+ *
+ * Mỗi {@link TicketFee} có `currency` riêng: phí ghi bằng VNĐ vẫn có thể nằm
+ * trong booking tính bằng USD (ví dụ tiền mua chỗ ngồi trả bằng tiền Việt).
+ * Trước đây vài chỗ cộng thẳng `f.amount` rồi mới nhân tỷ giá cho cả cụm, làm
+ * phí VNĐ bị nhân thêm ~26.000 lần — doanh thu phình lên hàng trăm tỷ.
+ *
+ * @param fees            mảng { amount, currency }
+ * @param targetCurrency  'VND' | 'USD' — đơn vị muốn quy về
+ * @param exchangeRate    tỷ giá của booking (1 USD = ? VNĐ)
+ */
+export function sumTicketFees(fees, targetCurrency = 'VND', exchangeRate = null) {
+  if (!fees || fees.length === 0) return 0
+  const target = (targetCurrency || 'VND').toUpperCase()
+  const rate = parseAmount(exchangeRate)
+  let total = 0
+  for (const f of fees) {
+    const amt = parseAmount(f.amount)
+    if (!Number.isFinite(amt)) continue
+    const fc = (f.currency || target).toUpperCase()
+    if (fc === target) total += amt
+    else if (target === 'USD' && fc === 'VND') {
+      if (Number.isFinite(rate) && rate > 0) total += amt / rate
+    } else if (target === 'VND' && fc === 'USD') {
+      if (Number.isFinite(rate) && rate > 0) total += amt * rate
+    }
+  }
+  return total
+}

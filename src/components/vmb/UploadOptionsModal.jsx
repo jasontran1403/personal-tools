@@ -105,10 +105,14 @@ export default function UploadOptionsModal({ open, booking, onClose, onChanged }
     )
   }
 
-  // ── 2026-10-16: Member booking (link đến booking khác) KHÔNG được upload
-  //    hóa đơn — chỉ owner mới upload, mirror tự đồng bộ xuống. ──
-  const isMemberOnly = booking.invoiceGroupId != null && !booking.isInvoiceGroupOwner
+  // ── 2026-11-12: Chỉ khóa hóa đơn khi TẤT CẢ vé của booking này đã link
+  //    sang chủ khác. Nếu còn vé chưa link, vẫn cho upload để tạo hóa đơn
+  //    cho các vé đó (BE tự chặn vé đã link ở createInvoice).
+  const tickets = booking.tickets || []
+  const allLinkedOut = tickets.length > 0 && tickets.every(t =>
+    t.linkedBookingId && t.linkedBookingId !== booking.id)
   const ownerCode = booking.ownerBookingCode
+  const isMemberOnly = allLinkedOut
 
   const opts = [
     {

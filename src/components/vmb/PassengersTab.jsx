@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import ConfirmModal from '../common/ConfirmModal'
 import PassengerFormModal from './PassengerFormModal'
+import CopyPassengerModal from './CopyPassengerModal'
 import MembershipCardsModal from './MembershipCardsModal'
 import CompaniesModal from './CompaniesModal'
 import IdPresentationModal from './IdPresentationModal'
-import CompanySearchSelect, { companyOptions } from '../common/CompanySearchSelect'
-import { listPassengers, listCompanies, deletePassenger } from '../../services/vmbApi'
+import CompanySearchSelect, { companyOptions, isWalkInCompany } from '../common/CompanySearchSelect'
+import { listPassengers, listCompanies, deletePassenger, getPassenger } from '../../services/vmbApi'
 import { expiryStatus, monthsUntil, formatDateVn } from '../../lib/expiry'
 
 /**
@@ -20,21 +21,34 @@ import { expiryStatus, monthsUntil, formatDateVn } from '../../lib/expiry'
  */
 export default function PassengersTab() {
   const [rows, setRows]           = useState([])
+  // 2026-11-11: BE xếp danh sách theo tên công ty A→Z rồi tên khách, nên khách
+  //   lẻ (bắt đầu bằng K) không nằm ở trang đầu. Fetch RIÊNG khách lẻ để luôn
+  //   hiện nhóm này ngay khi mở tab, không phụ thuộc vị trí trong infinite
+  //   scroll. Khi vé đã lọc theo công ty hoặc có từ khóa tìm → bỏ qua.
+  const [walkInRows, setWalkInRows] = useState([])
   const [companies, setCompanies] = useState([])
-  const [loading, setLoading]     = useState(true)
+  const [loading, setLoading]     = useState(true)       // lần tải đầu
+  const [loadingMore, setLoadingMore] = useState(false)  // lần tải nối tiếp
 
   const [q, setQ]                 = useState('')
   const [companyId, setCompanyId] = useState('')
-  const [page, setPage]           = useState(0)
-  const [totalPages, setTotalPages] = useState(1)
+  // 2026-11-11: phân trang cuộn (infinite scroll) thay cho nút trước/sau.
+  //   rows nối dồn qua các lần fetch; nextPage là trang kế để fetch; hasMore
+  //   = còn trang nữa.
+  const [nextPage, setNextPage]   = useState(0)
+  const [hasMore, setHasMore]     = useState(true)
   const [total, setTotal]         = useState(0)
 
-  const [collapsedCompanies, setCollapsedCompanies] = useState(new Set())
+  // 2026-11-11: Mặc định MỌI công ty đều thu gọn; set này giữ các công ty mà
+  //   user đã bấm mở. Khi đang tìm kiếm thì mở hết, nếu không kết quả bị giấu.
+  const [expandedCompanies, setExpandedCompanies] = useState(new Set())
 
   const [form, setForm]           = useState(null)
   const [cardsFor, setCardsFor]   = useState(null)
   const [presenting, setPresenting] = useState(null)
   const [confirmDel, setConfirmDel] = useState(null)
+  // 2026-11-11: khách đang được copy sang công ty khác
+  const [copyFor, setCopyFor]     = useState(null)
   const [showCompanies, setShowCompanies] = useState(false)
 
   const loadCompanies = useCallback(async () => {
@@ -46,54 +60,118 @@ export default function PassengersTab() {
     }
   }, [])
 
-  const load = useCallback(async () => {
-    setLoading(true)
+  // 2026-11-11: Mỗi lần đổi ô tìm kiếm / chọn công ty, reset về trang 0 và
+  //   bỏ sạch rows. Thao tác cuộn gần hết sẽ bơm thêm trang kế qua loadMore.
+  const fetchingRef = useRef(false)
+  const loadPage = useCallback(async (pageIdx, replace) => {
+    if (fetchingRef.current) return
+    fetchingRef.current = true
+    if (replace) setLoading(true)
+    else setLoadingMore(true)
     try {
-      const res = await listPassengers({
+      // Reset: song song fetch trang 0 + khách lẻ (nếu đang xem "tất cả").
+      //   Không lọc công ty / không tìm kiếm → cần ghim nhóm khách lẻ lên đầu.
+      const mainP = listPassengers({
         q: q || undefined,
         companyId: companyId || undefined,
-        page, size: 100,
+        page: pageIdx, size: 100,
       })
+      const walkInP = (replace && !q && !companyId)
+        ? listPassengers({ walkInOnly: true, size: 100 })
+        : null
+      const res = await mainP
+      if (walkInP) {
+        try {
+          const wr = await walkInP
+          setWalkInRows(wr.data?.data?.content || [])
+        } catch { setWalkInRows([]) }
+      } else if (replace) {
+        // lọc hoặc tìm kiếm → bỏ nhóm khách lẻ ghim.
+        setWalkInRows([])
+      }
       const d = res.data?.data
-      setRows(d?.content || [])
-      setTotalPages(d?.totalPages || 1)
+      const chunk = d?.content || []
+      setRows(prev => replace ? chunk : [...prev, ...chunk])
+      const totalPages = d?.totalPages || 1
+      setHasMore(pageIdx + 1 < totalPages)
+      setNextPage(pageIdx + 1)
       setTotal(d?.totalElements || 0)
     } catch (e) {
       toast.error(e?.response?.data?.message || 'Không tải được danh sách khách')
     } finally {
-      setLoading(false)
+      if (replace) setLoading(false)
+      else setLoadingMore(false)
+      fetchingRef.current = false
     }
-  }, [q, companyId, page])
+  }, [q, companyId])
+
+  // Khi q hoặc companyId đổi → reload từ đầu.
+  useEffect(() => { loadPage(0, true) }, [loadPage])
+
+  // Alias cũ: reload lại từ đầu sau khi tạo/sửa/xóa khách.
+  const load = useCallback(() => loadPage(0, true), [loadPage])
 
   useEffect(() => { loadCompanies() }, [loadCompanies])
-  useEffect(() => { load() }, [load])
 
   const qTimer = useRef(null)
   const onSearch = (v) => {
     if (qTimer.current) clearTimeout(qTimer.current)
-    qTimer.current = setTimeout(() => { setPage(0); setQ(v) }, 300)
+    qTimer.current = setTimeout(() => setQ(v), 300)
   }
+
+  // ── Infinite scroll: khi cuộn xuống gần cuối thì tự fetch trang tiếp theo ──
+  const scrollerRef = useRef(null)
+  const onScroll = useCallback(() => {
+    const el = scrollerRef.current
+    if (!el || loadingMore || !hasMore) return
+    // Còn ít hơn 400px đến đáy → bơm tiếp.
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 400) {
+      loadPage(nextPage, false)
+    }
+  }, [loadPage, nextPage, hasMore, loadingMore])
 
   const flatCompanies = useMemo(() => companyOptions(companies || []), [companies])
 
+  // 2026-11-11: Khách lẻ LUÔN đứng đầu; các công ty khác giữ nguyên thứ tự
+  //   đến từ BE (tên công ty A→Z). Khi fetch thêm trang tiếp thì gộp vào
+  //   đúng nhóm, không xé rời theo trang nữa.
   const groups = useMemo(() => {
     if (companyId) return null
+    const walkInIds = new Set((companies || []).filter(isWalkInCompany).map(c => c.id))
+    // Dedupe: khách lẻ có thể vừa nằm trong rows (khi cuộn tới đoạn id khách lẻ)
+    //   vừa trong walkInRows ghim đầu → ưu tiên bản ở rows, loại bớt khỏi
+    //   walkInRows.
+    const seen = new Set(rows.map(p => p.id))
+    const extraWalkIn = walkInRows.filter(p => !seen.has(p.id))
+    const merged = [...extraWalkIn, ...rows]
     const map = new Map()
-    for (const p of rows) {
+    let walkInKey = null
+    for (const p of merged) {
       const key = p.companyId || 'none'
       if (!map.has(key)) map.set(key, { companyName: p.companyName || '—', companyId: p.companyId, items: [] })
       map.get(key).items.push(p)
+      if (walkInIds.has(p.companyId) || p.companyId === 1) walkInKey = key
     }
-    return Array.from(map.values())
-  }, [rows, companyId])
+    const list = Array.from(map.entries())
+    if (walkInKey != null) {
+      const idx = list.findIndex(([k]) => k === walkInKey)
+      if (idx > 0) {
+        const [item] = list.splice(idx, 1)
+        list.unshift(item)
+      }
+    }
+    return list.map(([, v]) => ({ ...v, isWalkIn: walkInIds.has(v.companyId) || v.companyId === 1 }))
+  }, [rows, walkInRows, companyId, companies])
 
   const toggleCompany = (id) => {
-    setCollapsedCompanies(s => {
+    setExpandedCompanies(s => {
       const n = new Set(s)
       if (n.has(id)) n.delete(id); else n.add(id)
       return n
     })
   }
+  const expandAll  = () => setExpandedCompanies(new Set((groups || []).map(g => g.companyId || 'none')))
+  const collapseAll = () => setExpandedCompanies(new Set())
 
   return (
     // 2026-10-10: Layout flex column — toolbar fixed, danh sách khách cuộn.
@@ -110,9 +188,10 @@ export default function PassengersTab() {
           <CompanySearchSelect
             value={companyId ? Number(companyId) : null}
             options={flatCompanies}
-            onChange={(id) => { setPage(0); setCompanyId(id == null ? '' : String(id)) }}
+            onChange={(id) => setCompanyId(id == null ? '' : String(id))}
             placeholder="— Tất cả công ty —"
             noneLabel="— Tất cả công ty —"
+            allowNone={true}
           />
         </div>
         <button type="button" onClick={() => setShowCompanies(true)}
@@ -120,6 +199,14 @@ export default function PassengersTab() {
             hover:bg-gray-50 shrink-0 font-medium">
           🏢 Công ty
         </button>
+        {groups && groups.length > 0 && (
+          <button type="button"
+            onClick={expandedCompanies.size ? collapseAll : expandAll}
+            className="px-3 py-2 rounded-lg border border-gray-200 bg-white text-sm text-gray-700
+              hover:bg-gray-50 shrink-0 font-medium">
+            {expandedCompanies.size ? '▲ Thu gọn hết' : '▼ Mở hết'}
+          </button>
+        )}
         <button type="button" onClick={() => setForm({ mode: 'create' })}
           className="px-4 py-2 rounded-lg bg-gradient-to-r from-blue-600 to-indigo-600 text-white
             text-sm font-semibold shadow-md shadow-blue-500/20 hover:from-blue-700 hover:to-indigo-700 shrink-0">
@@ -127,8 +214,9 @@ export default function PassengersTab() {
         </button>
       </div>
 
-      {/* 2026-10-10: Wrapper flex-1 overflow-auto để chỉ danh sách khách cuộn. */}
-      <div className="flex-1 min-h-0 overflow-auto">
+      {/* 2026-10-10: Wrapper flex-1 overflow-auto để chỉ danh sách khách cuộn.
+          2026-11-11: gắn ref + onScroll cho infinite scroll. */}
+      <div ref={scrollerRef} onScroll={onScroll} className="flex-1 min-h-0 overflow-auto">
       {loading ? (
         <div className="bg-white rounded-2xl shadow border border-gray-100 py-16 text-center text-gray-400 text-sm">
           Đang tải…
@@ -140,15 +228,32 @@ export default function PassengersTab() {
       ) : groups ? (
         <div className="space-y-3">
           {groups.map(g => {
-            const collapsed = collapsedCompanies.has(g.companyId || 'none')
+            const collapsed = !(expandedCompanies.has(g.companyId || 'none') || !!q.trim())
             return (
-              <div key={g.companyId || 'none'} className="bg-white rounded-2xl shadow border border-gray-100 overflow-hidden">
+              <div key={g.companyId || 'none'}
+                className={`rounded-2xl shadow overflow-hidden border ${
+                  g.isWalkIn
+                    ? 'bg-blue-50 border-blue-200'    // 2026-11-11: nhóm Khách lẻ nền xanh nhạt
+                    : 'bg-white border-gray-100'
+                }`}>
                 <button type="button" onClick={() => toggleCompany(g.companyId || 'none')}
-                  className="w-full flex items-center gap-2 px-4 py-3 bg-gradient-to-r from-slate-50 to-blue-50
-                    hover:from-slate-100 hover:to-blue-100 transition text-left">
+                  className={`w-full flex items-center gap-2 px-4 py-3 text-left transition ${
+                    g.isWalkIn
+                      ? 'bg-gradient-to-r from-blue-100 to-sky-100 hover:from-blue-200 hover:to-sky-200'
+                      : 'bg-gradient-to-r from-slate-50 to-blue-50 hover:from-slate-100 hover:to-blue-100'
+                  }`}>
                   <span className="text-gray-500 text-sm">{collapsed ? '▶' : '▼'}</span>
-                  <span className="font-bold text-gray-900 text-sm">{g.companyName}</span>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-white text-gray-600 font-semibold border border-gray-200">
+                  {/* 2026-11-16: Nhóm Khách lẻ nền xanh → ép chữ màu tối bằng
+                      arbitrary value để dark-theme không override thành chữ sáng. */}
+                  <span className={`font-bold text-sm ${g.isWalkIn ? 'text-[#1e3a8a]' : 'text-gray-900'}`}>
+                    {g.isWalkIn && '👤 '}{g.companyName}
+                  </span>
+                  {/* 2026-11-16: Badge tròn đều hơn (py-1 + leading-none + inline-flex). */}
+                  <span className={`text-xs px-2.5 py-1 rounded-full font-semibold border leading-none whitespace-nowrap inline-flex items-center ${
+                    g.isWalkIn
+                      ? 'bg-white text-[#1d4ed8] border-blue-200'
+                      : 'bg-white text-gray-600 border-gray-200'
+                  }`}>
                     {g.items.length} khách
                   </span>
                 </button>
@@ -157,6 +262,7 @@ export default function PassengersTab() {
                     items={g.items}
                     onEdit={p => setForm({ mode: 'edit', passengerId: p.id })}
                     onCards={setCardsFor}
+                    onCopy={setCopyFor}
                     onPresent={setPresenting}
                     onDelete={setConfirmDel}
                   />
@@ -171,13 +277,21 @@ export default function PassengersTab() {
             items={rows}
             onEdit={p => setForm({ mode: 'edit', passengerId: p.id })}
             onCards={setCardsFor}
+            onCopy={setCopyFor}
             onPresent={setPresenting}
             onDelete={setConfirmDel}
           />
         </div>
       )}
 
-      <Pagination page={page} totalPages={totalPages} total={total} onPage={setPage} />
+      {/* 2026-11-11: Thay nút trước/sau bằng chỉ báo cuối danh sách. */}
+      <div className="py-4 text-center text-xs text-gray-400">
+        {loadingMore
+          ? 'Đang tải thêm…'
+          : !hasMore && rows.length > 0
+            ? `${total} khách`
+            : null}
+      </div>
       </div>{/* /flex-1 overflow-auto */}
 
       {form && (
@@ -186,10 +300,38 @@ export default function PassengersTab() {
           passengerId={form.passengerId}
           companies={companies}
           onClose={() => setForm(null)}
-          onSaved={() => { setForm(null); load(); loadCompanies() }}
+          onSaved={async (res) => {
+            setForm(null)
+            loadCompanies()
+            // 2026-11-12: SỬA khách → patch TẠI CHỖ đúng khách đó, KHÔNG reload
+            //   cả danh sách (giữ nguyên vị trí cuộn, không nhảy lên đầu trang).
+            if (res?.mode === 'edit' && res.id != null) {
+              try {
+                const r = await getPassenger(res.id)
+                const fresh = r.data?.data
+                if (fresh) {
+                  const patch = (list) => list.map(p => (p.id === fresh.id ? { ...p, ...fresh } : p))
+                  setRows(patch)
+                  setWalkInRows(patch)
+                  return
+                }
+              } catch { /* fetch lỗi → fallback reload bên dưới */ }
+            }
+            // Tạo mới / xoá / fetch lỗi → reload từ đầu như cũ.
+            load()
+          }}
         />
       )}
 
+      {/* 2026-11-11: copy khách sang công ty khác */}
+      {copyFor && (
+        <CopyPassengerModal
+          passenger={copyFor}
+          companies={companies}
+          onClose={() => setCopyFor(null)}
+          onDone={() => { load(); loadCompanies() }}
+        />
+      )}
       {cardsFor && (
         <MembershipCardsModal
           passenger={cardsFor}
@@ -238,7 +380,7 @@ export default function PassengersTab() {
 
 // ═══════════════════════════════════════════════════════════════
 
-function PassengerList({ items, onEdit, onCards, onPresent, onDelete }) {
+function PassengerList({ items, onEdit, onCards, onCopy, onPresent, onDelete }) {
   return (
     <>
       <div className="hidden md:block overflow-x-auto">
@@ -278,6 +420,12 @@ function PassengerList({ items, onEdit, onCards, onPresent, onDelete }) {
                         title="Xuất trình giấy tờ (CCCD / Hộ chiếu)"
                         className="w-7 h-7 rounded-md text-gray-600 hover:bg-amber-100 hover:text-amber-700 flex items-center justify-center">
                         🪪
+                      </button>
+                      {/* 2026-11-11: copy khách sang công ty khác */}
+                      <button type="button" onClick={() => onCopy(p)}
+                        title="Copy khách sang công ty khác"
+                        className="w-7 h-7 rounded-md text-gray-600 hover:bg-indigo-100 hover:text-indigo-700 flex items-center justify-center">
+                        ⧉
                       </button>
                       <button type="button" onClick={() => onEdit(p)}
                         title="Sửa" className="w-7 h-7 rounded-md text-gray-600 hover:bg-gray-200 flex items-center justify-center">
@@ -344,6 +492,11 @@ function PassengerList({ items, onEdit, onCards, onPresent, onDelete }) {
                   className="h-8 px-2 rounded-md text-xs font-semibold bg-amber-100 text-amber-700 hover:bg-amber-200">
                   🪪
                 </button>
+                <button onClick={() => onCopy(p)}
+                  title="Copy khách sang công ty khác"
+                  className="h-8 px-2 rounded-md text-xs font-semibold bg-indigo-100 text-indigo-700 hover:bg-indigo-200">
+                  ⧉
+                </button>
                 <button onClick={() => onEdit(p)}
                   className="flex-1 h-8 rounded-md text-xs font-semibold bg-gray-100 text-gray-700 hover:bg-gray-200">
                   ✎ Sửa
@@ -390,19 +543,4 @@ function FileIcon() {
 
 function genderLabel(g) {
   return { MALE: 'Nam', FEMALE: 'Nữ', OTHER: 'Khác' }[g] || '—'
-}
-
-function Pagination({ page, totalPages, total, onPage }) {
-  if (totalPages <= 1) return null
-  return (
-    <div className="flex items-center justify-between px-4 py-2 mt-2 bg-white rounded-lg border border-gray-100 text-xs">
-      <span className="text-gray-500">{total} khách · trang {page + 1}/{totalPages}</span>
-      <div className="flex gap-1">
-        <button onClick={() => onPage(Math.max(0, page - 1))} disabled={page === 0}
-          className="px-2.5 py-1 rounded-md bg-white border border-gray-200 disabled:opacity-40 hover:bg-gray-100">←</button>
-        <button onClick={() => onPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1}
-          className="px-2.5 py-1 rounded-md bg-white border border-gray-200 disabled:opacity-40 hover:bg-gray-100">→</button>
-      </div>
-    </div>
-  )
 }

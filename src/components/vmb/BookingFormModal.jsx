@@ -65,6 +65,9 @@ const INITIAL_FORM = () => ({
   ownerBookingCode: null,
   linkedBookings: [],
   clearInvoiceGroup: false,
+  // ── 2026-11-12 Link theo hành khách ──────────────────────────
+  // IDs các vé trong booking này sẽ link sang chủ.
+  linkedTicketIds: [],
 })
 
 /** True nếu form khác default (có data user đã nhập). Dùng để quyết định autosave. */
@@ -171,6 +174,13 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
           ownerBookingCode: b.ownerBookingCode || null,
           linkedBookings: b.linkedBookings || [],
           clearInvoiceGroup: false,
+          // ── 2026-11-12 Link theo hành khách ──────────────────────
+          //   t.linkedBookingId từ BE: vé nào đang link, chủ nào.
+          //   Preselect các vé đã link sang chính chủ hiện tại (nếu có).
+          linkedTicketIds: (b.tickets || [])
+            .filter(t => t.linkedBookingId && t.linkedBookingId === b.invoiceGroupId
+                         && !b.isInvoiceGroupOwner)
+            .map(t => t.id),
           segments: (b.segments || []).map(s => ({
             fromCode: s.fromCode, toCode: s.toCode,
             departLocalMs: s.departLocalMs, segOrder: s.segOrder,
@@ -181,11 +191,16 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
             companyId: t.companyId || null,
             passengerId: t.passengerId || null,
             passengerDocumentType: t.passengerDocumentType || null,
+            // 2026-11-12: Link vé qua chủ
+            linkedBookingId: t.linkedBookingId || null,
+            linkedBookingCode: t.linkedBookingCode || null,
             ticketNumber: t.ticketNumber || '',
             basePrice: t.basePrice || '',
             collectionFee: t.collectionFee || '',
             issuanceFee: t.issuanceFee || '',
             hnhFee: t.hnhFee || '',
+            commission: t.commission || '',               // 2026-11-16
+            commissionAmount: t.commissionAmount || '',    // 2026-11-16
             paidStatus: t.paidStatus || 'PENDING',
             note: t.note || '',
             fees: (t.fees || []).map(f => ({
@@ -439,7 +454,10 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
     try {
       // ── Strip _originalTotal (chỉ dùng ở client) trước khi gửi BE ──
       // ── Strip các field hiển thị thuần (BE tự tính lại) ──
-      const { invoiceGroupId, linkedBookings, isInvoiceGroupOwner, ownerBookingCode, ...rest } = form
+      const {
+        invoiceGroupId, linkedBookings, isInvoiceGroupOwner, ownerBookingCode,
+        ...rest
+      } = form
       const body = {
         ...rest,
         segments: (form.segments || []).map((s, i) => ({ ...s, segOrder: i })),
@@ -456,6 +474,9 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
       else delete body.linkedBookingCode
       // clearInvoiceGroup: chỉ gửi khi user tick bỏ link.
       if (!body.clearInvoiceGroup) delete body.clearInvoiceGroup
+      // 2026-11-12: linkedTicketIds chỉ có ý nghĩa khi có linkedBookingCode.
+      //   Rỗng + có code = link toàn bộ vé của booking (shortcut).
+      if (!body.linkedBookingCode) delete body.linkedTicketIds
       if (isEdit) {
         await updateBooking(bookingId, body)
         toast.success('Đã cập nhật')
@@ -592,86 +613,10 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
             </div>
 
             {/* ── 2026-10-16: Gộp hóa đơn với booking khác (invoice group) ── */}
-            {/* Style match với section "Mặt vé CHUNG" phía trên (dark-friendly) */}
-            <div className="mt-3 p-3 rounded-xl bg-indigo-50 border border-indigo-200">
-              <div className="text-sm font-semibold text-indigo-800 mb-1">
-                🔗 Gộp hóa đơn với booking khác
-              </div>
-              <div className="text-[11px] text-indigo-700 mb-2 leading-relaxed">
-                Nhập mã booking <b>chủ</b> vào đây — hóa đơn upload ở booking chủ sẽ
-                tự động chia sẻ cho tất cả booking link đến nó. Bỏ link bất cứ lúc nào.
-              </div>
-
-              {/* Khi edit: hiển thị trạng thái group */}
-              {isEdit && form.invoiceGroupId != null && (
-                <div className="mb-2 flex flex-wrap items-center gap-1.5">
-                  {form.isInvoiceGroupOwner ? (
-                    <>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold
-                          bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300">
-                        ⭐ Booking chủ
-                      </span>
-                      {form.linkedBookings && form.linkedBookings.length > 0 && (
-                        <>
-                          <span className="text-[10px] text-indigo-700">— có {form.linkedBookings.length} booking link tới:</span>
-                          {form.linkedBookings.map(lb => (
-                            <span key={lb.id} className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-mono font-semibold
-                              bg-indigo-100 text-indigo-800 ring-1 ring-indigo-300">
-                              {lb.bookingCode || `#${lb.id}`}
-                            </span>
-                          ))}
-                        </>
-                      )}
-                    </>
-                  ) : form.ownerBookingCode ? (
-                    <>
-                      <span className="text-[10px] text-indigo-700">Đang link đến booking chủ:</span>
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-mono font-bold
-                          bg-amber-100 text-amber-800 ring-1 ring-amber-300">
-                        {form.ownerBookingCode}
-                      </span>
-                    </>
-                  ) : null}
-                  <label className="inline-flex items-center gap-1 ml-auto text-[11px] text-rose-700 cursor-pointer">
-                    <input type="checkbox" checked={!!form.clearInvoiceGroup}
-                      onChange={e => setField('clearInvoiceGroup', e.target.checked)}
-                      className="accent-rose-500" />
-                    Bỏ link (sau khi lưu)
-                  </label>
-                </div>
-              )}
-
-              {/* ── Cảnh báo rõ hậu quả khi tick "Bỏ link" ── */}
-              {isEdit && form.clearInvoiceGroup && form.invoiceGroupId != null && (
-                <div className="mb-2 p-2 rounded-md bg-rose-50 border border-rose-300 text-[11px] text-rose-800">
-                  ⚠ <b>Sau khi lưu:</b>{' '}
-                  {form.isInvoiceGroupOwner ? (
-                    <>
-                      Booking này đang là <b>chủ</b> — mọi hóa đơn mà các booking link
-                      đến đang hiển thị ké sẽ bị xóa khỏi các booking đó. Hóa đơn gốc
-                      ở đây <b>vẫn giữ nguyên</b>.
-                    </>
-                  ) : (
-                    <>
-                      Hóa đơn ké từ <b>{form.ownerBookingCode}</b> sẽ bị xóa khỏi
-                      booking này. File gốc ở booking chủ <b>vẫn còn</b>.
-                    </>
-                  )}
-                </div>
-              )}
-
-              <input
-                type="text"
-                value={form.linkedBookingCode}
-                onChange={e => setField('linkedBookingCode', e.target.value.toUpperCase())}
-                disabled={!!form.clearInvoiceGroup}
-                placeholder="VD: P34F5W — bỏ trống nếu không muốn link"
-                className="w-full px-3 py-2 rounded-lg bg-white border border-indigo-300
-                  text-slate-900 placeholder:text-slate-400 text-sm font-mono uppercase
-                  focus:border-indigo-500 focus:ring-2 focus:ring-indigo-400/30 outline-none
-                  disabled:opacity-40 disabled:cursor-not-allowed"
-              />
-            </div>
+            {/* ── 2026-11-12 Link theo HÓA ĐƠN cụ thể ở booking chủ ── */}
+            <InvoiceLinkSection
+              form={form} setField={setField} isEdit={isEdit}
+            />
 
             <Field label="Ghi chú chung (booking)">
               <textarea rows={2} value={form.note}
@@ -725,6 +670,7 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                         options={flatCompanies}
                         onChange={(id) => setTicket(i, { companyId: id })}
                         placeholder="— Khách lẻ —"
+                        allowNone={true}
                       />
                     </Field>
 
@@ -789,6 +735,26 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                       }>
                         <PriceInput value={t.hnhFee || ''} currency="VND"
                           onChange={v => setTicket(i, { hnhFee: v })} />
+                      </Field>
+                    </div>
+
+                    {/* 2026-11-16: Hoa hồng (%) + Số tiền hoa hồng — user tự nhập. */}
+                    <div className="grid grid-cols-2 gap-2 mt-2">
+                      <Field label={
+                        <span>Hoa hồng (%) <span className="text-[10px] text-gray-500 font-normal">(0 - 100)</span></span>
+                      }>
+                        <CommissionPercentInput
+                          value={t.commission || ''}
+                          onChange={v => setTicket(i, { commission: v })}
+                        />
+                      </Field>
+                      <Field label={
+                        <span>Số tiền hoa hồng <span className="text-[10px] text-gray-500 font-normal">(VND, 1 - 999.999.999)</span></span>
+                      }>
+                        <CommissionAmountInput
+                          value={t.commissionAmount || ''}
+                          onChange={v => setTicket(i, { commissionAmount: v })}
+                        />
                       </Field>
                     </div>
 
@@ -869,6 +835,8 @@ function newTicket() {
     passengerName: '', companyId: null, ticketNumber: '',
     basePrice: '', collectionFee: '', issuanceFee: '',
     hnhFee: '',    // 2026-11-07
+    commission: '',        // 2026-11-16: % hoa hồng (0 < x < 100)
+    commissionAmount: '',  // 2026-11-16: Số tiền hoa hồng (1 <= x < 999999999)
     paidStatus: 'PENDING', note: '',
     fees: [],
     // 2026-10-16: Link tới Passenger khi chọn qua dropdown.
@@ -878,6 +846,63 @@ function newTicket() {
     // với collectionFee. Bị strip trong submit.
     _originalTotal: null,
   }
+}
+
+/**
+ * 2026-11-16: Input % hoa hồng — chỉ cho nhập số (và dấu thập phân), 0 < x < 100.
+ * Khi blur ngoài khoảng, tự clamp về biên gần nhất.
+ */
+function CommissionPercentInput({ value, onChange }) {
+  const handle = (e) => {
+    // Chỉ cho nhập chữ số và dấu chấm/phẩy.
+    const raw = e.target.value.replace(/[^\d.,]/g, '')
+    onChange(raw)
+  }
+  const onBlur = () => {
+    if (!value) return
+    const n = parseFloat(String(value).replace(',', '.'))
+    if (!Number.isFinite(n)) return onChange('')
+    if (n <= 0)   return onChange('')
+    if (n >= 100) return onChange('99.99')
+    // Trong khoảng hợp lệ → giữ nguyên dạng user gõ.
+  }
+  return (
+    <div className="relative">
+      <input type="text" inputMode="decimal"
+        value={value} onChange={handle} onBlur={onBlur}
+        placeholder="VD: 5"
+        className="input pr-7 font-mono" />
+      <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-gray-500">%</span>
+    </div>
+  )
+}
+
+/**
+ * 2026-11-16: Input số tiền hoa hồng — VND, 1 <= x < 999999999.
+ * Auto-format VN (dấu chấm phân cách nghìn) khi blur.
+ */
+function CommissionAmountInput({ value, onChange }) {
+  const handle = (e) => {
+    onChange(e.target.value)
+  }
+  const onBlur = (e) => {
+    if (!e.target.value) return
+    const n = parseInt(String(e.target.value).replace(/[^\d]/g, ''), 10)
+    if (!Number.isFinite(n)) return onChange('')
+    if (n < 1) return onChange('1')
+    if (n >= 999999999) return onChange(formatVNDInt(999999998))
+    onChange(formatVNDInt(n))
+  }
+  return (
+    <input type="text" inputMode="numeric"
+      value={value} onChange={handle} onBlur={onBlur}
+      placeholder="VD: 150.000"
+      className="input font-mono" />
+  )
+}
+
+function formatVNDInt(n) {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '.')
 }
 
 function Section({ title, action, children }) {
@@ -946,4 +971,147 @@ function formatPaxName(raw) {
     .replace(/\s+/g, ' ')
     .replace(/^\s+/, '')
     .toUpperCase()
+}
+// ────────────────────────────────────────────────────────────────────
+// ── 2026-11-12 Link = chọn HÀNH KHÁCH để chủ xuất hóa đơn hộ ────────
+//
+// Luồng (ở booking PHỤ, VD DZRAG7):
+//   1) Nhập mã booking CHỦ (VD 5JW8XD).
+//   2) Tick các hành khách (vé) của booking này muốn chủ xuất hóa đơn hộ.
+//   3) Lưu → BE: ticket.linkedBookingId = chủ.id cho các vé đã tick.
+//      Khi chủ upload hóa đơn, picker ở chủ sẽ thấy vé đã link; vé được
+//      đưa vào hóa đơn thì booking phụ thấy hóa đơn đó qua cross-booking.
+//   4) Không cần có hóa đơn ở phụ trước. Nếu phụ có hóa đơn riêng cho các vé
+//      KHÔNG link, vẫn giữ nguyên.
+//
+// clearInvoiceGroup = true → clear link của mọi vé b đã link sang chủ hiện
+// tại + clear b.invoice_group_id.
+// ────────────────────────────────────────────────────────────────────
+function InvoiceLinkSection({ form, setField, isEdit }) {
+  const isMember = isEdit && form.invoiceGroupId != null && !form.isInvoiceGroupOwner
+  const isOwner  = isEdit && form.isInvoiceGroupOwner
+
+  const toggleTicketId = (id) => {
+    const cur = form.linkedTicketIds || []
+    if (cur.includes(id)) setField('linkedTicketIds', cur.filter(x => x !== id))
+    else setField('linkedTicketIds', [...cur, id])
+  }
+
+  const clearLink = () => {
+    setField('clearInvoiceGroup', true)
+    setField('linkedBookingCode', '')
+    setField('linkedTicketIds', [])
+  }
+
+  const canChoose = !isMember && (form.linkedBookingCode || '').trim().length > 0
+                   && (form.tickets || []).length > 0
+                   && !form.clearInvoiceGroup
+
+  return (
+    <div className="mt-3 p-3 rounded-xl bg-indigo-50 border border-indigo-200">
+      <div className="text-sm font-semibold text-indigo-800 mb-1">
+        🔗 Link hành khách sang booking chủ (chủ xuất hóa đơn hộ)
+      </div>
+      <div className="text-[11px] text-indigo-700 mb-2 leading-relaxed">
+        Nhập mã booking <b>chủ</b> và tick các hành khách muốn chủ xuất hóa
+        đơn hộ. Sau khi lưu: khi chủ upload hóa đơn, các vé đã link sẽ nằm
+        trong hóa đơn của chủ — booking này sẽ thấy hóa đơn đó tự động.
+      </div>
+
+      {isMember && !form.clearInvoiceGroup && (
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          <span className="text-[10px] text-indigo-700">Đang link vào booking chủ:</span>
+          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-mono font-bold
+              bg-amber-100 text-amber-800 ring-1 ring-amber-300">
+            {form.ownerBookingCode}
+          </span>
+          <button type="button" onClick={clearLink}
+            className="ml-auto text-[11px] text-rose-700 hover:text-rose-900 font-semibold">
+            × Bỏ link
+          </button>
+        </div>
+      )}
+      {isOwner && (
+        <div className="mb-2 flex flex-wrap items-center gap-1.5">
+          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold
+              bg-emerald-100 text-emerald-800 ring-1 ring-emerald-300">
+            ⭐ Booking chủ
+          </span>
+          {(form.linkedBookings || []).map(lb => (
+            <span key={lb.id} className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-mono font-semibold
+                bg-indigo-100 text-indigo-800 ring-1 ring-indigo-300">
+              {lb.bookingCode || `#${lb.id}`}
+            </span>
+          ))}
+          <label className="inline-flex items-center gap-1 ml-auto text-[11px] text-rose-700 cursor-pointer">
+            <input type="checkbox" checked={!!form.clearInvoiceGroup}
+              onChange={e => setField('clearInvoiceGroup', e.target.checked)}
+              className="accent-rose-500" />
+            Bỏ link
+          </label>
+        </div>
+      )}
+
+      {form.clearInvoiceGroup && (
+        <div className="mb-2 p-2 rounded-md bg-rose-50 border border-rose-300 text-[11px] text-rose-800">
+          ⚠ Sau khi lưu: booking này sẽ không còn link với chủ. Hóa đơn đã
+          chuyển sang chủ vẫn ở chủ (không tự chuyển ngược).
+        </div>
+      )}
+
+      {!isMember && (
+        <>
+          <div className="mb-2">
+            <input type="text"
+              value={form.linkedBookingCode || ''}
+              onChange={e => setField('linkedBookingCode', e.target.value.toUpperCase())}
+              placeholder="Mã booking chủ (VD: 5JW8XD)"
+              disabled={!!form.clearInvoiceGroup}
+              className="w-full px-3 py-2 rounded-lg bg-white border border-indigo-300
+                text-slate-900 placeholder:text-slate-400 text-sm font-mono uppercase
+                focus:border-indigo-500 focus:ring-2 focus:ring-indigo-400/30 outline-none
+                disabled:opacity-40" />
+          </div>
+
+          {canChoose && (
+            <div className="space-y-1">
+              <div className="text-[11px] font-semibold text-indigo-800">
+                Chọn hành khách sẽ link sang <span className="font-mono">{form.linkedBookingCode}</span>:
+              </div>
+              {(form.tickets || []).map((t, idx) => {
+                const isChosen = (form.linkedTicketIds || []).includes(t.id)
+                const existingLink = t.linkedBookingId && t.linkedBookingCode
+                    && t.linkedBookingCode !== form.linkedBookingCode
+                return (
+                  <label key={t.id || idx}
+                      className={`flex items-center gap-2 p-2 rounded-md cursor-pointer text-xs
+                      ${isChosen ? 'bg-indigo-100 ring-2 ring-indigo-400' : 'bg-white hover:bg-indigo-50 border border-indigo-200'}
+                      ${existingLink ? 'opacity-70' : ''}`}>
+                    <input type="checkbox" checked={isChosen}
+                      onChange={() => toggleTicketId(t.id)}
+                      disabled={!t.id} />
+                    <span className="font-medium text-slate-800">
+                      {t.passengerName || `Vé #${idx + 1}`}
+                    </span>
+                    {t.ticketNumber && (
+                      <span className="font-mono text-[11px] text-slate-500">· {t.ticketNumber}</span>
+                    )}
+                    {existingLink && (
+                      <span className="text-[10px] text-amber-700 italic ml-auto">
+                        đang link {t.linkedBookingCode}
+                      </span>
+                    )}
+                  </label>
+                )
+              })}
+              <div className="text-[10px] text-indigo-600 mt-1 italic">
+                Không tick vé nào + để trống → sẽ link TOÀN BỘ hành khách
+                sang chủ. Tick 1 phần → chỉ link các vé đó.
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
 }

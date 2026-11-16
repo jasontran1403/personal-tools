@@ -4,7 +4,7 @@ import Modal from '../common/Modal'
 import ConfirmModal from '../common/ConfirmModal'
 import ZoomablePreview from './ZoomablePreview'
 import DateInputVN from '../common/DateInputVN'
-import CompanySearchSelect, { companyOptions } from '../common/CompanySearchSelect'
+import CompanySearchSelect, { companyOptions, walkInCompanyId } from '../common/CompanySearchSelect'
 import {
   getPassenger, createPassenger, updatePassenger,
   upsertPassengerDocument, deletePassengerDocument,
@@ -31,14 +31,17 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
   const [busy, setBusy] = useState(false)
 
   const [companyPickMode, setCompanyPickMode] = useState('existing')
-  const [form, setForm] = useState({
-    companyId: '',
+  // 2026-11-11: Mặc định chọn công ty "Khách lẻ" thật trong DB (thường id 1)
+  //   thay vì để trống / null. Dropdown giờ chỉ còn một mục Khách lẻ, và BE
+  //   lưu ổn hơn khi nhận trực tiếp id thay vì để null rồi tự ghép.
+  const [form, setForm] = useState(() => ({
+    companyId: String(walkInCompanyId(companies)),
     newCompanyName: '',
     fullName: '',
     dob: '',
     gender: 'MALE',
     referrerName: '',   // 2026-11-08: Người giới thiệu (walk-in only)
-  })
+  }))
 
   // Documents state — edit mode load từ server; create mode buffer client
   const [cccdDoc, setCccdDoc] = useState(emptyDoc('CCCD'))
@@ -93,6 +96,16 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
   // Flatten tree công ty (có parent/branch) cho combobox search
   const flatCompanies = useMemo(() => companyOptions(companies || []), [companies])
 
+  // Nếu danh sách công ty load muộn hơn, chốt lại id Khách lẻ khi tạo mới
+  useEffect(() => {
+    if (mode !== 'create') return
+    if (!companies || companies.length === 0) return
+    const wid = walkInCompanyId(companies)
+    setForm(f => (f.companyId === '' || Number(f.companyId) === wid
+      ? { ...f, companyId: String(wid) }
+      : f))
+  }, [companies, mode])
+
   // ── Submit nhân thân ──────────────────────────────────────
   const submit = async (e) => {
     e.preventDefault()
@@ -117,7 +130,8 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
       if (mode === 'edit') {
         await updatePassenger(id, body)
         toast.success('Đã cập nhật nhân thân')
-        onSaved()
+        // 2026-11-12: báo mode+id để parent patch tại chỗ (không reload cả list).
+        onSaved({ mode: 'edit', id })
       } else {
         // 1) Tạo passenger
         const res = await createPassenger(body)
@@ -136,7 +150,7 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
           toast.error('Đã tạo khách nhưng lưu giấy tờ lỗi: ' + (docErr?.response?.data?.message || docErr?.message))
         }
         toast.success('Đã tạo hành khách')
-        onSaved()
+        onSaved({ mode: 'create', id: newId })
       }
     } catch (err) {
       toast.error(err?.response?.data?.message || 'Lưu thất bại')
@@ -235,8 +249,7 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
                     value={form.companyId ? Number(form.companyId) : null}
                     options={flatCompanies}
                     onChange={(id) => setField('companyId', id == null ? '' : String(id))}
-                    placeholder="— Khách lẻ (mặc định) —"
-                    noneLabel="— Khách lẻ (mặc định) —"
+                    placeholder="— Chọn công ty / Khách lẻ —"
                   />
                 ) : (
                   <input type="text" value={form.newCompanyName}

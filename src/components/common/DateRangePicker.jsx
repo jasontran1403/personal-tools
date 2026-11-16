@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from 'react'
+import { createPortal } from 'react-dom'
 
 /**
  * DateRangePicker — chọn khoảng thời gian bằng 1 popup calendar.
@@ -80,8 +81,16 @@ export default function DateRangePicker({
   className = '',
   presets = DEFAULT_PRESETS,
   align = 'right',
+  // 2026-11-12: render popup qua portal (position:fixed) để không bị cắt bởi
+  //   overflow của modal cha (vd modal bộ lọc trên mobile).
+  portal = false,
+  // 2026-11-15: compact = bỏ icon lịch + chữ nhỏ + padding gọn, để 2 picker
+  //   nằm vừa trên 1 dòng. Default false → giữ nguyên giao diện cũ.
+  compact = false,
 }) {
   const [open, setOpen] = useState(false)
+  const [portalRect, setPortalRect] = useState(null)
+  const popupRef = useRef(null)
   const [isDesktop, setIsDesktop] = useState(() =>
     typeof window !== 'undefined' ? window.matchMedia('(min-width: 768px)').matches : true
   )
@@ -115,10 +124,14 @@ export default function DateRangePicker({
     setOpen(true)
   }
 
-  // Đóng khi click ngoài / Esc
+  // Đóng khi click ngoài / Esc (popup portal nằm ngoài boxRef → check popupRef)
   useEffect(() => {
     if (!open) return
-    const onDown = (e) => { if (!boxRef.current?.contains(e.target)) setOpen(false) }
+    const onDown = (e) => {
+      const inBox = boxRef.current?.contains(e.target)
+      const inPopup = popupRef.current?.contains(e.target)
+      if (!inBox && !inPopup) setOpen(false)
+    }
     const onKey = (e) => { if (e.key === 'Escape') setOpen(false) }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
@@ -127,6 +140,24 @@ export default function DateRangePicker({
       document.removeEventListener('keydown', onKey)
     }
   }, [open])
+
+  // 2026-11-12: Tính vị trí popup khi dùng portal (và cập nhật khi scroll/resize)
+  useEffect(() => {
+    if (!open || !portal) return
+    const recompute = () => {
+      const el = boxRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      setPortalRect({ left: r.left, top: r.bottom, right: r.right, width: r.width })
+    }
+    recompute()
+    window.addEventListener('scroll', recompute, true)
+    window.addEventListener('resize', recompute)
+    return () => {
+      window.removeEventListener('scroll', recompute, true)
+      window.removeEventListener('resize', recompute)
+    }
+  }, [open, portal])
 
   const prevMonth = () => {
     let y = viewYear, m = viewMonth - 1
@@ -193,10 +224,11 @@ export default function DateRangePicker({
     <div ref={boxRef} className={`relative ${className}`}>
       <button type="button" onClick={() => open ? setOpen(false) : openPopup()}
         disabled={disabled}
-        className={`w-full px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm text-left
+        className={`w-full rounded-lg border border-gray-300 bg-white text-left
+          ${compact ? 'px-2 py-1.5 text-xs gap-1' : 'px-3 py-2 text-sm gap-2'}
           hover:border-blue-400 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none
-          disabled:bg-gray-50 disabled:text-gray-400 flex items-center gap-2 ${open ? 'border-blue-500 ring-2 ring-blue-200' : ''}`}>
-        <span className="text-gray-400">📅</span>
+          disabled:bg-gray-50 disabled:text-gray-400 flex items-center ${open ? 'border-blue-500 ring-2 ring-blue-200' : ''}`}>
+        {!compact && <span className="text-gray-400">📅</span>}
         {triggerLabel ? (
           <span className="flex-1 truncate text-gray-800 tabular-nums">{triggerLabel}</span>
         ) : (
@@ -212,10 +244,9 @@ export default function DateRangePicker({
         )}
       </button>
 
-      {open && (
-        <div className={`absolute z-50 top-full mt-1 ${align === 'left' ? 'left-0' : 'right-0'}
-                        rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden
-                        animate-slide-down`}>
+      {open && (() => {
+        const popupInner = (
+          <>
           <div className="flex">
             {isDesktop && (
               <MonthPane
@@ -262,8 +293,28 @@ export default function DateRangePicker({
               Đóng
             </button>
           </div>
-        </div>
-      )}
+          </>
+        )
+        const popupCls = 'rounded-xl bg-white shadow-2xl border border-gray-200 overflow-hidden animate-slide-down'
+        if (portal) {
+          if (!portalRect) return null
+          return createPortal(
+            <div ref={popupRef} className={popupCls}
+              style={{
+                position: 'fixed', zIndex: 1000, top: portalRect.top + 4,
+                left:  align === 'left' ? portalRect.left : undefined,
+                right: align === 'left' ? undefined : Math.max(4, window.innerWidth - portalRect.right),
+              }}>
+              {popupInner}
+            </div>, document.body)
+        }
+        return (
+          <div ref={popupRef}
+            className={`absolute z-50 top-full mt-1 ${align === 'left' ? 'left-0' : 'right-0'} ${popupCls}`}>
+            {popupInner}
+          </div>
+        )
+      })()}
       <style>{`
         @keyframes slide-down {
           from { opacity: 0; transform: translateY(-4px); }

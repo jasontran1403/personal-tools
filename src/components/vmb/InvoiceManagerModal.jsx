@@ -1,537 +1,628 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import toast from 'react-hot-toast'
+import { useMemo, useRef, useState } from 'react'
 import Modal from '../common/Modal'
-import Badge from '../common/Badge'
-import ConfirmModal from '../common/ConfirmModal'
 import VmbFilePreviewModal from './VmbFilePreviewModal'
-import {
-  getBooking, createInvoice, updateInvoice, deleteInvoice,
-  replaceInvoiceFile, deleteInvoiceFile,
-} from '../../services/vmbApi'
+import { createInvoice, deleteInvoice } from '../../services/vmbApi'
 
 /**
- * Quản lý hóa đơn của 1 booking.
+ * Upload hóa đơn — flow đơn giản, chỉ 2 loại: DRAFT hoặc ISSUED.
  *
- * ── 2026-09-19 refactor ─────────────────────────────────────
- * Invoice ↔ Ticket giờ là MANY-TO-MANY linh hoạt:
- *   "Chung cả booking"     → ticketIds = []       (gộp tổng các vé)
- *   "Áp cho các vé cụ thể" → ticketIds = [1,2]    (subset)
+ * ── 2026-09-20 rework — nhóm khách thông minh ─────────────────
  *
- * Cho phép:
- *   - 1 booking 4 vé = 1 hóa đơn gộp
- *   - 1 booking 4 vé = 4 hóa đơn riêng
- *   - 1 booking 4 vé = 1 hóa đơn 3 vé + 1 hóa đơn 1 vé
- *   - 1 booking 4 vé = 2 hóa đơn 2+2
- *   - 1 ticket có thể ở NHIỀU invoice cùng lúc (không exclusivity)
+ * **Panel "Hóa đơn đã có"** (top): chỉ liệt kê các invoice cùng loại
+ * với {@code kind} đang chọn (DRAFT hoặc ISSUED/ADJUSTED), kèm nút 🗑 xóa
+ * từng hóa đơn và nút "Xóa tất cả" ở header.
  *
- * User chọn scope qua CHECKBOX list vé — bỏ trống hết = "chung cả booking".
- * Có thể ĐỔI scope khi sửa hóa đơn (khác bản cũ).
+ * **Panel "Áp cho khách hàng"**: xử lý theo {@code kind}:
+ *
+ *   DRAFT mode:
+ *     - Khách nào đã có nháp → HIỂN THỊ nhóm gộp theo hóa đơn nháp đó,
+ *       DISABLED (tick sẽ báo "đã có").
+ *     - Khách chưa có nháp → mỗi khách 1 checkbox riêng.
+ *
+ *   ISSUED mode:
+ *     - Khách nào đã có ISSUED/ADJUSTED → disabled, gộp theo invoice đó.
+ *     - Khách chưa có ISSUED nhưng CÓ DRAFT chung → gộp theo draft (1 checkbox
+ *       cho cả nhóm — pax chung nháp buộc phải cùng issued).
+ *     - Khách chưa có nháp lẫn issued → mỗi khách 1 checkbox riêng.
+ *
+ * Selection state = Set<groupId> thay vì Set<ticketId> để ràng buộc "tick 1
+ * nhóm = tick cả nhóm". Khi submit, flatten thành mảng ticketIds.
+ *
+ * Với ISSUED, bản nháp trùng vé được BACKEND gộp vào hóa đơn mới (chuyển
+ * phiếu thu rồi xóa bản nháp) ngay trong createInvoice — xem
+ * BookingService.absorbOverlappingDrafts. FE không tự xóa nữa.
  */
-export default function InvoiceManagerModal({ bookingId, onClose, onDirty }) {
-  const [booking, setBooking] = useState(null)
-  const [loading, setLoading] = useState(true)
+export default function InvoiceUploadModal({ open, booking, onClose, onChanged }) {
+  const [kind, setKind] = useState('DRAFT')
+  const [selectedGroupIds, setSelectedGroupIds] = useState(() => new Set())
+  const [file, setFile] = useState(null)
+  const [note, setNote] = useState('')
+  // 2026-10-10: Số hóa đơn (bắt buộc khi upload ISSUED)
+  const [invoiceNumbers, setInvoiceNumbers] = useState('')
+  // 2026-11-16: Ngày/giờ phát hành thực tế (cho backfill data cũ). Chuỗi
+  //   datetime-local "YYYY-MM-DDTHH:mm"; để trống = BE dùng thời điểm hiện tại.
+  const [issueDate, setIssueDate] = useState('')
   const [busy, setBusy] = useState(false)
+  const [err, setErr]   = useState('')
+  // 2026-10-09: preview inline bằng ZoomablePreview thay vì mở tab mới
+  const [previewFile, setPreviewFile] = useState(null)   // { url, name }
+  const fileRef = useRef(null)
 
-  const [showForm, setShowForm] = useState(false)
-  const [editing, setEditing] = useState(null)
-  const [confirmDel, setConfirmDel] = useState(null)
-  // 2026-10-09: xem file inline (dùng ZoomablePreview trong Modal huge) thay
-  //             vì window.open tab mới.
-  const [previewFile, setPreviewFile] = useState(null)   // { url, name } hoặc null
+  // Đổi kind → reset selection (semantic khác nhau giữa 2 mode)
+  const changeKind = (k) => {
+    setKind(k)
+    setSelectedGroupIds(new Set())
+    setErr('')
+  }
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    try {
-      const res = await getBooking(bookingId)
-      const b = res.data?.data
-      if (!b) throw new Error('Không tìm thấy booking')
-      setBooking(b)
-    } catch (e) {
-      toast.error(e?.response?.data?.message || e?.message || 'Không tải được booking')
-      onClose()
-    } finally {
-      setLoading(false)
+  // ─ Hóa đơn của KIND hiện tại (để hiện panel + tính grouping) ────────
+  const currentKindInvoices = useMemo(() => {
+    const all = booking?.invoices || []
+    if (kind === 'DRAFT') return all.filter(i => i.status === 'DRAFT')
+    return all.filter(i => i.status === 'ISSUED' || i.status === 'ADJUSTED')
+  }, [booking, kind])
+
+  const draftInvoices = useMemo(
+    () => (booking?.invoices || []).filter(i => i.status === 'DRAFT'),
+    [booking]
+  )
+
+  const selectionModel = useMemo(
+    () => computeSelectionModel(booking, kind, currentKindInvoices, draftInvoices),
+    [booking, kind, currentKindInvoices, draftInvoices]
+  )
+
+  if (!open || !booking) return null
+
+  const toggleGroup = (gid) => {
+    setSelectedGroupIds(prev => {
+      const next = new Set(prev)
+      next.has(gid) ? next.delete(gid) : next.add(gid)
+      return next
+    })
+  }
+
+  const flatSelectedTicketIds = useMemo(() => {
+    const out = []
+    for (const g of selectionModel.selectableGroups) {
+      if (selectedGroupIds.has(g.id)) out.push(...g.ticketIds)
     }
-  }, [bookingId, onClose])
+    return out
+  }, [selectionModel, selectedGroupIds])
 
-  useEffect(() => { load() }, [load])
+  // ── 2026-10-13 FIX ──────────────────────────────────────────
+  // BE trả ApiResponse { success, code, message, data }. Lỗi 400/500 có
+  // code >= 400 chứ KHÔNG có field `error`. Check cũ `res.data?.error` luôn
+  // falsy → user tưởng xóa thành công nhưng BE báo lỗi và không xóa.
+  // Giờ check đúng: code >= 400 hoặc success === false → throw.
+  const unwrapOrThrow = (res, fallback) => {
+    const d = res?.data
+    if (!d) throw new Error(fallback)
+    if (d.success === false || (typeof d.code === 'number' && d.code >= 400)) {
+      throw new Error(d.message || fallback)
+    }
+    return d
+  }
 
-  const doDelete = async () => {
-    if (!confirmDel) return
+  const removeInvoice = async (invId) => {
+    if (!confirm('Xóa hóa đơn này?')) return
+    setBusy(true); setErr('')
     try {
-      await deleteInvoice(confirmDel.id)
-      toast.success('Đã xóa hóa đơn')
-      setConfirmDel(null)
-      await load()
-      onDirty?.()
+      const res = await deleteInvoice(invId)
+      unwrapOrThrow(res, 'Xóa thất bại')
+      if (onChanged) await onChanged()
     } catch (e) {
-      toast.error(e?.response?.data?.message || 'Xóa thất bại')
+      console.error('[InvoiceUpload.deleteInvoice]', e)
+      setErr(e?.response?.data?.message || e.message || 'Xóa thất bại')
+    } finally {
+      setBusy(false)
     }
   }
 
-  const invoices = booking?.invoices || []
-  const tickets  = booking?.tickets || []
+  const removeAllOfKind = async () => {
+    if (currentKindInvoices.length === 0) return
+    const label = kind === 'DRAFT' ? 'nháp' : 'đã phát hành'
+    if (!confirm(`Xóa toàn bộ ${currentKindInvoices.length} hóa đơn ${label} của booking này?`)) return
+    setBusy(true); setErr('')
+    let failCount = 0
+    try {
+      for (const inv of currentKindInvoices) {
+        try {
+          const res = await deleteInvoice(inv.id)
+          unwrapOrThrow(res, 'Xóa thất bại')
+        } catch (e) {
+          console.error('[InvoiceUpload.deleteAll] inv', inv.id, e)
+          failCount++
+        }
+      }
+      if (failCount > 0) setErr(`Xóa thất bại ${failCount}/${currentKindInvoices.length} hóa đơn. Mở DevTools xem chi tiết.`)
+      if (onChanged) await onChanged()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const submit = async () => {
+    setErr('')
+    if (flatSelectedTicketIds.length === 0) { setErr('Chọn ít nhất 1 khách hàng.'); return }
+    if (!file)                              { setErr('Chưa chọn file.'); return }
+    if (kind === 'ISSUED' && !invoiceNumbers.trim()) {
+      setErr('Hóa đơn đã phát hành bắt buộc nhập số hóa đơn.')
+      return
+    }
+    setBusy(true)
+    try {
+      const payload = { status: kind, note, ticketIds: flatSelectedTicketIds }
+      if (invoiceNumbers.trim()) payload.invoiceNumbers = invoiceNumbers.trim()
+      if (kind === 'DRAFT')  payload.draftFile  = file
+      if (kind === 'ISSUED') payload.issuedFile = file
+      // 2026-11-16: gửi kèm ngày phát hành thực tế (ms) nếu user nhập.
+      if (kind === 'ISSUED' && issueDate) {
+        const ms = new Date(issueDate).getTime()
+        if (Number.isFinite(ms)) payload.issuedDate = ms
+      }
+
+      const res = await createInvoice(booking.id, payload)
+      if (res.data?.error) throw new Error(res.data.message || 'Tạo hóa đơn thất bại')
+
+      // ── 2026-11-11: BE tự gộp bản nháp trùng vé ────────────────────────
+      //   Trước đây FE tự gọi deleteInvoice cho từng bản nháp overlap, nhưng
+      //   bản nháp nào đã có phiếu thu thì DB chặn (khóa ngoại), lỗi lại bị
+      //   nuốt bằng console.warn → booking còn 2 hóa đơn cho cùng tập vé,
+      //   tổng phải thu nhân đôi và không bao giờ đủ tiền.
+      //   Nay createInvoice ở BE chuyển phiếu thu sang hóa đơn mới rồi xóa
+      //   bản nháp trong cùng một transaction, nên FE không xóa tay nữa.
+
+      if (onChanged) onChanged()
+      onClose()
+    } catch (e) {
+      setErr(e.message || 'Tạo hóa đơn thất bại')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const currentKindLabelShort = kind === 'DRAFT' ? 'Nháp' : 'Đã phát hành'
 
   return (
-    <>
-      <Modal open onClose={busy ? undefined : onClose}
-        title={`Hóa đơn — ${booking?.bookingCode || 'booking'}`}
-        size="xl" closeOnBackdrop={!busy}>
-        {loading ? (
-          <div className="py-12 text-center text-gray-400 text-sm">Đang tải…</div>
-        ) : (
-          <>
-            <div className="mb-3 flex items-center gap-2">
-              <div className="flex-1 text-xs text-gray-600">
-                {tickets.length} vé · {invoices.length} hóa đơn
-              </div>
-              {!showForm && !editing && (
-                <button type="button"
-                  onClick={() => setShowForm(true)}
-                  className="px-3 py-1.5 rounded-md bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700">
-                  + Tạo hóa đơn mới
-                </button>
-              )}
-            </div>
-
-            {showForm && (
-              <div className="mb-4 p-3 rounded-xl bg-blue-50/40 border border-blue-200">
-                <InvoiceForm
-                  initial={null} tickets={tickets} busy={busy}
-                  onSave={async (body) => {
-                    setBusy(true)
-                    try {
-                      await createInvoice(bookingId, body)
-                      toast.success('Đã tạo hóa đơn')
-                      setShowForm(false)
-                      await load()
-                      onDirty?.()
-                    } catch (e) {
-                      toast.error(e?.response?.data?.message || 'Tạo thất bại')
-                    } finally { setBusy(false) }
-                  }}
-                  onCancel={() => setShowForm(false)}
-                />
-              </div>
-            )}
-
-            {editing && (
-              <div className="mb-4 p-3 rounded-xl bg-amber-50/40 border border-amber-200">
-                <InvoiceForm
-                  initial={editing} tickets={tickets} busy={busy}
-                  onSave={async (body) => {
-                    setBusy(true)
-                    try {
-                      await updateInvoice(editing.id, body)
-                      toast.success('Đã cập nhật')
-                      setEditing(null)
-                      await load()
-                      onDirty?.()
-                    } catch (e) {
-                      toast.error(e?.response?.data?.message || 'Cập nhật thất bại')
-                    } finally { setBusy(false) }
-                  }}
-                  onCancel={() => setEditing(null)}
-                />
-              </div>
-            )}
-
-            {invoices.length === 0 ? (
-              <div className="py-8 text-center text-sm text-gray-400">
-                Chưa có hóa đơn nào. Bấm "+ Tạo hóa đơn mới" ở trên.
-              </div>
-            ) : (
-              <div className="space-y-2">
-                {invoices.map(inv => (
-                  <InvoiceCard key={inv.id} inv={inv}
-                    ticketLookup={tickets}
-                    currentBookingId={booking?.id}
-                    onEdit={() => setEditing(inv)}
-                    onDelete={() => setConfirmDel(inv)}
-                    onPreview={(p) => setPreviewFile(p)}
-                    onFileReplace={async (slot, file) => {
-                      setBusy(true)
-                      try {
-                        await replaceInvoiceFile(inv.id, slot, file)
-                        toast.success('Đã thay file')
-                        await load(); onDirty?.()
-                      } catch (e) {
-                        toast.error(e?.response?.data?.message || 'Thay file thất bại')
-                      } finally { setBusy(false) }
-                    }}
-                    onFileDelete={async (slot, label) => {
-                      if (!window.confirm(`Xóa file "${label}"?`)) return
-                      setBusy(true)
-                      try {
-                        await deleteInvoiceFile(inv.id, slot)
-                        toast.success('Đã xóa file')
-                        await load(); onDirty?.()
-                      } catch (e) {
-                        toast.error(e?.response?.data?.message || 'Xóa file thất bại')
-                      } finally { setBusy(false) }
-                    }}
-                  />
-                ))}
-              </div>
-            )}
-          </>
-        )}
-      </Modal>
-
-      {confirmDel && (
-        <ConfirmModal
-          open title="Xóa hóa đơn"
-          message="Xóa hóa đơn này? Tất cả file đính kèm (nháp, đã PH, điều chỉnh, biên bản) cũng bị xóa."
-          confirmLabel="Xóa" danger
-          onConfirm={doDelete}
-          onCancel={() => setConfirmDel(null)}
-        />
+    <Modal open onClose={onClose}
+      title={`Upload hóa đơn — ${booking.bookingCode || '(chưa có mã)'}`}
+      size="lg">
+      {err && (
+        <div className="mb-3 p-2 rounded-md bg-rose-50 text-rose-700 text-xs border border-rose-200">
+          {err}
+        </div>
       )}
+
+      {/* ─ Chọn loại hóa đơn ──────────────────────────────────────── */}
+      <div className="mb-3">
+        <div className="text-[11px] font-semibold text-gray-600 mb-1">Loại hóa đơn</div>
+        <div className="grid grid-cols-2 gap-2">
+          <label className={`p-2.5 rounded-lg border-2 cursor-pointer text-xs transition ${
+            kind === 'DRAFT' ? 'border-amber-400 bg-amber-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+          }`}>
+            <input type="radio" name="invkind" checked={kind === 'DRAFT'}
+              onChange={() => changeKind('DRAFT')} className="mr-1.5" />
+            <b>📝 Nháp</b>
+            <div className="text-[10px] text-gray-500 mt-0.5">Chưa phát hành chính thức</div>
+          </label>
+          <label className={`p-2.5 rounded-lg border-2 cursor-pointer text-xs transition ${
+            kind === 'ISSUED' ? 'border-emerald-400 bg-emerald-50' : 'border-gray-200 bg-white hover:bg-gray-50'
+          }`}>
+            <input type="radio" name="invkind" checked={kind === 'ISSUED'}
+              onChange={() => changeKind('ISSUED')} className="mr-1.5" />
+            <b>🧾 Đã phát hành</b>
+            <div className="text-[10px] text-gray-500 mt-0.5">Cuối cùng — sẽ xóa các nháp overlap</div>
+          </label>
+        </div>
+      </div>
+
+      {/* ─ Panel hóa đơn đã có (theo kind hiện tại) ────────────────── */}
+      <ExistingInvoicesPanel
+        invoices={currentKindInvoices}
+        kindLabel={currentKindLabelShort}
+        booking={booking}
+        busy={busy}
+        onDelete={removeInvoice}
+        onDeleteAll={removeAllOfKind}
+        onPreview={setPreviewFile}
+      />
+
+      {/* ─ Áp cho khách hàng ──────────────────────────────────────── */}
+      <div className="mb-3">
+        <div className="flex items-center justify-between mb-1">
+          <div className="text-[11px] font-semibold text-gray-600">
+            Áp cho khách hàng ({flatSelectedTicketIds.length}/{booking.tickets?.length || 0})
+          </div>
+          {kind === 'ISSUED' && draftInvoices.some(d => (d.ticketIds || []).length > 1) && (
+            <div className="text-[10px] text-purple-700 font-semibold">
+              Khách chung nháp → chung phát hành
+            </div>
+          )}
+        </div>
+        <div className="p-2 rounded-lg border border-gray-200 bg-gray-50 max-h-72 overflow-y-auto space-y-1">
+          {selectionModel.claimedGroups.length === 0 && selectionModel.selectableGroups.length === 0 && (
+            <div className="text-[11px] text-gray-400 italic px-2 py-1">Booking chưa có vé nào.</div>
+          )}
+
+          {/* Nhóm đã có (disabled) */}
+          {selectionModel.claimedGroups.map(g => (
+            <ClaimedRow key={g.id} group={g} booking={booking} />
+          ))}
+
+          {/* Nhóm có thể chọn */}
+          {selectionModel.selectableGroups.length > 1 && (
+            <label className="flex items-center gap-2 text-xs p-1.5 rounded hover:bg-white cursor-pointer font-semibold border-b border-gray-200 mb-1 mt-1">
+              <input type="checkbox"
+                checked={selectionModel.selectableGroups.every(g => selectedGroupIds.has(g.id)) && selectionModel.selectableGroups.length > 0}
+                onChange={() => {
+                  if (selectionModel.selectableGroups.every(g => selectedGroupIds.has(g.id))) {
+                    setSelectedGroupIds(new Set())
+                  } else {
+                    setSelectedGroupIds(new Set(selectionModel.selectableGroups.map(g => g.id)))
+                  }
+                }} />
+              <span>Chọn tất cả</span>
+            </label>
+          )}
+          {selectionModel.selectableGroups.map(g => (
+            <SelectableRow key={g.id} group={g} booking={booking}
+              checked={selectedGroupIds.has(g.id)}
+              onToggle={() => toggleGroup(g.id)} />
+          ))}
+        </div>
+      </div>
+
+      {/* ─ File input ─────────────────────────────────────────────── */}
+      <div className="mb-3">
+        <div className="text-[11px] font-semibold text-gray-600 mb-1">File hóa đơn</div>
+        <input ref={fileRef} type="file" accept="image/*,application/pdf" className="hidden"
+          onChange={e => setFile(e.target.files?.[0] || null)} />
+        <button type="button" onClick={() => fileRef.current?.click()}
+          className="w-full px-3 py-2 rounded-md bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700">
+          {file ? `📎 ${file.name}` : '+ Chọn file'}
+        </button>
+      </div>
+
+      {/* ─ Số hóa đơn (bắt buộc khi ISSUED) ────────────────────────── */}
+      {kind === 'ISSUED' && (
+        <div className="mb-3">
+          <div className="text-[11px] font-semibold text-gray-600 mb-1">
+            Số hóa đơn <span className="text-rose-600">*</span>
+            <span className="text-[10px] text-gray-400 font-normal ml-1">
+              (nhiều số phân cách bằng dấu phẩy, VD: 142, 143, 144)
+            </span>
+          </div>
+          <input type="text" value={invoiceNumbers}
+            onChange={e => setInvoiceNumbers(e.target.value)}
+            placeholder="VD: 142 hoặc 142, 143, 144"
+            className="w-full px-2 py-1.5 rounded-md border border-gray-300 bg-white text-sm outline-none focus:border-blue-500" />
+
+          {/* 2026-11-16: Ngày phát hành thực tế — để backfill hóa đơn cũ */}
+          <div className="text-[11px] font-semibold text-gray-600 mb-1 mt-3">
+            Ngày phát hành
+            <span className="text-[10px] text-gray-400 font-normal ml-1">
+              (để trống = lấy thời điểm hiện tại; nhập đúng ngày hóa đơn cũ khi backfill)
+            </span>
+          </div>
+          <input type="datetime-local" value={issueDate}
+            onChange={e => setIssueDate(e.target.value)}
+            className="w-full px-2 py-1.5 rounded-md border border-gray-300 bg-white text-sm outline-none focus:border-blue-500" />
+        </div>
+      )}
+
+      {/* ─ Note ───────────────────────────────────────────────────── */}
+      <div className="mb-3">
+        <div className="text-[11px] font-semibold text-gray-600 mb-1">Ghi chú (tùy chọn)</div>
+        <input type="text" value={note} onChange={e => setNote(e.target.value)}
+          placeholder="VD: Xuất theo yêu cầu khách"
+          className="w-full px-2 py-1.5 rounded-md border border-gray-300 bg-white text-sm outline-none focus:border-blue-500" />
+      </div>
+
+      {/* ─ Warning cho ISSUED — nháp overlap sẽ bị xóa ────────────── */}
+      {kind === 'ISSUED' && draftInvoices.length > 0 && flatSelectedTicketIds.length > 0 && (
+        <IssuedWarning drafts={draftInvoices} selectedTicketIds={flatSelectedTicketIds} booking={booking} />
+      )}
+
+      <div className="mt-4 flex justify-end gap-2">
+        <button onClick={onClose} disabled={busy}
+          className="px-4 py-2 rounded-md bg-gray-100 hover:bg-gray-200 text-sm font-semibold disabled:opacity-40">
+          Hủy
+        </button>
+        <button onClick={submit} disabled={busy || flatSelectedTicketIds.length === 0 || !file}
+          className="px-4 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold disabled:opacity-40">
+          {busy ? 'Đang tải…' : '📥 Upload'}
+        </button>
+      </div>
 
       <VmbFilePreviewModal
         open={!!previewFile}
         onClose={() => setPreviewFile(null)}
-        filePath={relFromAbs(previewFile?.url)}
+        filePath={previewFile?.url}
         fileName={previewFile?.name}
         title={previewFile?.name}
       />
-    </>
+    </Modal>
   )
 }
 
-// FilePreviewModal yêu cầu path tương đối (vmbFileUrl sẽ ghép lại). onPreview
-// được callers truyền url ABSOLUTE (đã qua vmbFileUrl) → cắt bỏ origin về
-// path tương đối "/vmb-files/…".
-function relFromAbs(absUrl) {
-  if (!absUrl) return ''
-  const idx = absUrl.indexOf('/vmb-files/')
-  if (idx === -1) return absUrl   // đã là relative sẵn
-  return absUrl.slice(idx)
+// ══════════════════════════════════════════════════════════════
+//  SELECTION MODEL
+// ══════════════════════════════════════════════════════════════
+//
+// group.id       : string duy nhất trong 1 model
+// group.ticketIds: mảng ticket ID trong nhóm
+// group.disabled : true → panel "đã có", không tick được
+// group.reason   : nhãn hiển thị (Đã có nháp / Gộp theo nháp / …)
+
+function computeSelectionModel(booking, kind, currentKindInvoices, draftInvoices) {
+  // ── 2026-11-12 ──────────────────────────────────────────────────
+  //   Loại bỏ vé riêng của booking đã LINK sang chủ khác (vé đó sẽ do
+  //   chủ invoice). Thêm vào các vé của booking khác đã LINK sang đây
+  //   (chỉ khi b là chủ) — hiển thị cùng picker để upload chung 1 lần.
+  const ownTickets = (booking?.tickets || []).filter(t =>
+    !t.linkedBookingId || t.linkedBookingId === booking.id)
+  const foreignTickets = (booking?.linkedForeignTickets || []).map(ft => ({
+    id: ft.id,
+    passengerName: ft.passengerName,
+    ticketNumber: ft.ticketNumber,
+    _foreign: true,
+    _bookingCode: ft.bookingCode,
+  }))
+  const allTickets = [...ownTickets, ...foreignTickets]
+  const claimedPaxIds = new Set()
+
+  // Claimed = pax đã nằm trong 1 invoice cùng kind
+  const claimedGroups = currentKindInvoices
+    .filter(inv => (inv.ticketIds || []).length > 0)
+    .map(inv => {
+      const ids = inv.ticketIds || []
+      ids.forEach(id => claimedPaxIds.add(id))
+      return {
+        id: `claimed-${inv.id}`,
+        ticketIds: ids,
+        disabled: true,
+        reason: kind === 'DRAFT' ? 'Đã có nháp' : 'Đã có phát hành',
+      }
+    })
+
+  // "Chung cả booking" (empty ticketIds) → coi như đã có cho tất cả
+  for (const inv of currentKindInvoices) {
+    if ((inv.ticketIds || []).length === 0) {
+      // Tạo 1 claimedGroup ảo bao trọn booking
+      const allIds = allTickets.map(t => t.id)
+      allIds.forEach(id => claimedPaxIds.add(id))
+      claimedGroups.push({
+        id: `claimed-all-${inv.id}`,
+        ticketIds: allIds,
+        disabled: true,
+        reason: kind === 'DRAFT' ? 'Đã có nháp (chung)' : 'Đã có phát hành (chung)',
+      })
+    }
+  }
+
+  // Selectable = pax chưa claimed
+  const unclaimedTickets = allTickets.filter(t => !claimedPaxIds.has(t.id))
+
+  let selectableGroups = []
+  if (kind === 'DRAFT') {
+    // DRAFT: mỗi pax chưa claimed 1 checkbox riêng
+    selectableGroups = unclaimedTickets.map(t => ({
+      id: `single-${t.id}`,
+      ticketIds: [t.id],
+      disabled: false,
+    }))
+  } else {
+    // ISSUED: gộp theo DRAFT membership (nếu >1 pax chưa claimed trong 1 draft),
+    //         còn lại thành single group.
+    const usedInDraft = new Set()
+    for (const d of draftInvoices) {
+      const ids = (d.ticketIds || []).filter(id => !claimedPaxIds.has(id))
+      if (ids.length === 0) continue
+      selectableGroups.push({
+        id: `draft-${d.id}`,
+        ticketIds: ids,
+        disabled: false,
+        reason: 'Gộp theo nháp',
+      })
+      ids.forEach(id => usedInDraft.add(id))
+    }
+    for (const t of unclaimedTickets) {
+      if (usedInDraft.has(t.id)) continue
+      selectableGroups.push({
+        id: `single-${t.id}`,
+        ticketIds: [t.id],
+        disabled: false,
+      })
+    }
+  }
+
+  return { claimedGroups, selectableGroups }
 }
 
-// ─────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════
+//  ROWS
+// ══════════════════════════════════════════════════════════════
 
-function InvoiceCard({ inv, ticketLookup, currentBookingId, onEdit, onDelete, onPreview, onFileReplace, onFileDelete }) {
+// 2026-11-12: Lookup gộp own + linked foreign tickets
+function findTicket(booking, id) {
+  const own = (booking.tickets || []).find(t => t.id === id)
+  if (own) return own
+  const ft = (booking.linkedForeignTickets || []).find(t => t.id === id)
+  if (ft) return { ...ft, _foreign: true, _bookingCode: ft.bookingCode }
+  return null
+}
+
+function ClaimedRow({ group, booking }) {
+  const names = group.ticketIds.map(id => {
+    const t = findTicket(booking, id)
+    return t?.passengerName || `#${id}`
+  })
+  return (
+    <div className="flex items-center gap-2 text-xs p-1.5 rounded bg-white/40 border border-dashed border-gray-300 opacity-70">
+      <input type="checkbox" checked readOnly disabled className="cursor-not-allowed" />
+      <span className="flex-1 truncate text-gray-500">
+        {names.join(', ')}
+      </span>
+      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-gray-200 text-gray-600">
+        {group.reason}
+      </span>
+    </div>
+  )
+}
+
+function SelectableRow({ group, booking, checked, onToggle }) {
+  const tickets = group.ticketIds.map(id => findTicket(booking, id)).filter(Boolean)
+  const isGroup = tickets.length > 1
+  const anyForeign = tickets.some(t => t._foreign)
+  return (
+    <label className={`flex items-start gap-2 text-xs p-1.5 rounded cursor-pointer ${
+      isGroup
+        ? 'bg-purple-50 border border-purple-200 hover:bg-purple-100'
+        : anyForeign
+          ? 'bg-amber-50 border border-amber-200 hover:bg-amber-100'
+          : 'hover:bg-white'
+    }`}>
+      <input type="checkbox" checked={checked} onChange={onToggle} className="mt-0.5" />
+      <div className="flex-1 min-w-0">
+        <div className="truncate font-medium">
+          {tickets.map(t => (
+            <span key={t.id}>
+              {t.passengerName || `#${t.id}`}
+              {t._foreign && (
+                <span className="ml-1 text-[10px] text-amber-700 italic">(ké từ {t._bookingCode})</span>
+              )}
+              {' '}
+            </span>
+          ))}
+        </div>
+        {isGroup && (
+          <div className="text-[10px] text-purple-700 mt-0.5">
+            {group.reason} — {tickets.length} khách buộc phải chung
+          </div>
+        )}
+        {!isGroup && tickets[0]?.ticketNumber && (
+          <div className="text-gray-400 font-mono text-[10px]">· {tickets[0].ticketNumber}</div>
+        )}
+      </div>
+    </label>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════
+//  EXISTING INVOICES PANEL
+// ══════════════════════════════════════════════════════════════
+
+function ExistingInvoicesPanel({ invoices, kindLabel, booking, busy, onDelete, onDeleteAll, onPreview }) {
+  if (invoices.length === 0) {
+    return (
+      <div className="mb-3 p-2 rounded-md bg-gray-50 border border-gray-200 text-[11px] text-gray-500 italic">
+        Chưa có hóa đơn {kindLabel.toLowerCase()} nào cho booking này.
+      </div>
+    )
+  }
+
+  return (
+    <div className="mb-3 rounded-lg bg-blue-50/40 border border-blue-200">
+      <div className="px-3 py-2 border-b border-blue-200 flex items-center justify-between gap-2">
+        <div className="text-[11px] font-bold text-blue-900 uppercase tracking-wide">
+          Hóa đơn {kindLabel.toLowerCase()} đã có ({invoices.length})
+        </div>
+        <button type="button" onClick={onDeleteAll} disabled={busy}
+          className="text-[10px] font-semibold px-2 py-1 rounded bg-rose-100 hover:bg-rose-200 text-rose-700 disabled:opacity-40">
+          🗑 Xóa tất cả
+        </button>
+      </div>
+      <div className="p-2 space-y-1.5">
+        {invoices.map(inv => (
+          <ExistingInvoiceRow key={inv.id} inv={inv} booking={booking}
+            busy={busy} onDelete={() => onDelete(inv.id)} onPreview={onPreview} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ExistingInvoiceRow({ inv, booking, busy, onDelete, onPreview }) {
+  const ids = inv.ticketIds || []
+  const isBookingWide = ids.length === 0
+  const scopeLabel = isBookingWide
+    ? `📦 Chung cả booking · ${booking.bookingCode || `#${booking.id}`}`
+    : `🎫 ${ids.map(id => {
+        const t = (booking.tickets || []).find(t => t.id === id)
+        return t?.passengerName || `#${id}`
+      }).join(', ')}`
+
   const files = [
-    inv.draftUrl              && { slot: 'draft',      label: 'Nháp',              url: inv.draftUrl,              name: inv.draftOriginal },
-    inv.issuedUrl             && { slot: 'issued',     label: 'Đã phát hành',      url: inv.issuedUrl,             name: inv.issuedOriginal },
-    inv.adjustmentUrl         && { slot: 'adjustment', label: 'Điều chỉnh',        url: inv.adjustmentUrl,         name: inv.adjustmentOriginal },
-    inv.adjustmentRecordUrl   && { slot: 'record',     label: 'Biên bản đã ký',    url: inv.adjustmentRecordUrl,   name: inv.adjustmentRecordOriginal },
+    inv.draftUrl              && { url: inv.draftUrl,             label: '📝 Nháp',           color: 'bg-amber-100 text-amber-800 hover:bg-amber-200' },
+    inv.issuedUrl             && { url: inv.issuedUrl,            label: '🧾 Đã phát hành',    color: 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200' },
+    inv.adjustmentUrl         && { url: inv.adjustmentUrl,        label: '🛠 Điều chỉnh',      color: 'bg-purple-100 text-purple-800 hover:bg-purple-200' },
+    inv.adjustmentRecordUrl   && { url: inv.adjustmentRecordUrl,  label: '📎 Biên bản đã ký',  color: 'bg-indigo-100 text-indigo-800 hover:bg-indigo-200' },
   ].filter(Boolean)
 
-  const badge = statusBadge(inv.status)
-  // ── 2026-09-19: inv.ticketIds thay cho ticketId. Empty = chung cả booking. ──
-  const scopeIds = inv.ticketIds || []
-  const scopeTickets = scopeIds.map(id => ticketLookup.find(t => t.id === id)).filter(Boolean)
-  const isBookingWide = scopeTickets.length === 0
-
-  // ── 2026-10-16: Hóa đơn "ké" từ booking khác qua invoice group ──
-  // Khi sourceBookingId tồn tại và KHÁC currentBookingId → đây là hóa đơn mà
-  // booking này đang mượn hiển thị. Chặn edit/xóa/thay file từ phía borrower.
-  const isBorrowed = inv.sourceBookingId != null
-    && currentBookingId != null
-    && inv.sourceBookingId !== currentBookingId
-
   return (
-    <div className={`p-3 rounded-xl border ${isBorrowed ? 'bg-indigo-50/40 border-indigo-200' : 'bg-white border-gray-200'}`}>
-      <div className="flex items-center gap-2 mb-2 flex-wrap">
-        <Badge color={badge.color} dot>{badge.label}</Badge>
-        {isBookingWide ? (
-          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700">
-            📦 Chung booking
-          </span>
-        ) : (
-          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700"
-            title={`Áp cho ${scopeTickets.length} vé`}>
-            🎫 {scopeTickets.map(t => t.passengerName || `#${t.id}`).join(', ')}
-          </span>
-        )}
-        {isBorrowed && (
-          <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 ring-1 ring-amber-200"
-            title="Hóa đơn này được upload ở booking khác trong cùng nhóm">
-            🔗 Ké từ {inv.sourceBookingCode || `#${inv.sourceBookingId}`}
-          </span>
-        )}
-        {inv.note && <span className="text-xs text-gray-600 truncate">{inv.note}</span>}
-        <div className="flex-1" />
-        {!isBorrowed && (
-          <>
-            <button onClick={onEdit} className="text-xs font-semibold text-blue-600 hover:text-blue-800">Sửa</button>
-            <button onClick={onDelete} className="text-xs font-semibold text-rose-600 hover:text-rose-800">Xóa hóa đơn</button>
-          </>
-        )}
-        {isBorrowed && (
-          <span className="text-[10px] text-gray-400 italic">Chỉ sửa được ở booking gốc</span>
-        )}
+    <div className="p-2 rounded-md bg-white border border-blue-100">
+      <div className="flex items-start justify-between gap-2 flex-wrap">
+        <div className="text-xs font-semibold text-gray-800 flex-1 min-w-0 break-words">
+          {scopeLabel}
+        </div>
+        <div className="flex items-center flex-wrap gap-1">
+          {files.length === 0 ? (
+            <span className="text-[10px] italic text-gray-400 px-2 py-0.5">Chưa có file</span>
+          ) : (
+            files.map((f, i) => (
+              <button key={i} type="button"
+                onClick={() => onPreview?.({ url: f.url, name: f.name || f.label })}
+                title="Click để xem trước file"
+                className={`text-[10px] font-bold px-2 py-0.5 rounded transition ${f.color}`}>
+                {f.label}
+              </button>
+            ))
+          )}
+          <button type="button" onClick={onDelete} disabled={busy}
+            title="Xóa hóa đơn này"
+            className="text-[10px] font-bold w-6 h-6 rounded bg-rose-50 hover:bg-rose-100 text-rose-700 disabled:opacity-40 flex items-center justify-center">
+            🗑
+          </button>
+        </div>
       </div>
-      {files.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-          {files.map((f, i) => (
-            <InvoiceFileSlot key={i}
-              file={f}
-              readOnly={isBorrowed}
-              onPreview={() => onPreview({ url: fileUrl(f.url), name: f.name })}
-              onReplace={(newFile) => onFileReplace(f.slot, newFile)}
-              onDelete={() => onFileDelete(f.slot, f.label)}
-            />
-          ))}
-        </div>
+      {inv.note && (
+        <div className="text-[10px] text-gray-500 mt-1 italic">{inv.note}</div>
       )}
     </div>
   )
 }
 
-/**
- * ── 2026-10-13 rework ────────────────────────────────────────
- * Trước: 2 nút ↻ (thay) và × (xóa) nằm absolute, opacity-0 group-hover → 100%.
- * Vấn đề: trên touch devices không hover được; preview button bên dưới ăn
- * click; user không biết button tồn tại. Nay layout thành 3 phần ngang hàng:
- *   [ Preview (flex-1, click xem) ] [ ↻ ] [ × ]
- * Buttons LUÔN HIỂN THỊ, click độc lập.
- */
-function InvoiceFileSlot({ file: f, readOnly, onPreview, onReplace, onDelete }) {
-  const inputRef = useRef(null)
-  return (
-    <div className="p-2 rounded-lg border border-gray-200 bg-gray-50 hover:bg-white hover:border-blue-300 transition flex items-stretch gap-1">
-      <button type="button" onClick={onPreview}
-        title="Click để xem file"
-        className="flex-1 min-w-0 text-left px-1 py-0.5 rounded hover:bg-blue-50">
-        <div className="text-[10px] font-bold text-gray-500 uppercase mb-0.5">{f.label}</div>
-        <div className="text-xs text-gray-900 truncate">📄 {f.name || 'file'}</div>
-      </button>
-      {!readOnly && (
-        <div className="flex flex-col gap-0.5 shrink-0">
-          <button type="button" onClick={() => inputRef.current?.click()}
-            title="Thay file mới"
-            className="w-7 h-7 rounded-md bg-white text-blue-600 hover:bg-blue-100 active:bg-blue-200 flex items-center justify-center text-xs shadow-sm border border-gray-200">
-            ↻
-          </button>
-          <button type="button" onClick={onDelete}
-            title="Xóa file"
-            className="w-7 h-7 rounded-md bg-white text-rose-600 hover:bg-rose-100 active:bg-rose-200 flex items-center justify-center text-base leading-none shadow-sm border border-gray-200">
-            ×
-          </button>
-        </div>
-      )}
-      <input ref={inputRef} type="file" hidden accept="image/*,application/pdf"
-        onChange={e => {
-          const nf = e.target.files?.[0]
-          if (nf) onReplace(nf)
-          e.target.value = ''
-        }} />
-    </div>
-  )
-}
+// ══════════════════════════════════════════════════════════════
+//  WARNING BOX (ISSUED)
+// ══════════════════════════════════════════════════════════════
 
-// ─────────────────────────────────────────────────────────
-
-function InvoiceForm({ initial, tickets, onSave, onCancel, busy }) {
-  const isEdit = !!initial
-  const [status, setStatus] = useState(initial?.status || 'DRAFT')
-  const [note, setNote] = useState(initial?.note || '')
-
-  // ── 2026-09-19: many-to-many, đổi scope được cả khi sửa ──
-  // selectedIds là Set<number>. Empty set = chung cả booking.
-  const initialIds = (initial?.ticketIds && initial.ticketIds.length > 0) ? initial.ticketIds : []
-  const [selectedIds, setSelectedIds] = useState(() => new Set(initialIds))
-  const isBookingWide = selectedIds.size === 0
-
-  const toggleTicket = (tid) => {
-    setSelectedIds(prev => {
-      const next = new Set(prev)
-      next.has(tid) ? next.delete(tid) : next.add(tid)
-      return next
-    })
-  }
-  const setBookingWide = () => setSelectedIds(new Set())
-
-  const [files, setFiles] = useState({
-    draftFile: null, issuedFile: null,
-    adjustmentFile: null, adjustmentRecordFile: null,
+function IssuedWarning({ drafts, selectedTicketIds, booking }) {
+  const selectedSet = new Set(selectedTicketIds)
+  const affected = drafts.filter(inv => {
+    const ids = inv.ticketIds || []
+    if (ids.length === 0) return true
+    return ids.some(id => selectedSet.has(id))
   })
-
-  const submit = (e) => {
-    e.preventDefault()
-    const ticketIds = [...selectedIds]
-
-    // Gửi lên BE:
-    //   - Create: luôn gửi ticketIds (empty [] = chung cả booking)
-    //   - Update:
-    //       * Nếu empty và ban đầu KHÔNG empty → cần gửi clearTicketIds=true
-    //       * Nếu non-empty → gửi ticketIds
-    //       * Nếu empty và ban đầu cũng empty → không cần gửi gì
-    const payload = { status, note, ...files }
-    if (isEdit) {
-      const initiallyEmpty = !initial.ticketIds || initial.ticketIds.length === 0
-      if (ticketIds.length === 0) {
-        if (!initiallyEmpty) payload.clearTicketIds = true
-      } else {
-        payload.ticketIds = ticketIds
-      }
-    } else {
-      payload.ticketIds = ticketIds
-    }
-    onSave(payload)
-  }
-
+  if (affected.length === 0) return null
   return (
-    <form onSubmit={submit} className="space-y-3">
-      <div className="text-xs font-bold text-gray-700 uppercase">
-        {isEdit ? 'Sửa hóa đơn' : 'Tạo hóa đơn mới'}
-      </div>
-
-      <div>
-        <label className="text-[11px] font-semibold text-gray-600 mb-1 block">Phạm vi hóa đơn</label>
-
-        {/* Radio "Chung cả booking" */}
-        <label className={`p-2.5 rounded-lg border-2 cursor-pointer text-xs transition flex items-start gap-2 mb-2 ${
-          isBookingWide ? 'border-indigo-400 bg-indigo-50' : 'border-gray-200 bg-white hover:bg-gray-50'
-        }`}>
-          <input type="radio" name="scope" checked={isBookingWide}
-            onChange={setBookingWide} className="mt-0.5" />
-          <div>
-            <b>📦 Chung cả booking</b>
-            <div className="text-[10px] text-gray-500">Gộp tổng của {tickets.length} vé — không tick vé nào ở dưới</div>
-          </div>
-        </label>
-
-        {/* Radio "Áp cho các vé cụ thể" + checkbox list */}
-        <div className={`p-2.5 rounded-lg border-2 transition ${
-          !isBookingWide ? 'border-purple-400 bg-purple-50' : 'border-gray-200 bg-white'
-        }`}>
-          <label className="flex items-start gap-2 mb-2 cursor-pointer">
-            <input type="radio" name="scope" checked={!isBookingWide}
-              onChange={() => { if (isBookingWide) setSelectedIds(new Set([tickets[0]?.id].filter(Boolean))) }}
-              className="mt-0.5" />
-            <div>
-              <b>🎫 Áp cho các vé cụ thể</b>
-              <div className="text-[10px] text-gray-500">
-                Chọn 1..N vé. Có thể trùng với hóa đơn khác (1 vé có thể ở nhiều hóa đơn).
-              </div>
-            </div>
-          </label>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1 pl-6">
-            {tickets.map(t => (
-              <label key={t.id} className="flex items-center gap-2 text-xs p-1.5 rounded hover:bg-white cursor-pointer">
-                <input type="checkbox" checked={selectedIds.has(t.id)}
-                  onChange={() => toggleTicket(t.id)} />
-                <span className="flex-1 truncate">
-                  {t.passengerName || `vé #${t.id}`}
-                  {t.ticketNumber && <span className="text-gray-400 ml-1 font-mono text-[10px]">· {t.ticketNumber}</span>}
-                </span>
-              </label>
-            ))}
-          </div>
-        </div>
-
-        {isEdit && (
-          <div className="text-[10px] text-gray-500 mt-1 italic">
-            💡 Có thể đổi phạm vi khi sửa (many-to-many linh hoạt).
-          </div>
-        )}
-      </div>
-
-      <div>
-        <label className="text-[11px] font-semibold text-gray-600 mb-1 block">Trạng thái</label>
-        <div className="grid grid-cols-3 gap-2">
-          {[
-            { v: 'DRAFT',    l: 'Nháp' },
-            { v: 'ISSUED',   l: 'Đã PH' },
-            { v: 'ADJUSTED', l: 'Điều chỉnh' },
-          ].map(s => (
-            <label key={s.v} className={`p-2 rounded-md border-2 text-center text-xs cursor-pointer ${
-              status === s.v ? 'border-blue-400 bg-blue-50 font-bold' : 'border-gray-200 hover:bg-gray-50'
-            }`}>
-              <input type="radio" name="status" checked={status === s.v}
-                onChange={() => setStatus(s.v)} hidden />
-              {s.l}
-            </label>
-          ))}
-        </div>
-      </div>
-
-      <div>
-        <label className="text-[11px] font-semibold text-gray-600 mb-1 block">Ghi chú</label>
-        <input type="text" value={note}
-          onChange={e => setNote(e.target.value)}
-          placeholder="VD: Xuất theo yêu cầu khách 15/09"
-          className="input" />
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-        <FilePicker label="File nháp"
-          current={initial?.draftOriginal} value={files.draftFile}
-          onChange={f => setFiles(x => ({ ...x, draftFile: f }))} />
-        <FilePicker label="File đã phát hành"
-          current={initial?.issuedOriginal} value={files.issuedFile}
-          onChange={f => setFiles(x => ({ ...x, issuedFile: f }))} />
-        {(status === 'ADJUSTED' || initial?.adjustmentFile) && (
-          <>
-            <FilePicker label="File điều chỉnh"
-              current={initial?.adjustmentOriginal} value={files.adjustmentFile}
-              onChange={f => setFiles(x => ({ ...x, adjustmentFile: f }))} />
-            <FilePicker label="Biên bản đã ký"
-              current={initial?.adjustmentRecordOriginal} value={files.adjustmentRecordFile}
-              onChange={f => setFiles(x => ({ ...x, adjustmentRecordFile: f }))} />
-          </>
-        )}
-      </div>
-
-      <div className="flex justify-end gap-2 pt-2 border-t border-gray-100">
-        <button type="button" onClick={onCancel} disabled={busy}
-          className="px-3 py-1.5 text-xs rounded-md text-gray-600 hover:bg-gray-100 disabled:opacity-50">Hủy</button>
-        <button type="submit" disabled={busy}
-          className="px-3 py-1.5 text-xs font-semibold rounded-md bg-blue-600 text-white
-            hover:bg-blue-700 disabled:opacity-50">
-          {busy ? 'Đang lưu…' : (isEdit ? 'Lưu' : 'Tạo')}
-        </button>
-      </div>
-
-      <style>{`
-        .input {
-          width: 100%; padding: 0.5rem 0.75rem;
-          border-radius: 0.5rem;
-          border: 1px solid #d1d5db; background: #fff;
-          font-size: 0.875rem; outline: none;
-        }
-        .input:focus {
-          border-color: #3b82f6;
-          box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);
-        }
-      `}</style>
-    </form>
-  )
-}
-
-function FilePicker({ label, current, value, onChange }) {
-  const ref = useRef(null)
-  return (
-    <div>
-      <label className="text-[10px] font-semibold text-gray-500 mb-1 block uppercase">{label}</label>
-      <input ref={ref} type="file" hidden accept="image/*,application/pdf"
-        onChange={e => onChange(e.target.files?.[0] || null)} />
-      <div className="flex items-center gap-1">
-        <button type="button" onClick={() => ref.current?.click()}
-          className="flex-1 px-2 py-1.5 text-xs rounded-md bg-white border border-gray-300 hover:bg-gray-50 text-left truncate">
-          {value ? `📎 ${value.name}` : current ? `(giữ) ${current}` : '+ Chọn file'}
-        </button>
-        {value && (
-          <button type="button" onClick={() => onChange(null)}
-            className="w-6 h-6 rounded-md hover:bg-rose-100 text-rose-500 text-sm">×</button>
-        )}
-      </div>
+    <div className="mb-3 p-2 rounded-md bg-amber-50 border border-amber-300 text-[11px] text-amber-800">
+      ⚠ Sẽ xóa <b>{affected.length}</b> hóa đơn nháp overlap sau khi phát hành:
+      <ul className="mt-1 list-disc list-inside">
+        {affected.map(d => {
+          const paxLabel = (d.ticketIds && d.ticketIds.length > 0)
+            ? d.ticketIds.map(id => {
+                const t = booking.tickets?.find(t => t.id === id)
+                return t?.passengerName || `#${id}`
+              }).join(', ')
+            : 'Chung cả booking'
+          return (
+            <li key={d.id}>
+              {d.draftOriginal || `hóa đơn #${d.id}`} <span className="text-amber-600">({paxLabel})</span>
+            </li>
+          )
+        })}
+      </ul>
     </div>
   )
-}
-
-function statusBadge(s) {
-  if (s === 'ISSUED')   return { color: 'green',  label: 'Đã phát hành' }
-  if (s === 'ADJUSTED') return { color: 'purple', label: 'Điều chỉnh' }
-  return { color: 'blue', label: 'Nháp' }
-}
-
-function fileUrl(u) {
-  if (!u) return u
-  if (u.startsWith('http')) return u
-  return (import.meta.env.VITE_API_BASE || '') + u
 }

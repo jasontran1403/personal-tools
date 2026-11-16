@@ -49,15 +49,23 @@ export default function PassengerIdPickerModal({
 
   const [pick, setPick] = useState(defaultPick)
 
-  // Nếu không có giấy tờ nào
+  // ── Không có giấy tờ nào ──────────────────────────────────
+  //   2026-11-11: Trước đây chỉ có nút Hủy → không thể gán khách chưa có giấy
+  //   tờ vào vé. Khi backfill dữ liệu cũ (khách chỉ có mỗi tên) thì cần gán
+  //   được, nên thêm nút "Vẫn chọn khách này". Vé lưu passengerId bình thường,
+  //   passengerDocumentType = null (nghĩa là chưa gắn loại giấy tờ nào).
   if (!hasCccd && !hasPp) {
     return (
       <Modal open onClose={onCancel} title={`Xác nhận chọn — ${passenger?.fullName || ''}`}
         size="sm" closeOnBackdrop={false}
         footer={
-          <div className="flex justify-end">
+          <div className="flex justify-end gap-2">
             <button onClick={onCancel}
               className="px-4 py-2 text-sm rounded-lg bg-gray-200 hover:bg-gray-300">Hủy</button>
+            <button onClick={() => onConfirm({ type: null, doc: null })}
+              className="px-4 py-2 text-sm font-semibold rounded-lg bg-blue-600 text-white hover:bg-blue-700">
+              Vẫn chọn khách này
+            </button>
           </div>
         }>
         <div className="text-center py-4">
@@ -66,7 +74,8 @@ export default function PassengerIdPickerModal({
             Khách này chưa có CCCD hoặc Hộ chiếu.
           </div>
           <div className="text-xs text-gray-500 mt-1">
-            Vào trang "Thông tin khách" để bổ sung giấy tờ.
+            Vào trang "Thông tin khách" để bổ sung giấy tờ, hoặc bấm
+            <b> Vẫn chọn khách này</b> để gán vào vé mà chưa cần giấy tờ.
           </div>
         </div>
       </Modal>
@@ -145,7 +154,7 @@ export default function PassengerIdPickerModal({
           highlight={expiresTooSoon ? 'danger' : null}
         />
         {expiresTooSoon && (
-          <div className="mt-2 p-2 rounded-md bg-rose-500/10 border border-rose-400/50 text-xs text-rose-300">
+          <div className="mt-2 p-2 rounded-md bg-rose-50 border border-rose-200 text-xs text-rose-700">
             ⚠ <b>Giấy tờ hết hạn &lt; 6 tháng</b> trước ngày khởi hành chặng đầu tiên —
             vui lòng bỏ khách này khỏi vé.
           </div>
@@ -176,13 +185,19 @@ function IdChoiceButton({ label, icon, hint, onClick }) {
   )
 }
 
+/**
+ * ── 2026-11-11: màu theo LIGHT mode ──
+ *   Trước đây dùng text-slate-200 / text-rose-200 (tông sáng, vốn cho nền
+ *   tối) nên ở giao diện sáng chữ gần như chìm vào nền. Giờ dùng chữ đậm
+ *   trên nền nhạt; dark mode đã được darkmode.css remap sẵn các class này.
+ */
 function InfoRow({ label, value, mono, highlight }) {
   const cls = highlight === 'danger'
-    ? 'bg-rose-500/10 border-rose-400/40 text-rose-200'
-    : 'bg-slate-500/10 border-slate-400/20 text-slate-200'
+    ? 'bg-rose-50 border-rose-200 text-rose-700'
+    : 'bg-slate-50 border-gray-200 text-slate-800'
   return (
     <div className={`p-2 rounded-md border ${cls}`}>
-      <div className="text-[10px] font-semibold uppercase tracking-wider opacity-60">{label}</div>
+      <div className="text-[10px] font-semibold uppercase tracking-wider opacity-70">{label}</div>
       <div className={`text-sm font-semibold ${mono ? 'font-mono' : ''}`}>{value || '—'}</div>
     </div>
   )

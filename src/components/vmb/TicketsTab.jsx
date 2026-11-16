@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import toast from 'react-hot-toast'
 import ConfirmModal from '../common/ConfirmModal'
 import Modal from '../common/Modal'
@@ -14,14 +15,17 @@ import InvoicePickerModal from './InvoicePickerModal'
 import { unpaidTicketsOf, narrowBooking } from '../../lib/ticketDebt'
 import BatchPaymentModal from './BatchPaymentModal'
 import DateRangePicker from '../common/DateRangePicker'
+import MobileFabCluster, { Fab } from '../common/MobileFabCluster'
 import CompanySearchSelect, { companyOptions } from '../common/CompanySearchSelect'
-import { listBookings, deleteBooking, totalsBookings, listCompanies,
-  listInvoicePayments, deletePayment } from '../../services/vmbApi'
+import {
+  listBookings, deleteBooking, totalsBookings, listCompanies,
+  listInvoicePayments, deletePayment, ensureBookingInvoice
+} from '../../services/vmbApi'
 // 2026-11-07: dùng cho PaidReceiptsModal (xem/xoá biên nhận khi đã thanh toán)
 import ZoomablePreview from './ZoomablePreview'
 import { parseAmount, formatMoney, sumAmounts, toVnd } from '../../lib/money'
 import { primaryDeparture } from '../../lib/countdown'
-import { formatDepart } from '../../lib/airportTz'
+import { formatDepart, formatDepartFull } from '../../lib/airportTz'
 
 /**
  * ── 2026-09-15 ──────────────────────────────────────────────
@@ -41,15 +45,24 @@ import { formatDepart } from '../../lib/airportTz'
  *        Dòng trên: tên khách
  *        Dòng dưới: số vé (font mono, click được để mở face)
  */
-export default function TicketsTab() {
-  const [rows, setRows]           = useState([])
-  const [totals, setTotals]       = useState([])
-  const [loading, setLoading]     = useState(true)
+/** YYYY-MM-DD theo giờ local — khởi tạo filter mặc định (hôm nay). */
+function todayISO() {
+  const d = new Date()
+  const p = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+
+export default function TicketsTab({ onOpenInvoices, fabHidden, refreshSignal } = {}) {
+  const [rows, setRows] = useState([])
+  const [totals, setTotals] = useState([])
+  const [loading, setLoading] = useState(true)
   const [totalsLoading, setTotalsLoading] = useState(false)
 
-  const [q, setQ]                 = useState('')
-  const [fromSale, setFromSale]   = useState('')
-  const [toSale, setToSale]       = useState('')
+  const [q, setQ] = useState('')
+  // 2026-11-11: Mặc định khoảng ngày bán = HÔM NAY. User vẫn đổi được bằng
+  //   DateRangePicker; nếu xóa sạch range thì về "tất cả".
+  const [fromSale, setFromSale] = useState('')
+  const [toSale, setToSale] = useState('')
   // 2026-10-10: Filter trạng thái thanh toán. '' = tất cả, 'PAID' = đã thanh toán,
   // 'UNPAID' = chưa thanh toán (gồm cả PARTIAL).
   const [paymentStatus, setPaymentStatus] = useState('')
@@ -64,39 +77,42 @@ export default function TicketsTab() {
   // List công ty lấy từ listCompanies (dùng chung với tab Thông tin khách).
   // Filter áp dụng client-side: giữ booking nếu có ÍT NHẤT 1 vé có companyId
   // trùng; các số liệu ở card tổng sẽ tính lại từ các vé khớp filter.
-  const [companyId, setCompanyId]   = useState(null)
-  const [companies, setCompanies]   = useState([])
+  const [companyId, setCompanyId] = useState(null)
+  const [companies, setCompanies] = useState([])
   // 2026-10-28: Bỏ phân trang → gộp các trang vào CÙNG 1 danh sách (load more).
   //   - `page` = chỉ số trang CAO NHẤT đã load (0-based). Khi filter đổi reset về 0.
   //   - `rows` tích lũy content của mọi trang 0..page.
   //   - `loadingMore` cho nút "Tải thêm" (không chớp bảng).
   //   - `refresh()` fetch lại pages 0..page và GIỮ scroll (dùng sau khi sửa/xóa
   //     booking/hóa đơn/mặt vé → tránh bị kéo về top).
-  const [page, setPage]           = useState(0)
+  const [page, setPage] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
-  const [total, setTotal]         = useState(0)
+  const [total, setTotal] = useState(0)
   const [loadingMore, setLoadingMore] = useState(false)
   const desktopScrollRef = useRef(null)
-  const mobileScrollRef  = useRef(null)
+  const mobileScrollRef = useRef(null)
 
   const [selectedIds, setSelectedIds] = useState(() => new Set())
 
-  const [form, setForm]           = useState(null)
-  const [face, setFace]           = useState(null)   // { booking, ticketId }
-  const [invMgr, setInvMgr]       = useState(null)
+  const [form, setForm] = useState(null)
+  // 2026-11-12: Panel mobile — 'filter' | 'sum' | null. Gom toolbar + Σ tổng
+  //   vào modal, mở bằng FAB; desktop không dùng (toolbar/summary vẫn inline).
+  const [mobilePanel, setMobilePanel] = useState(null)
+  const [face, setFace] = useState(null)   // { booking, ticketId }
+  const [invMgr, setInvMgr] = useState(null)
   // 2026-10-12: payFor giờ chứa { booking, invoice } — invoice BẮT BUỘC.
-  const [payFor, setPayFor]       = useState(null)
+  const [payFor, setPayFor] = useState(null)
   // Picker modal khi booking có >1 invoice.
   const [invoicePicker, setInvoicePicker] = useState(null) // booking | null
   // 2026-11-07: modal xem/xoá biên nhận cho booking đã thanh toán.
   const [paidReceiptsFor, setPaidReceiptsFor] = useState(null)
-  const [batchPay, setBatchPay]   = useState(null)
-  const [noteView, setNoteView]   = useState(null)
+  const [batchPay, setBatchPay] = useState(null)
+  const [noteView, setNoteView] = useState(null)
   const [confirmDel, setConfirmDel] = useState(null)
   // ── 2026-09-19: Xuất trình + Upload ──
   const [presentation, setPresentation] = useState(null) // booking
-  const [uploadFor, setUploadFor]       = useState(null) // booking
-  const [exporting, setExporting]       = useState(false)
+  const [uploadFor, setUploadFor] = useState(null) // booking
+  const [exporting, setExporting] = useState(false)
 
   const [nowTick, setNowTick] = useState(Date.now())
   useEffect(() => {
@@ -106,9 +122,9 @@ export default function TicketsTab() {
 
   const filterParams = useMemo(() => {
     const p = {}
-    if (q)             p.q = q
-    if (fromSale)      p.fromSale = new Date(fromSale + 'T00:00:00').getTime()
-    if (toSale)        p.toSale   = new Date(toSale + 'T23:59:59').getTime()
+    if (q) p.q = q
+    if (fromSale) p.fromSale = new Date(fromSale + 'T00:00:00').getTime()
+    if (toSale) p.toSale = new Date(toSale + 'T23:59:59').getTime()
     if (paymentStatus) p.paymentStatus = paymentStatus
     return p
   }, [q, fromSale, toSale, paymentStatus])
@@ -171,7 +187,7 @@ export default function TicketsTab() {
   //   - Lưu scrollTop trước khi fetch, restore sau khi commit rows.
   const refresh = useCallback(async () => {
     const dTop = desktopScrollRef.current?.scrollTop ?? 0
-    const mTop = mobileScrollRef.current?.scrollTop  ?? 0
+    const mTop = mobileScrollRef.current?.scrollTop ?? 0
     const upTo = page
     try {
       const acc = []
@@ -198,7 +214,7 @@ export default function TicketsTab() {
       // Restore scroll — chạy ở frame tiếp theo để React commit DOM xong.
       requestAnimationFrame(() => {
         if (desktopScrollRef.current) desktopScrollRef.current.scrollTop = dTop
-        if (mobileScrollRef.current)  mobileScrollRef.current.scrollTop  = mTop
+        if (mobileScrollRef.current) mobileScrollRef.current.scrollTop = mTop
       })
     }
   }, [filterParams, page])
@@ -214,6 +230,15 @@ export default function TicketsTab() {
 
   useEffect(() => { load() }, [load])
   useEffect(() => { loadTotals() }, [loadTotals])
+
+  // 2026-11-15: Khi quay lại Vé máy bay từ Quản lý hóa đơn → nạp lại dữ liệu
+  //   (giữ scroll) để phản ánh thay đổi vừa làm bên kia. Bỏ qua lần đầu.
+  const firstRefreshRef = useRef(true)
+  useEffect(() => {
+    if (firstRefreshRef.current) { firstRefreshRef.current = false; return }
+    refresh(); loadTotals()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshSignal])
 
   // Load danh sách công ty 1 lần cho dropdown filter
   useEffect(() => {
@@ -277,23 +302,23 @@ export default function TicketsTab() {
         const baseColl = sumAmounts(t.basePrice, t.collectionFee)
         const issuanceFee = parseAmount(t.issuanceFee) || 0
         // basePrice/collection/issuance luôn vào bucket booking.currency
-        agg[cur].subTotal    += baseColl
+        agg[cur].subTotal += baseColl
         agg[cur].issuanceFee += issuanceFee
-        agg[cur].grandTotal  += baseColl + issuanceFee
+        agg[cur].grandTotal += baseColl + issuanceFee
         agg[cur].ticketCount += 1
         // Fees: cộng theo currency riêng
         const fByCur = sumFeesByCurrency(t.fees, cur)
-        agg.VND.subTotal   += fByCur.VND
+        agg.VND.subTotal += fByCur.VND
         agg.VND.grandTotal += fByCur.VND
-        agg.USD.subTotal   += fByCur.USD
+        agg.USD.subTotal += fByCur.USD
         agg.USD.grandTotal += fByCur.USD
       }
     }
     return ['VND', 'USD'].map(c => ({
       currency: c,
-      subTotal:    formatMoney(agg[c].subTotal,    c, { withUnit: false }),
+      subTotal: formatMoney(agg[c].subTotal, c, { withUnit: false }),
       issuanceFee: formatMoney(agg[c].issuanceFee, c, { withUnit: false }),
-      grandTotal:  formatMoney(agg[c].grandTotal,  c, { withUnit: false }),
+      grandTotal: formatMoney(agg[c].grandTotal, c, { withUnit: false }),
       ticketCount: agg[c].ticketCount,
     }))
   }, [companyId, filteredRows, totals])
@@ -333,7 +358,7 @@ export default function TicketsTab() {
       const allSelected = selectable.length > 0 && selectable.every(r => prev.has(r.id))
       const next = new Set(prev)
       if (allSelected) selectable.forEach(r => next.delete(r.id))
-      else             selectable.forEach(r => next.add(r.id))
+      else selectable.forEach(r => next.add(r.id))
       return next
     })
   }
@@ -362,7 +387,7 @@ export default function TicketsTab() {
   //       là hôm nay). Nếu chọn khoảng khác → không mời.
   //   G2: MỌI VÉ trong các booking đã có hóa đơn nháp bao phủ. Nếu còn vé
   //       chưa có → warning và không tải.
-  const [confirmDraftDl,   setConfirmDraftDl]   = useState(null) // { bookings, count }
+  // 2026-11-11 (rev2): Bỏ state confirmDraftDl — xem comment downloadDraftsNow.
   const [warnMissingDraft, setWarnMissingDraft] = useState(null) // { missing: [...] }
 
   // ── 2026-11-07 (rev): tách thành picker 2 option ──────────
@@ -371,33 +396,47 @@ export default function TicketsTab() {
   //       hỏi tải hóa đơn nháp như cũ. KHÔNG cần user chọn ngày trước.
   //   B — Báo cáo công nợ: mở modal chọn công ty / chi nhánh, nhập số hoá
   //       đơn, generate PDF riêng.
-  const [exportPick, setExportPick]   = useState(false)   // bool — mở picker
-  const [debtOpen, setDebtOpen]       = useState(false)   // bool — mở modal công nợ
+  const [exportPick, setExportPick] = useState(false)   // bool — mở picker
+  const [debtOpen, setDebtOpen] = useState(false)   // bool — mở modal công nợ
+  // 2026-11-11: Modal "có kèm hóa đơn nháp không?" khi xuất báo cáo nhiều ngày.
+  const [askInvoices, setAskInvoices] = useState(null)   // { bookings } | null
 
-  const handleExportTodayReport = async () => {
+  // ── 2026-11-11: Xuất báo cáo BÁN VÉ ─────────────────────────────────────
+  //   Dùng chung 1 nút: xuất các booking trong khoảng ngày UI đang chọn.
+  //   Nhánh chạy sau khi có file PDF:
+  //     • Range = đúng hôm nay → tự động tải kèm hóa đơn nháp (hành vi cũ).
+  //     • Range có nhiều ngày (hoặc một ngày không phải hôm nay) → hỏi modal
+  //       "có tải kèm hóa đơn nháp không?".
+  //   Trường hợp thiếu / không có hóa đơn nháp: toast báo, không hỏi.
+  const handleExportBookingsReport = async () => {
     setExportPick(false)
+    if (!fromSale && !toSale) {
+      return toast.error('Chọn khoảng ngày bán trước (ô ngày ở toolbar) rồi thử lại.')
+    }
     setExporting(true)
     const tid = toast.loading('Đang tải dữ liệu và tạo PDF…')
     try {
       const mod = await import('../../lib/bookingsPdfExport')
-      // Force range = hôm nay, GIỮ q + company filter còn lại.
-      const today = mod.getTodayRangeMs()
-      const todayParams = { ...filterParams, fromSale: today.fromMs, toSale: today.toMs }
-      const { bookings, fromMs, toMs } = await mod.exportBookingsReport(todayParams, {
+      const { bookings, fromMs, toMs } = await mod.exportBookingsReport(filterParams, {
         onProgress: (loaded, total) => {
           toast.loading(`Đã tải ${loaded}/${total || '?'} booking…`, { id: tid })
         },
       })
       toast.success('Đã tạo PDF', { id: tid })
-      if (!mod.isRangeWithinToday(fromMs, toMs)) return
+
       const count = mod.countDraftInvoices(bookings)
       if (count === 0) return
       const missing = mod.findTicketsMissingDraftInvoice(bookings)
-      if (missing.length > 0) {
-        setWarnMissingDraft({ missing })
-        return
+      // ── 2026-11-11 (rev2): Range = hôm nay → KHÔNG hỏi, tải thẳng ──
+      //   User đã tắt "Ask where to save each file" trong browser nên muốn
+      //   mọi hoá đơn tự về Downloads. Vẫn cảnh báo khi có vé chưa có nháp.
+      if (mod.isRangeWithinToday(fromMs, toMs)) {
+        if (missing.length > 0) { setWarnMissingDraft({ missing }); return }
+        downloadDraftsNow(bookings, count)
+      } else {
+        // Nhiều ngày / ngày khác → hỏi 2 nút.
+        setAskInvoices({ bookings, count, missing })
       }
-      setConfirmDraftDl({ bookings, count })
     } catch (e) {
       console.error('[PDF export]', e)
       toast.error(e?.message || 'Xuất PDF thất bại', { id: tid })
@@ -406,31 +445,35 @@ export default function TicketsTab() {
     }
   }
 
-  const handleDownloadDraftInvoices = async () => {
-    if (!confirmDraftDl) return
-    const { bookings, count } = confirmDraftDl
-    setConfirmDraftDl(null)
-    const tid = toast.loading(`Chuẩn bị tải ${count} hóa đơn nháp…`)
+  // 2026-11-11: Tách thành hàm dùng chung — nhánh "hôm nay" gọi thẳng không
+  //   qua modal confirm, nhánh "nhiều ngày" đi qua AskInvoicesModal → vẫn
+  //   gọi hàm này. Modal "ConfirmDraftDl" cũ bị gỡ ra khỏi JSX bên dưới.
+  const downloadDraftsNow = async (bookings, count) => {
+    const tid = toast.loading(`Chuẩn bị tải ${count} hoá đơn nháp…`)
     try {
       const mod = await import('../../lib/bookingsPdfExport')
-      const { total, done, errors } = await mod.downloadDraftInvoices(bookings, {
-        onProgress: (d, t) => toast.loading(`Đã tải ${d}/${t} hóa đơn nháp…`, { id: tid }),
+      const { total, done, errors, zipped, zipName } = await mod.downloadDraftInvoices(bookings, {
+        onProgress: (d, t) => toast.loading(`Đang tải ${d}/${t} hoá đơn nháp…`, { id: tid }),
       })
       if (done === total) {
-        toast.success(`Đã tải ${done} hóa đơn nháp`, { id: tid })
+        toast.success(
+          zipped
+            ? `Đã gộp ${done} hoá đơn vào ${zipName}`
+            : `Đã tải ${done} hoá đơn nháp`,
+          { id: tid, duration: 4000 })
       } else {
-        toast.error(`Tải ${done}/${total} hóa đơn nháp — ${errors?.length || 0} file lỗi`, { id: tid })
+        toast.error(`Tải ${done}/${total} hoá đơn nháp — ${errors?.length || 0} file lỗi`, { id: tid })
       }
     } catch (e) {
       console.error('[Draft invoice download]', e)
-      toast.error(e?.message || 'Tải hóa đơn nháp thất bại', { id: tid })
+      toast.error(e?.message || 'Tải hoá đơn nháp thất bại', { id: tid })
     }
   }
 
   // ── 2026-09-19: click Mã booking → Xuất trình modal. Upload nằm ở cột thao tác. ──
   const openBookingFace = (b) => setPresentation(b)
-  const openTicketFace  = (b, ticketId) => setFace({ booking: b, ticketId })
-  const openUpload      = (b) => setUploadFor(b)
+  const openTicketFace = (b, ticketId) => setFace({ booking: b, ticketId })
+  const openUpload = (b) => setUploadFor(b)
 
   /**
    * 2026-10-12: Thu tiền giờ ở cấp HÓA ĐƠN.
@@ -439,7 +482,7 @@ export default function TicketsTab() {
    *   - Booking có >1 invoice → mỗi hoá đơn 1 nút riêng trên bảng (2026-11-11);
  *     picker chỉ còn là fallback khi gọi openPay(b) không kèm invoice.
    */
-  const openPay = (b, invoice) => {
+  const openPay = async (b, invoice) => {
     // ── 2026-11-11: Booking tách nhiều hoá đơn → mỗi hoá đơn 1 nút riêng,
     //   bấm nút nào mở thẳng PaymentModal của hoá đơn đó (thu / xem & xoá
     //   phiếu thu). Phục vụ case công ty này trả, công ty kia còn công nợ.
@@ -457,7 +500,21 @@ export default function TicketsTab() {
     }
     const invs = b.invoices || []
     if (invs.length === 0) {
-      toast.error('Booking này chưa có hóa đơn (nháp/đã phát hành). Vui lòng tạo hóa đơn trước khi thu tiền.', { duration: 4500 })
+      // 2026-11-15: Hóa đơn nháp lấy trực tiếp từ VinVoice → mọi booking coi như
+      //   đã có hóa đơn nháp. Chưa có bản ghi Invoice thì BE tự tạo mặc định rồi
+      //   trả về để thu luôn (bỏ bắt buộc tạo/upload hóa đơn trước).
+      try {
+        const res = await ensureBookingInvoice(b.id)
+        const list = res.data?.data || []            // BE trả DANH SÁCH hoá đơn (tách link)
+        const bWithInvs = { ...b, invoices: list }
+        const unpaid = list.filter(i => i.paymentStatus !== 'PAID')
+        if (unpaid.length === 1) { setPayFor({ booking: bWithInvs, invoice: unpaid[0] }); return }
+        if (unpaid.length > 1) { setInvoicePicker(bWithInvs); return }  // nhiều phần → chọn hoá đơn
+        if (list.length > 0) { setPaidReceiptsFor(bWithInvs); return }
+        toast.error('Không tạo được hóa đơn để thu tiền.')
+      } catch (e) {
+        toast.error(e?.response?.data?.message || 'Không tạo được hóa đơn để thu tiền.')
+      }
       return
     }
     // ── 2026-11-07 (rev2): Booking đã thu đủ TOÀN BỘ hoá đơn → mở modal
@@ -480,13 +537,22 @@ export default function TicketsTab() {
     // VmbPage container đã `overflow-hidden`, tab này tự quản lý scroll để các ô
     // search/filter/nút chức năng + card tổng tiền NẰM YÊN, chỉ các dòng cuộn.
     <div className="w-full h-full flex flex-col">
-      <div className="shrink-0 flex flex-col lg:flex-row gap-2 mb-3">
+      {/* 2026-11-12: Toolbar — chỉ hiện trên desktop (lg+). Trên mobile các control
+          này dồn vào modal mở bằng FAB 🔍 ở góc phải dưới. */}
+      <div className="shrink-0 hidden lg:flex lg:flex-row gap-2 mb-3">
         <input
           defaultValue={q}
           onChange={e => onSearch(e.target.value)}
           placeholder="Tìm theo mã booking, số vé, tên khách, hành trình, số hóa đơn…"
           className="flex-1 min-w-0 px-3.5 py-2 rounded-lg border border-gray-300 bg-white text-sm
             focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none" />
+        <button type="button" onClick={onOpenInvoices}
+          title="Quản lý hóa đơn"
+          className="px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white
+            text-sm font-semibold shadow-md shadow-indigo-500/20 shrink-0 whitespace-nowrap
+            flex items-center gap-1.5">
+          🧾 Hóa đơn
+        </button>
 
         {/* 2026-10-09: Filter theo công ty — mặc định "Tất cả" (null) */}
         <div className="w-full lg:w-64 shrink-0">
@@ -496,6 +562,7 @@ export default function TicketsTab() {
             onChange={(id) => setCompanyId(id)}
             placeholder="— Tất cả công ty —"
             noneLabel="— Tất cả công ty —"
+            allowNone={true}
           />
         </div>
 
@@ -518,9 +585,9 @@ export default function TicketsTab() {
           const CYCLE = ['', 'UNPAID', 'PAID']
           const LABEL = { '': 'Tất cả', UNPAID: 'Chưa thanh toán', PAID: 'Đã thanh toán' }
           const STYLE = {
-            '':       'bg-gray-100 text-gray-700 border-gray-300',
-            UNPAID:   'bg-rose-500 text-white border-rose-500 shadow-sm',
-            PAID:     'bg-emerald-500 text-white border-emerald-500 shadow-sm',
+            '': 'bg-gray-100 text-gray-700 border-gray-300',
+            UNPAID: 'bg-rose-500 text-white border-rose-500 shadow-sm',
+            PAID: 'bg-emerald-500 text-white border-emerald-500 shadow-sm',
           }
           const next = () => {
             const i = CYCLE.indexOf(paymentStatus)
@@ -541,11 +608,10 @@ export default function TicketsTab() {
         <button type="button"
           onClick={() => setSortMode(m => m === 'nearestDeparture' ? 'default' : 'nearestDeparture')}
           title="Sắp xếp booking theo thời gian bay gần nhất (chặng chưa qua)"
-          className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 border ${
-            sortMode === 'nearestDeparture'
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 border ${sortMode === 'nearestDeparture'
               ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
               : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
-          }`}>
+            }`}>
           ⏱ Bay gần nhất {sortMode === 'nearestDeparture' ? '•' : ''}
         </button>
 
@@ -567,7 +633,10 @@ export default function TicketsTab() {
         </button>
       </div>
 
-      {selectedIds.size > 0 && (
+      {/* 2026-11-15: portal ra document.body — bar nằm trong slider có transform
+          (swipe Vé máy bay ⟷ Hóa đơn) nên position:fixed bị neo theo slider,
+          lệch sang phải/ẩn. Portal ra body để fixed neo theo viewport. */}
+      {selectedIds.size > 0 && createPortal(
         <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40
                         p-3 rounded-xl bg-amber-50 border border-amber-300 shadow-lg
                         flex items-center gap-3 flex-wrap min-w-[320px]">
@@ -583,10 +652,12 @@ export default function TicketsTab() {
             className="px-2 py-1.5 rounded-md text-xs text-gray-600 hover:bg-white/60">
             Bỏ chọn
           </button>
-        </div>
+        </div>,
+        document.body
       )}
 
-      <div className="shrink-0">
+      {/* 2026-11-12: Σ Tổng — desktop hiện inline; mobile mở bằng FAB Σ. */}
+      <div className="hidden lg:block shrink-0">
         <BookingTotalsCard totals={displayTotals} loading={totalsLoading && companyId == null} />
       </div>
 
@@ -594,13 +665,24 @@ export default function TicketsTab() {
       <div className="hidden lg:flex flex-1 min-h-0 bg-white rounded-2xl shadow border border-gray-100 overflow-hidden flex-col">
         <div ref={desktopScrollRef} onScroll={onScrollLoadMore} className="flex-1 overflow-auto">
           <table className="w-full text-xs border-collapse table-fixed">
+            {/* 2026-11-11: không chèn comment JSX {/_ ... _/} giữa các <col/>
+                nữa — comment inline sinh ra whitespace text node giữa
+                <colgroup> và <col/>, React bật warning validateDOMNesting.
+                Các độ rộng theo thứ tự cột bên dưới:
+                  0  checkbox
+                  1  Loại/Hãng
+                  2  Công ty
+                  3  Khách hàng (name + số vé)
+                  4  Booking
+                  5  Hành trình
+                  6..14 các cột tiền + thao tác */}
             <colgroup>
               <col style={{ width: 32 }} />
-              <col style={{ width: 130 }} />  {/* Loại/Hãng */}
-              <col style={{ width: 130 }} />  {/* Công ty — tăng từ 80 → 130 */}
-              <col style={{ width: 210 }} />  {/* Khách hàng (name + số vé) */}
-              <col style={{ width: 100 }} />  {/* Booking */}
-              <col style={{ width: 130 }} />  {/* Hành trình */}
+              <col style={{ width: 130 }} />
+              <col style={{ width: 130 }} />
+              <col style={{ width: 210 }} />
+              <col style={{ width: 100 }} />
+              <col style={{ width: 130 }} />
               <col style={{ width: 110 }} />
               <col style={{ width: 110 }} />
               <col style={{ width: 100 }} />
@@ -706,6 +788,78 @@ export default function TicketsTab() {
         />
       </div>
 
+      {/* 2026-11-12: FAB mobile — kéo được, gom filter + thêm vé + Σ tổng */}
+      <MobileFabCluster storageKey="vmbTicketsFab" hidden={fabHidden}>
+        <Fab tone="filter" title="Bộ lọc & tìm kiếm" onClick={() => setMobilePanel('filter')}>🔍</Fab>
+        <Fab tone="add" title="Thêm booking" onClick={() => setForm({ mode: 'create' })}>＋</Fab>
+        <Fab tone="filter" title="Quản lý hóa đơn" onClick={onOpenInvoices}>🧾</Fab>
+        <Fab tone="sum" title="Σ Tổng" onClick={() => setMobilePanel('sum')}>Σ</Fab>
+      </MobileFabCluster>
+
+      {mobilePanel === 'filter' && (
+        <Modal open onClose={() => setMobilePanel(null)} title="Bộ lọc & tìm kiếm" size="md">
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Tìm kiếm</label>
+              <input defaultValue={q} onChange={e => onSearch(e.target.value)}
+                placeholder="Mã booking, số vé, tên khách, hành trình, số hóa đơn…"
+                className="w-full px-3.5 py-2 rounded-lg border border-gray-300 bg-white text-sm
+                  focus:border-blue-500 focus:ring-2 focus:ring-blue-200 outline-none" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Công ty</label>
+              <CompanySearchSelect value={companyId} options={flatCompanies}
+                onChange={(id) => setCompanyId(id)} placeholder="— Tất cả công ty —"
+                noneLabel="— Tất cả công ty —" allowNone={true} portal />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Khoảng ngày bán</label>
+              <DateRangePicker value={{ from: fromSale, to: toSale }}
+                onChange={({ from, to }) => { setFromSale(from); setToSale(to) }}
+                placeholder="Chọn khoảng ngày bán" align="left" portal />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Trạng thái thanh toán</label>
+              <div className="flex gap-2">
+                {[['', 'Tất cả'], ['UNPAID', 'Chưa TT'], ['PAID', 'Đã TT']].map(([v, l]) => (
+                  <button key={v} type="button" onClick={() => setPaymentStatus(v)}
+                    className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border transition ${paymentStatus === v
+                        ? (v === 'UNPAID' ? 'bg-rose-500 text-white border-rose-500'
+                          : v === 'PAID' ? 'bg-emerald-500 text-white border-emerald-500'
+                            : 'bg-gray-700 text-white border-gray-700')
+                        : 'bg-white text-gray-600 border-gray-300'}`}>
+                    {l}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Sắp xếp theo chuyến bay</label>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setSortMode('default')}
+                  className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border ${sortMode !== 'nearestDeparture' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300'}`}>
+                  Mặc định
+                </button>
+                <button type="button" onClick={() => setSortMode('nearestDeparture')}
+                  className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border ${sortMode === 'nearestDeparture' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-600 border-gray-300'}`}>
+                  ⏱ Bay gần nhất
+                </button>
+              </div>
+            </div>
+            <button type="button" onClick={() => { setMobilePanel(null); setExportPick(true) }} disabled={exporting}
+              className="w-full px-3 py-3 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold disabled:opacity-50">
+              {exporting ? '⏳ Đang xuất…' : '📄 Xuất PDF'}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {mobilePanel === 'sum' && (
+        <Modal open onClose={() => setMobilePanel(null)} title="Σ Tổng" size="md">
+          <BookingTotalsCard totals={displayTotals} loading={totalsLoading && companyId == null} />
+        </Modal>
+      )}
+
       {/* Modals */}
       {form && (
         <BookingFormModal
@@ -782,8 +936,29 @@ export default function TicketsTab() {
       {exportPick && (
         <ExportPickerModal
           onClose={() => setExportPick(false)}
-          onPickToday={handleExportTodayReport}
+          fromSale={fromSale}
+          toSale={toSale}
+          onPickReport={handleExportBookingsReport}
           onPickDebt={() => { setExportPick(false); setDebtOpen(true) }}
+        />
+      )}
+      {/* 2026-11-11: Hỏi "Có kèm hóa đơn nháp?" cho range nhiều ngày. */}
+      {askInvoices && (
+        <AskInvoicesModal
+          bookings={askInvoices.bookings}
+          count={askInvoices.count}
+          missing={askInvoices.missing}
+          onClose={() => setAskInvoices(null)}
+          onYes={() => {
+            const data = askInvoices
+            setAskInvoices(null)
+            // 2026-11-11 (rev2): user đã bấm "Tải kèm" rồi — không hỏi lần 2.
+            if (data.missing.length > 0) {
+              setWarnMissingDraft({ missing: data.missing })
+            } else {
+              downloadDraftsNow(data.bookings, data.count)
+            }
+          }}
         />
       )}
       {/* ── 2026-11-07: Modal báo cáo công nợ ── */}
@@ -833,17 +1008,9 @@ export default function TicketsTab() {
           </div>
         </Modal>
       )}
-      {confirmDraftDl && (
-        <ConfirmModal
-          open
-          title="Tải hóa đơn nháp?"
-          message={`Có ${confirmDraftDl.count} hóa đơn nháp trong các booking vừa xuất báo cáo. Tải tất cả?`}
-          confirmLabel="Tải tất cả"
-          cancelLabel="Bỏ qua"
-          onConfirm={handleDownloadDraftInvoices}
-          onCancel={() => setConfirmDraftDl(null)}
-        />
-      )}
+      {/* 2026-11-11 (rev2): Bỏ ConfirmModal trung gian — nhánh hôm nay tải
+          thẳng (tắt "Ask where to save" ở browser → auto về Downloads),
+          nhánh nhiều ngày đi qua AskInvoicesModal đã hỏi rồi. */}
       {confirmDel && (
         <ConfirmModal
           open title="Xóa booking"
@@ -1007,15 +1174,29 @@ function renderBookingRows(b, bIdx, {
   const N = b.tickets?.length || 1
   const primary = primaryDeparture(b.segments, nowTick)
   const badgeCls =
-      primary?.band === 'warn' ? 'bg-amber-500 text-white'
-    : primary?.band === 'future' ? 'bg-blue-600 text-white'
-    : ''
+    primary?.band === 'warn' ? 'bg-amber-500 text-white'
+      : primary?.band === 'future' ? 'bg-blue-600 text-white'
+        : ''
 
   // Sắp xếp tickets theo company (giữ order xuất hiện đầu tiên)
   const { sortedTickets, groups } = groupTicketsByCompany(b.tickets || [])
   // Map: sortedIdx → group info (chỉ render company cell ở dòng đầu của group)
   const groupStartAt = new Map()
   for (const g of groups) groupStartAt.set(g.firstIdxInSorted, g)
+
+  // ── 2026-11-12: Link trực tiếp cấp VÉ (ticket.linkedBookingId). ──
+  //   Map ticketId → ownerCode (chủ) nếu vé đó đang link.
+  const ticketLinkMap = new Map()
+  for (const t of (b.tickets || [])) {
+    if (t.linkedBookingId && t.linkedBookingCode) {
+      ticketLinkMap.set(t.id, t.linkedBookingCode)
+    }
+  }
+  // "Toàn booking link" = mọi vé đều link, cùng 1 chủ.
+  const allLinked = (b.tickets || []).length > 0
+    && (b.tickets || []).every(t => ticketLinkMap.has(t.id))
+    && new Set([...ticketLinkMap.values()]).size === 1
+  const bookingLevelLinkCode = allLinked ? [...ticketLinkMap.values()][0] : null
 
   return sortedTickets.map((t, tIdx) => {
     // ── 2026-10-09: BỎ tint theo currency ──
@@ -1024,24 +1205,24 @@ function renderBookingRows(b, bIdx, {
     //   liền nhau. Giờ tất cả cùng nền trắng; chỉ selected mới đổi màu.
     const rowBg = isSelected ? 'bg-amber-50/60' : 'bg-white'
     const firstRow = tIdx === 0
-    const lastRow  = tIdx === N - 1
+    const lastRow = tIdx === N - 1
     const cardBorder = `${firstRow ? 'border-t-2 border-t-gray-100' : ''} ${lastRow ? 'border-b-4 border-b-gray-100' : ''}`
     // 2026-11-07: HNH fee luôn VND, cộng vào basePrice (giá bán) khi currency = VND.
     //   Nếu booking USD, FE skip (BE sẽ quy đổi chính xác hơn).
-    const withHnh        = (b.currency === 'VND' || !b.currency)
+    const withHnh = (b.currency === 'VND' || !b.currency)
       ? sumAmounts(t.basePrice, t.hnhFee)
       : t.basePrice
     const withCollection = sumAmounts(withHnh, t.collectionFee)
     // 2026-10-12: fees quy về booking.currency để cộng cùng basePrice/collection.
-    const feesTotal      = sumTicketFees(t.fees, b.currency, b.exchangeRate)
-    const subTotal       = sumAmounts(withCollection, feesTotal)
-    const sellPrice      = sumAmounts(subTotal, t.issuanceFee)
+    const feesTotal = sumTicketFees(t.fees, b.currency, b.exchangeRate)
+    const subTotal = sumAmounts(withCollection, feesTotal)
+    const sellPrice = sumAmounts(subTotal, t.issuanceFee)
     const hasFace = faceStatus(b, t.id)
     const groupInfo = groupStartAt.get(tIdx)
 
     return (
       <tr key={t.id}
-          className={`${rowBg} ${cardBorder} hover:bg-blue-50/40 transition-colors align-middle`}>
+        className={`${rowBg} ${cardBorder} hover:bg-blue-50/40 transition-colors align-middle`}>
         {firstRow && (
           <td className="px-2 py-2 text-center align-middle" rowSpan={N}>
             {/* 2026-10-10: Booking đã PAID không được chọn để thu batch. */}
@@ -1074,7 +1255,7 @@ function renderBookingRows(b, bIdx, {
         {/* Công ty — chỉ render ở dòng đầu group, rowspan = group size */}
         {groupInfo && (
           <td className="px-2 py-2 align-middle border-l border-gray-100"
-              rowSpan={groupInfo.size}>
+            rowSpan={groupInfo.size}>
             <CompanyLabel short={t.companyShortName} full={t.companyName} />
             <InvoiceNumbersForGroup booking={b} ticketIds={groupInfo.ticketIds || sortedTickets.slice(tIdx, tIdx + groupInfo.size).map(x => x.id)} />
           </td>
@@ -1085,7 +1266,10 @@ function renderBookingRows(b, bIdx, {
           <div className="font-medium text-gray-900 truncate leading-tight">
             {t.passengerName || '—'}
           </div>
-          {/* ── 2026-10-10: click-to-copy — "{route} - {ticketNumber}{kindSuffix}" ── */}
+          {/* ── 2026-10-10: click-to-copy — "{route} - {ticketNumber}{kindSuffix}" ──
+              2026-11-12: Nếu vé này được ké hóa đơn ở booking chủ (mixed trong
+              booking), hiển thị "(link <chủ>)" ngay sau số vé. Nếu không có số
+              vé thì chỉ hiển thị "(link <chủ>)" ở chỗ số vé luôn. */}
           <button type="button"
             onClick={() => {
               if (!t.ticketNumber) return
@@ -1101,6 +1285,12 @@ function renderBookingRows(b, bIdx, {
             className="font-mono text-[10px] text-gray-500 truncate leading-tight mt-0.5 block text-left w-full hover:text-blue-700 hover:underline cursor-copy disabled:cursor-default disabled:hover:no-underline">
             {t.ticketNumber || ''}
             {hasFace && t.ticketNumber && <span className="ml-1 text-emerald-600">📎</span>}
+            {!bookingLevelLinkCode && ticketLinkMap.has(t.id) && (
+              <span className="ml-1 text-amber-400 italic no-underline"
+                title={`Hóa đơn của vé này đã chuyển sang booking ${ticketLinkMap.get(t.id)}`}>
+                {t.ticketNumber ? '(' : ''}link {ticketLinkMap.get(t.id)}{t.ticketNumber ? ')' : ''}
+              </span>
+            )}
           </button>
         </td>
 
@@ -1123,17 +1313,20 @@ function renderBookingRows(b, bIdx, {
               {b.bookingCode || '—'}
               {b.sharedTicketFace && b.bookingFace && <span className="ml-1 text-emerald-600">📎</span>}
             </button>
-            {/* ── 2026-10-16: Hiển thị trạng thái invoice group ── */}
-            {b.invoiceGroupId != null && (
-              b.isInvoiceGroupOwner ? (
-                <div className="mt-0.5 font-mono text-[10px] italic text-indigo-400" title="Booking chủ — các booking khác link booking này để share hóa đơn">
-                  Booking chủ
-                </div>
-              ) : b.ownerBookingCode ? (
-                <div className="mt-0.5 font-mono text-[10px] italic text-amber-400" title={`Link ${b.ownerBookingCode} — share hóa đơn với booking chủ`}>
-                  Link {b.ownerBookingCode}
-                </div>
-              ) : null
+            {/* ── 2026-10-16 + 2026-11-12 Hiển thị trạng thái invoice group ──
+                · Booking chủ   → luôn hiện (dù chỉ 1 member)
+                · Booking phụ   → chỉ hiện ở cột booking khi MỌI vé đều đã link
+                                   sang cùng 1 chủ. Trường hợp mixed → hiện per-ticket
+                                   ở cột khách hàng (xem bên dưới). */}
+            {b.isInvoiceGroupOwner && (
+              <div className="mt-0.5 font-mono text-[10px] italic text-indigo-400" title="Booking chủ — các booking khác link vào đây">
+                Booking chủ
+              </div>
+            )}
+            {!b.isInvoiceGroupOwner && bookingLevelLinkCode && (
+              <div className="mt-0.5 font-mono text-[10px] italic text-amber-400" title={`Link ${bookingLevelLinkCode} — mọi hóa đơn đã chuyển sang booking chủ`}>
+                Link {bookingLevelLinkCode}
+              </div>
             )}
           </td>
         )}
@@ -1197,7 +1390,7 @@ function renderBookingRows(b, bIdx, {
 
         {firstRow && (
           <td className="px-2 py-2 text-right align-middle border-l border-r border-gray-200"
-              rowSpan={N}>
+            rowSpan={N}>
             <div className="font-mono tabular-nums text-sm font-bold text-blue-700">
               {formatMoney(bookingTotal, b.currency)}
             </div>
@@ -1246,8 +1439,8 @@ function renderBookingRows(b, bIdx, {
                   className="w-7 h-7 rounded-md bg-blue-50 hover:bg-blue-100 text-blue-700 flex items-center justify-center">
                   {/* 👁 — xem/trình bày ra ngoài, phân biệt rõ với upload */}
                   <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                    <circle cx="12" cy="12" r="3" />
                   </svg>
                 </button>
                 <button type="button" onClick={() => onUpload(b)}
@@ -1255,9 +1448,9 @@ function renderBookingRows(b, bIdx, {
                   className="w-7 h-7 rounded-md bg-emerald-50 hover:bg-emerald-100 text-emerald-700 flex items-center justify-center">
                   {/* ⬆ cloud-upload — khác hẳn con mắt ở trên */}
                   <svg viewBox="0 0 24 24" className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="17 8 12 3 7 8"/>
-                    <line x1="12" y1="3" x2="12" y2="15"/>
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                    <polyline points="17 8 12 3 7 8" />
+                    <line x1="12" y1="3" x2="12" y2="15" />
                   </svg>
                 </button>
                 <button type="button" onClick={onEdit}
@@ -1313,14 +1506,14 @@ function PaymentCell({ booking, bookingTotal, onPay }) {
   //   - còn lại → bám theo stRaw của BE.
   let st
   if (bookingTotal <= 0.5) st = 'PAID'
-  else if (remain <= 0.5)  st = 'PAID'
-  else                     st = stRaw
+  else if (remain <= 0.5) st = 'PAID'
+  else st = stRaw
 
   const paidStr = formatMoney(paid, booking.currency, { withUnit: false })
   const badge =
-      st === 'PAID'    ? { cls: 'bg-green-100 text-green-700', label: 'Đã thanh toán' }
-    : st === 'PARTIAL' ? { cls: 'bg-amber-100 text-amber-700', label: `Đã thu: ${paidStr}` }
-    :                    { cls: 'bg-rose-100 text-rose-700',   label: 'Chưa thanh toán' }
+    st === 'PAID' ? { cls: 'bg-green-100 text-green-700', label: 'Đã thanh toán' }
+      : st === 'PARTIAL' ? { cls: 'bg-amber-100 text-amber-700', label: `Đã thu: ${paidStr}` }
+        : { cls: 'bg-rose-100 text-rose-700', label: 'Chưa thanh toán' }
 
   return (
     <button type="button" onClick={() => onPay(booking)}
@@ -1398,19 +1591,19 @@ function InvoicePayButtons({ booking, onPay }) {
   return (
     <div className="flex flex-col gap-1 w-full">
       {invs.map((inv, i) => {
-        const total  = parseAmount(inv.grandTotal) || 0
-        const paid   = parseAmount(inv.paidAmount) || 0
+        const total = parseAmount(inv.grandTotal) || 0
+        const paid = parseAmount(inv.paidAmount) || 0
         const remain = Math.max(0, total - paid)
         const st = (total <= 0.5 || remain <= 0.5) ? 'PAID' : (inv.paymentStatus || 'UNPAID')
         const cls =
-            st === 'PAID'    ? 'bg-green-100 text-green-700'
-          : st === 'PARTIAL' ? 'bg-amber-100 text-amber-700'
-          :                    'bg-rose-100 text-rose-700'
+          st === 'PAID' ? 'bg-green-100 text-green-700'
+            : st === 'PARTIAL' ? 'bg-amber-100 text-amber-700'
+              : 'bg-rose-100 text-rose-700'
         const money = (v) => formatMoney(v, booking.currency, { withUnit: false })
         const line =
-            st === 'PAID'    ? 'Đã thanh toán'
-          : st === 'PARTIAL' ? `Còn ${money(remain)}`
-          :                    `Chưa thu ${money(total)}`
+          st === 'PAID' ? 'Đã thanh toán'
+            : st === 'PARTIAL' ? `Còn ${money(remain)}`
+              : `Chưa thu ${money(total)}`
         return (
           <button key={inv.id} type="button"
             onClick={() => onPay(booking, inv)}
@@ -1456,10 +1649,10 @@ async function copyMoneyAsClipboard(numericValue, currency, exchangeRate, rawCop
 function TdMoney({ value, currency, exchangeRate, bold, muted }) {
   const n = typeof value === 'number' ? value : parseAmount(value)
   const cls =
-      !Number.isFinite(n) ? 'text-gray-300'
-    : muted ? 'text-gray-500'
-    : bold  ? 'text-gray-900 font-semibold'
-    : 'text-gray-700'
+    !Number.isFinite(n) ? 'text-gray-300'
+      : muted ? 'text-gray-500'
+        : bold ? 'text-gray-900 font-semibold'
+          : 'text-gray-700'
   const isClickable = Number.isFinite(n) && n !== 0
   return (
     <td className="px-2 py-2 text-left font-mono tabular-nums align-middle">
@@ -1478,9 +1671,9 @@ function TdMoneyPair({ value1, value2, currency, exchangeRate, bold1, value2Over
   const n1 = typeof value1 === 'number' ? value1 : parseAmount(value1)
   const n2 = typeof value2 === 'number' ? value2 : parseAmount(value2)
   const cls1 =
-      !Number.isFinite(n1) ? 'text-gray-300'
-    : bold1 ? 'text-gray-900 font-semibold'
-    : 'text-gray-700'
+    !Number.isFinite(n1) ? 'text-gray-300'
+      : bold1 ? 'text-gray-900 font-semibold'
+        : 'text-gray-700'
   const clickable1 = Number.isFinite(n1) && n1 !== 0
   const clickable2 = Number.isFinite(n2) && n2 !== 0
   // 2026-10-10: Nếu có override (vé đầu tiên) → click vào collection fee copy tổng
@@ -1501,8 +1694,8 @@ function TdMoneyPair({ value1, value2, currency, exchangeRate, bold1, value2Over
         disabled={!clickable2}
         title={clickable2
           ? (hasSumOverride
-              ? `Click để copy TỔNG phí thu hộ cả booking: ${formatMoney(value2OverrideSum, currency, { withUnit: false })}`
-              : (currency === 'USD' ? 'Click để copy (quy đổi VND)' : 'Click để copy'))
+            ? `Click để copy TỔNG phí thu hộ cả booking: ${formatMoney(value2OverrideSum, currency, { withUnit: false })}`
+            : (currency === 'USD' ? 'Click để copy (quy đổi VND)' : 'Click để copy'))
           : undefined}
         className={`text-[10px] text-left block ${hasSumOverride ? 'text-blue-600 font-semibold' : 'text-gray-400'} ${clickable2 ? 'hover:bg-blue-50 hover:text-blue-700 rounded px-1 -mx-1 cursor-copy' : ''}`}>
         {Number.isFinite(n2) && n2 !== 0 ? formatMoney(n2, currency, { withUnit: false }) : '—'}
@@ -1599,9 +1792,8 @@ function TdInvoiceAndFees({ withCollection, fees, currency, exchangeRate, segmen
                   title={canCopy
                     ? (feeCur === 'USD' ? 'Click để copy (quy đổi VND)' : 'Click để copy')
                     : undefined}
-                  className={`font-mono tabular-nums text-left block w-full ${
-                    feeCur !== currency ? 'text-amber-700 font-semibold' : 'text-gray-700'
-                  } ${canCopy ? 'hover:bg-blue-50 hover:text-blue-700 rounded px-1 -mx-1 cursor-copy' : ''}`}>
+                  className={`font-mono tabular-nums text-left block w-full ${feeCur !== currency ? 'text-amber-700 font-semibold' : 'text-gray-700'
+                    } ${canCopy ? 'hover:bg-blue-50 hover:text-blue-700 rounded px-1 -mx-1 cursor-copy' : ''}`}>
                   {formatMoney(amt, feeCur, { withUnit: false })}
                   {feeCur !== currency && (
                     <span className="ml-0.5 text-[9px] opacity-70">{feeCur}</span>
@@ -1620,89 +1812,157 @@ function TdInvoiceAndFees({ withCollection, fees, currency, exchangeRate, segmen
 //  RENDER — MOBILE CARD
 // ═══════════════════════════════════════════════════════════════
 
+/**
+ * 2026-11-12: 1 dòng hoá đơn trong card vé (mobile).
+ *   - "Hoá đơn N" + tag Nháp/PH + tên các khách trong hoá đơn.
+ *   - Nếu hoá đơn gộp vé của booking khác (link group) → chỉ note
+ *     "Hoá đơn gộp với booking <code>", KHÔNG hiện số tiền chưa thu.
+ *   - Bấm vào dòng → mở modal thanh toán hoá đơn đó.
+ */
+function MobileInvoiceLine({ booking, inv, index, onPay }) {
+  const byId = new Map((booking.tickets || []).map(t => [t.id, t]))
+  const previews = (inv.ticketPreviews && inv.ticketPreviews.length) ? inv.ticketPreviews : null
+
+  // Booking khác mà hoá đơn này gộp vào (link group).
+  const otherBks = new Set()
+  if (previews) previews.forEach(p => {
+    if (p.bookingId && p.bookingId !== booking.id && p.bookingCode) otherBks.add(p.bookingCode)
+  })
+  if (inv.sourceBookingId && inv.sourceBookingId !== booking.id && inv.sourceBookingCode) {
+    otherBks.add(inv.sourceBookingCode)
+  }
+  const isGroup = otherBks.size > 0
+
+  // Tên khách của booking HIỆN TẠI trong hoá đơn.
+  let names
+  if (previews) {
+    names = previews.filter(p => !p.bookingId || p.bookingId === booking.id)
+      .map(p => p.passengerName).filter(Boolean)
+  } else if ((inv.ticketIds || []).length > 0) {
+    names = inv.ticketIds.map(id => byId.get(id)?.passengerName).filter(Boolean)
+  } else {
+    names = (booking.tickets || []).map(t => t.passengerName).filter(Boolean) // chung cả booking
+  }
+
+  const issued = inv.status === 'ISSUED' || inv.status === 'ADJUSTED'
+  const tagCls = issued ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'
+  const tagTxt = issued ? (inv.invoiceNumbers ? `PH #${inv.invoiceNumbers}` : 'Đã PH') : 'Nháp'
+
+  return (
+    <button type="button" onClick={() => onPay(booking, inv)}
+      className="w-full text-left text-[11px] flex items-start gap-1.5 hover:bg-black/5 rounded px-1 -mx-1 py-0.5">
+      <span className="font-bold text-gray-700 shrink-0">Hoá đơn {index + 1}</span>
+      <span className={`shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded ${tagCls}`}>{tagTxt}</span>
+      <span className="text-gray-600 break-words min-w-0">
+        {isGroup
+          ? <>— Hoá đơn gộp với booking {[...otherBks].join(', ')}</>
+          : <>— {names.join(', ') || '—'}</>}
+      </span>
+    </button>
+  )
+}
+
 function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
-                             onOpenBookingFace, onOpenTicketFace,
-                             onPresent, onUpload,
-                             onInvoice, onNote, onPay, onEdit, onDelete }) {
+  onOpenBookingFace, onOpenTicketFace,
+  onPresent, onUpload,
+  onInvoice, onNote, onPay, onEdit, onDelete }) {
   const bookingTotal = sumAmounts(...(b.tickets || []).map(t =>
     sumAmounts(t.basePrice, t.collectionFee,
       sumTicketFees(t.fees, b.currency, b.exchangeRate), t.issuanceFee)))
   const primary = primaryDeparture(b.segments, nowTick)
   const badgeCls =
-      primary?.band === 'warn' ? 'bg-amber-500 text-white'
-    : primary?.band === 'future' ? 'bg-blue-600 text-white'
-    : ''
+    primary?.band === 'warn' ? 'bg-amber-500 text-white'
+      : primary?.band === 'future' ? 'bg-blue-600 text-white'
+        : 'bg-gray-200 text-gray-600'
   // 2026-10-13: Same safeguard như desktop PaymentCell.
   const paidNum = parseAmount(b.paidAmount) || 0
   const remainBk = Math.max(0, bookingTotal - paidNum)
   const stRaw = b.paymentStatus || 'UNPAID'
   const st = (bookingTotal <= 0.5 || remainBk <= 0.5) ? 'PAID' : stRaw
   const stCls =
-      st === 'PAID'    ? 'bg-green-100 text-green-700'
-    : st === 'PARTIAL' ? 'bg-amber-100 text-amber-700'
-    :                    'bg-rose-100 text-rose-700'
+    st === 'PAID' ? 'bg-green-100 text-green-700'
+      : st === 'PARTIAL' ? 'bg-amber-100 text-amber-700'
+        : 'bg-rose-100 text-rose-700'
   const stLabel =
-      st === 'PAID'    ? 'Đã thanh toán'
-    : st === 'PARTIAL' ? `Đã thu: ${formatMoney(paidNum, b.currency, { withUnit: false })}`
-    :                    'Chưa thanh toán'
+    st === 'PAID' ? 'Đã thanh toán'
+      : st === 'PARTIAL' ? 'Thanh toán 1 phần'
+        : 'Chưa thanh toán'
+
+  // ── 2026-11-12: Màu nền card theo trạng thái hoá đơn + thanh toán ──
+  //   PH + đã TT → xanh lá; PH + chưa TT → xanh dương; chỉ có nháp → cam;
+  //   chưa có hoá đơn → trắng. isSelected (batch) đè bằng vàng.
+  const invList = b.invoices || []
+  const hasIssued = invList.some(i => i.status === 'ISSUED' || i.status === 'ADJUSTED')
+  const hasDraft = invList.some(i => i.status === 'DRAFT')
+  const toneCls =
+    isSelected ? 'bg-amber-100 border-amber-300'
+      : hasIssued && st === 'PAID' ? 'bg-green-50 border-green-200'
+        : hasIssued ? 'bg-blue-50 border-blue-200'
+          : hasDraft ? 'bg-amber-50 border-amber-200'
+            : 'bg-white border-gray-200'
 
   // Mobile cũng group theo company cho nhất quán
   const { sortedTickets } = groupTicketsByCompany(b.tickets || [])
 
   return (
-    <div className={`rounded-xl border shadow-sm p-3 relative ${
-      isSelected
-        ? 'bg-amber-50 border-amber-300'
-        : 'bg-white border-gray-200'
-    }`}>
+    <div className={`rounded-xl border shadow-sm p-3 relative ${toneCls}`}>
+      {/* Header: countdown + loại·hãng + mã booking NẰM CÙNG DÒNG */}
       <div className="flex items-start gap-2 mb-2">
         <input type="checkbox" checked={isSelected}
           onChange={() => onToggleSelect(b.id)}
-          className="mt-1.5 rounded cursor-pointer" />
-        <div className="flex-1">
-          {primary && badgeCls && (
-            <span className={`inline-block px-2 py-0.5 mb-1 rounded-md font-mono text-[10px] font-bold ${badgeCls}`}>
+          className="mt-1.5 rounded cursor-pointer shrink-0" />
+        <div className="flex-1 min-w-0 flex items-center gap-1.5 flex-wrap">
+          {primary && (
+            <span className={`inline-block px-1.5 py-0.5 rounded-md font-mono text-[10px] font-bold ${badgeCls}`}>
               ⏱ {primary.text}
             </span>
           )}
-          <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-bold">
-              {kindLabel(b.kind)} · {b.airlineCode || '?'}
-            </span>
-            <button type="button"
-              onClick={() => {
-                if (!b.bookingCode) return
-                const text = buildIdCopyString(b.segments, b.bookingCode, b.kind)
-                navigator.clipboard.writeText(text)
-                  .then(() => toast.success(`Đã copy: ${text}`))
-                  .catch(() => toast.error('Không copy được'))
-              }}
-              disabled={!b.bookingCode}
-              title={b.bookingCode
-                ? `Click để copy: ${buildIdCopyString(b.segments, b.bookingCode, b.kind)}`
-                : 'Chưa có mã'}
-              className="font-mono text-xs font-bold text-gray-900 hover:text-blue-700 hover:underline cursor-copy disabled:cursor-default">
-              {b.bookingCode || '—'}
-              {b.sharedTicketFace && b.bookingFace && <span className="ml-1 text-emerald-600">📎</span>}
-            </button>
-          </div>
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-bold">
+            {kindLabel(b.kind)} · {b.airlineCode || '?'}
+          </span>
+          <button type="button"
+            onClick={() => {
+              if (!b.bookingCode) return
+              const text = buildIdCopyString(b.segments, b.bookingCode, b.kind)
+              navigator.clipboard.writeText(text)
+                .then(() => toast.success(`Đã copy: ${text}`))
+                .catch(() => toast.error('Không copy được'))
+            }}
+            disabled={!b.bookingCode}
+            title={b.bookingCode
+              ? `Click để copy: ${buildIdCopyString(b.segments, b.bookingCode, b.kind)}`
+              : 'Chưa có mã'}
+            className="font-mono text-xs font-bold text-gray-900 hover:text-blue-700 hover:underline cursor-copy disabled:cursor-default">
+            {b.bookingCode || '—'}
+            {b.sharedTicketFace && b.bookingFace && <span className="ml-1 text-emerald-600">📎</span>}
+          </button>
         </div>
-        <button onClick={onEdit} className="text-gray-500 hover:text-gray-800 w-7 h-7 rounded-md hover:bg-gray-100">✎</button>
-        <button onClick={onDelete} className="text-gray-500 hover:text-rose-600 w-7 h-7 rounded-md hover:bg-rose-50">🗑</button>
+        <button onClick={onEdit} className="text-gray-500 hover:text-gray-800 w-7 h-7 rounded-md hover:bg-gray-100 shrink-0">✎</button>
+        <button onClick={onDelete} className="text-gray-500 hover:text-rose-600 w-7 h-7 rounded-md hover:bg-rose-50 shrink-0">🗑</button>
       </div>
 
-      <div className="text-[10px] text-gray-400 tabular-nums mb-2">
-        Bán: {formatDateTimeShort(b.saleDate)}
+      {/* Thời gian xuất vé (badge) */}
+      <div className="flex items-center gap-1.5 mb-2">
+        <span className="text-[10px] text-gray-400 uppercase tracking-wide">Thời gian xuất vé</span>
+        <span className="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">
+          {formatDateTimeShort(b.saleDate)}
+        </span>
       </div>
 
-      <div className="text-[11px] text-gray-700 mb-2 space-y-0.5">
-        {(b.segments || []).map((s, i) => (
-          <div key={i} className="px-1.5 py-0.5">
-            <span className="font-bold">{s.fromCode} → {s.toCode}</span>
-            <span className="text-gray-500 mx-1">·</span>
-            <span className="tabular-nums">{formatDepart(s.departLocalMs, s.fromCode)}</span>
-          </div>
-        ))}
+      {/* Hành trình — highlight chặng đang được đếm ngược */}
+      <div className="text-[11px] mb-2 space-y-0.5">
+        {(b.segments || []).map((s, i) => {
+          const isActive = primary && s.departLocalMs === primary.departMs
+          return (
+            <div key={i} className={`px-1.5 py-0.5 rounded ${isActive ? 'bg-amber-200/70 ring-1 ring-amber-300 font-semibold' : ''}`}>
+              {/* 2026-11-16: Khi highlight (nền vàng), ép chữ màu tối bằng arbitrary
+                  value để dark-theme KHÔNG override thành chữ sáng (trùng nền). */}
+              <span className={`font-bold ${isActive ? 'text-[#1f2937]' : 'text-gray-800'}`}>{s.fromCode} → {s.toCode}</span>
+              <span className={`mx-1 ${isActive ? 'text-[#6b7280]' : 'text-gray-400'}`}>·</span>
+              <span className={`tabular-nums ${isActive ? 'text-[#374151]' : 'text-gray-600'}`}>{formatDepartFull(s.departLocalMs, s.fromCode)}</span>
+            </div>
+          )
+        })}
       </div>
 
       <div className="divide-y divide-gray-100 -mx-3">
@@ -1710,20 +1970,21 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
           const hasFace = faceStatus(b, t.id)
           return (
             <div key={t.id} className="px-3 py-2">
-              <div className="flex items-center gap-2 mb-1">
+              <div className="flex items-start gap-2">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-1.5 mb-0.5">
+                  {/* Tên khách dài → WRAP, không truncate */}
+                  <div className="flex items-start gap-1.5 mb-0.5 flex-wrap">
                     <CompanyLabel short={t.companyShortName} full={t.companyName} />
-                    <span className="text-sm font-semibold text-gray-900 truncate">{t.passengerName || '—'}</span>
+                    <span className="text-sm font-semibold text-gray-900 break-words">{t.passengerName || '—'}</span>
                   </div>
-                  <InvoiceNumbersForGroup booking={b} ticketIds={[t.id]} />
-                  <div className="font-mono text-[10px] text-gray-500 truncate"
+                  {/* Vé không có số → emdash, KHÔNG hiện "chưa có số vé" */}
+                  <div className="font-mono text-[10px] text-gray-500 break-all"
                     title={hasFace ? 'Vé này đã có mặt vé' : 'Vé chưa có mặt vé'}>
-                    {t.ticketNumber || 'chưa có số vé'}
+                    {t.ticketNumber || '—'}
                     {hasFace && <span className="ml-1 text-emerald-600">📎</span>}
                   </div>
                 </div>
-                <div className="font-mono tabular-nums text-sm font-bold text-gray-900">
+                <div className="font-mono tabular-nums text-sm font-bold text-gray-900 shrink-0">
                   {formatMoney(
                     sumAmounts(t.basePrice, t.collectionFee,
                       sumTicketFees(t.fees, b.currency, b.exchangeRate), t.issuanceFee),
@@ -1731,43 +1992,43 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
                   )}
                 </div>
               </div>
-              <div className="flex flex-wrap items-center gap-1">
-                {t.note && (
-                  <button type="button"
-                    onClick={() => onNote({ passengerName: t.passengerName || '(vé)', note: t.note })}
-                    className="h-7 w-7 rounded-md text-[11px] font-semibold bg-amber-100 text-amber-700 flex items-center justify-center">
-                    📝
-                  </button>
-                )}
-              </div>
+              {t.note && (
+                <button type="button"
+                  onClick={() => onNote({ passengerName: t.passengerName || '(vé)', note: t.note })}
+                  className="mt-1 h-7 w-7 rounded-md text-[11px] font-semibold bg-amber-100 text-amber-700 flex items-center justify-center">
+                  📝
+                </button>
+              )}
             </div>
           )
         })}
       </div>
 
+      {/* ── 2026-11-12: Danh sách hoá đơn — "Hoá đơn 1/2 + khách" hoặc note gộp ── */}
+      {invList.length > 0 && (
+        <div className="mt-2 pt-2 border-t border-gray-100 space-y-1">
+          {invList.map((inv, i) => (
+            <MobileInvoiceLine key={inv.id} booking={b} inv={inv} index={i} onPay={onPay} />
+          ))}
+        </div>
+      )}
+
       <div className="mt-2 pt-2 border-t border-gray-100 flex items-center justify-between gap-2 flex-wrap">
-        {/* 2026-11-11: tách ≥ 2 hoá đơn → mỗi hoá đơn 1 nút thanh toán riêng. */}
-        {bookingTotal > 0.5 && (b.invoices || []).length > 1 ? (
-          <div className="w-full">
-            <InvoicePayButtons booking={b} onPay={onPay} />
-          </div>
-        ) : (
-          <button type="button" onClick={() => onPay(b)}
-            className={`px-2 py-1 rounded-md ${stCls} text-[11px] font-bold`}>
-            {stLabel}
-          </button>
-        )}
+        <button type="button" onClick={() => onPay(b)}
+          className={`px-2 py-1 rounded-md ${stCls} text-[11px] font-bold`}>
+          {stLabel}
+        </button>
         <button type="button" onClick={() => onPresent(b)}
           className="text-[11px] px-2 py-1 rounded-md bg-blue-100 text-blue-700 font-semibold inline-flex items-center gap-1">
           <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" />
           </svg>
           Xuất trình
         </button>
         <button type="button" onClick={() => onUpload(b)}
           className="text-[11px] px-2 py-1 rounded-md bg-emerald-100 text-emerald-700 font-semibold inline-flex items-center gap-1">
           <svg viewBox="0 0 24 24" className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" />
           </svg>
           Upload
         </button>
@@ -1909,7 +2170,7 @@ function routeConcat(segments) {
  */
 function kindCopySuffix(kind) {
   if (kind === 'EXCHANGE') return ' (Phí Đổi Vé)'
-  if (kind === 'REFUND')   return ' (Phí Hoàn Vé)'
+  if (kind === 'REFUND') return ' (Phí Hoàn Vé)'
   return ''
 }
 
@@ -1941,22 +2202,45 @@ function buildFeeCopyString(segments, ticketNumber, bookingCode, feeLabelTitleCa
 //  2026-11-07 — Export PDF Picker + Debt Report Modal
 // ═══════════════════════════════════════════════════════════════════════════
 
+/** dd/MM/yyyy cho hiển thị trong picker. Null-safe. */
+function formatRangeLabel(fromSale, toSale) {
+  const f = (iso) => {
+    if (!iso) return ''
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso)
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : iso
+  }
+  const a = f(fromSale), b = f(toSale)
+  if (a && b) return a === b ? `ngày ${a}` : `${a} — ${b}`
+  if (a) return `từ ${a}`
+  if (b) return `đến ${b}`
+  return ''
+}
+
 /**
- * Picker 2 lựa chọn: Báo cáo vé hôm nay / Báo cáo công nợ.
- * User không cần chọn ngày trước nữa — nếu chọn "hôm nay" thì ép range.
+ * 2026-11-11: Picker rút gọn còn 2 lựa chọn — Báo cáo bán vé và Báo cáo công
+ * nợ. "Báo cáo bán vé" xuất các booking trong KHOẢNG NGÀY UI đang chọn. Nếu
+ * khoảng = đúng hôm nay → tự kèm hóa đơn nháp; nếu khác → hỏi modal 2 nút.
  */
-function ExportPickerModal({ onClose, onPickToday, onPickDebt }) {
+function ExportPickerModal({ onClose, fromSale, toSale, onPickReport, onPickDebt }) {
+  const hasRange = !!(fromSale || toSale)
+  const rangeLabel = formatRangeLabel(fromSale, toSale) || 'chưa chọn'
   return (
     <Modal open onClose={onClose} title="Xuất PDF" size="md">
       <div className="space-y-3">
-        <button type="button" onClick={onPickToday}
-          className="w-full text-left p-4 rounded-xl border-2 border-emerald-200 bg-emerald-50 hover:bg-emerald-100 hover:border-emerald-400 transition">
+        <button type="button" onClick={onPickReport} disabled={!hasRange}
+          title={hasRange ? '' : 'Chọn khoảng ngày bán ở toolbar trước khi dùng.'}
+          className={`w-full text-left p-4 rounded-xl border-2 transition ${hasRange
+              ? 'border-emerald-200 bg-emerald-50 hover:bg-emerald-100 hover:border-emerald-400'
+              : 'border-gray-200 bg-gray-50 opacity-60 cursor-not-allowed'
+            }`}>
           <div className="flex items-center gap-3">
             <div className="text-2xl">📅</div>
             <div className="flex-1">
-              <div className="font-bold text-emerald-900">Báo cáo vé hôm nay</div>
+              <div className="font-bold text-emerald-900">Báo cáo bán vé</div>
               <div className="text-xs text-emerald-700 mt-0.5">
-                Tải báo cáo vé bán trong ngày + hoá đơn nháp. Nếu có vé chưa tạo hoá đơn nháp → cảnh báo.
+                Các booking trong khoảng <b>{rangeLabel}</b>.
+                {' '}Nếu là <b>hôm nay</b> sẽ tự kèm hoá đơn nháp;
+                nếu nhiều ngày sẽ hỏi có kèm hoá đơn hay không.
               </div>
             </div>
           </div>
@@ -1979,6 +2263,40 @@ function ExportPickerModal({ onClose, onPickToday, onPickDebt }) {
 }
 
 /**
+ * 2026-11-11: Hỏi có kèm hóa đơn nháp không, cho range nhiều ngày. Tiền thân
+ * của luồng "confirm download" — giữ 1 bước trung gian để user chủ động.
+ */
+function AskInvoicesModal({ bookings, count, missing, onClose, onYes }) {
+  const bookingCount = (bookings || []).length
+  return (
+    <Modal open onClose={onClose} title="Tải thêm hoá đơn nháp?" size="md">
+      <div className="space-y-3">
+        <div className="text-sm text-gray-700">
+          Báo cáo đã được tạo cho <b>{bookingCount}</b> booking. Bên cạnh đó có
+          <b> {count}</b> hoá đơn nháp sẵn sàng tải.
+          {missing.length > 0 && (
+            <span className="block mt-1 text-amber-700">
+              ⚠ Có <b>{missing.length}</b> vé chưa có hoá đơn nháp — bạn vẫn có thể tải
+              những hoá đơn hiện có, hệ thống sẽ cảnh báo danh sách còn thiếu.
+            </span>
+          )}
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <button type="button" onClick={onClose}
+            className="p-3 rounded-xl border-2 border-gray-200 bg-white hover:bg-gray-50 text-gray-700 text-sm font-semibold">
+            Không cần, đóng lại
+          </button>
+          <button type="button" onClick={onYes}
+            className="p-3 rounded-xl border-2 border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 text-sm font-semibold">
+            Tải kèm hoá đơn nháp
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+/**
  * Modal build báo cáo công nợ:
  *   1. User chọn công ty (bao gồm chi nhánh) qua CompanySearchSelect.
  *   2. Component auto-fetch booking UNPAID + lọc client-side theo companyId.
@@ -1987,9 +2305,9 @@ function ExportPickerModal({ onClose, onPickToday, onPickDebt }) {
  */
 function DebtReportModal({ companies, onClose }) {
   const [companyId, setCompanyId] = useState(null)
-  const [bookings, setBookings]   = useState([])
-  const [loading, setLoading]     = useState(false)
-  const [building, setBuilding]   = useState(false)
+  const [bookings, setBookings] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [building, setBuilding] = useState(false)
 
   // ── 2026-11-07 (rev2): Chỉ hiện CÔNG TY CHÍNH (root) trong dropdown ──
   //   Chi nhánh KHÔNG hiển thị ở danh sách chọn. Khi user pick root, modal
@@ -2018,18 +2336,18 @@ function DebtReportModal({ companies, onClose }) {
     }
     let cancel = false
     setLoading(true)
-    ;(async () => {
-      try {
-        const mod = await import('../../lib/bookingsPdfExport')
-        const bs = await mod.fetchUnpaidBookingsByCompany(matchIds)
-        if (!cancel) setBookings(bs)
-      } catch (e) {
-        console.error('[debt fetch]', e)
-        toast.error('Không tải được danh sách booking')
-      } finally {
-        if (!cancel) setLoading(false)
-      }
-    })()
+      ; (async () => {
+        try {
+          const mod = await import('../../lib/bookingsPdfExport')
+          const bs = await mod.fetchUnpaidBookingsByCompany(matchIds)
+          if (!cancel) setBookings(bs)
+        } catch (e) {
+          console.error('[debt fetch]', e)
+          toast.error('Không tải được danh sách booking')
+        } finally {
+          if (!cancel) setLoading(false)
+        }
+      })()
     return () => { cancel = true }
   }, [companyId, matchIds])
 
@@ -2261,12 +2579,12 @@ export function collectBookingInvoiceNumbers(b) {
 //    xoá từng phiếu HOẶC "Xoá tất cả" (reset về Chưa thanh toán).
 // ═══════════════════════════════════════════════════════════════════════════
 function PaidReceiptsModal({ booking, onClose, onChanged, onCleared }) {
-  const [rows, setRows]       = useState([])        // [{ invoice, payments }]
+  const [rows, setRows] = useState([])        // [{ invoice, payments }]
   const [loading, setLoading] = useState(true)
   const [preview, setPreview] = useState(null)      // { url, name }
-  const [confirmDel, setConfirmDel]   = useState(null)   // { payment }
-  const [confirmAll, setConfirmAll]   = useState(false)
-  const [busy, setBusy]       = useState(false)
+  const [confirmDel, setConfirmDel] = useState(null)   // { payment }
+  const [confirmAll, setConfirmAll] = useState(false)
+  const [busy, setBusy] = useState(false)
 
   const reload = useCallback(async () => {
     setLoading(true)

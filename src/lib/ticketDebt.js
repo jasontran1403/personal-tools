@@ -15,12 +15,13 @@
  *
  * Vé còn nợ khi có ít nhất 1 hoá đơn của vé chưa PAID.
  */
-import { parseAmount } from './money'
+import { parseAmount, sumTicketFees } from './money'
 
 /** Tổng giá bán của 1 vé theo ĐƠN VỊ TIỀN của booking (chưa quy đổi). */
-export function ticketSellRaw(t) {
+export function ticketSellRaw(t, b) {
   const n = (v) => parseAmount(v) || 0
-  const fees = (t.fees || []).reduce((s, f) => s + n(f.amount), 0)
+  // 2026-11-11: phí quy đổi theo currency của từng dòng (xem sumTicketFees).
+  const fees = sumTicketFees(t.fees, b?.currency || 'VND', b?.exchangeRate)
   return n(t.basePrice) + n(t.collectionFee) + n(t.issuanceFee) + n(t.hnhFee) + fees
 }
 
@@ -35,7 +36,7 @@ export function invoicesOfTicket(b, ticketId) {
 /** Vé này còn nợ (chưa thu đủ) hay không. */
 export function isTicketUnpaid(b, t) {
   if ((b?.paymentStatus || 'UNPAID') === 'PAID') return false
-  if (ticketSellRaw(t) <= 0.5) return false          // vé 0đ → không có nợ
+  if (ticketSellRaw(t, b) <= 0.5) return false          // vé 0đ → không có nợ
   const invs = invoicesOfTicket(b, t.id)
   if (invs.length === 0) return true                  // chưa có hoá đơn → còn nợ
   return invs.some(i => (i.paymentStatus || 'UNPAID') !== 'PAID')

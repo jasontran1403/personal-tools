@@ -131,8 +131,8 @@ export function buildRevenueReportDoc({ rows, fromDate, toDate, exportedAt = new
     for (const r of list) body.push(dataRow(r, stt++))
     body.push(sumRow(sumLabel, sum(list), { fill, color }))
   }
-  section(companies, 'KHÁCH HÀNG CÔNG TY', C.company, C.companyBg, 'Cộng công ty')
-  section(walkins,   'KHÁCH LẺ',           C.walkin,  C.walkinBg,  'Cộng khách lẻ')
+  section(companies, 'KHÁCH HÀNG CÔNG TY', C.company, C.companyBg, 'Tổng tiền công ty')
+  section(walkins,   'KHÁCH LẺ',           C.walkin,  C.walkinBg,  'Tổng tiền khách lẻ')
   if (!rows.length) {
     const row = [{ colSpan: N, text: 'Không có dữ liệu trong khoảng thời gian này.',
       italics: true, color: C.mute, alignment: 'center', margin: [0, 12, 0, 12] }]
@@ -159,7 +159,7 @@ export function buildRevenueReportDoc({ rows, fromDate, toDate, exportedAt = new
         tile('CÔNG NỢ HIỆN TẠI (VND)',
           vnd(total.debt) + (total.debt > 0.5 && total.debtDays >= 0 ? ` (${total.debtDays} ngày)` : ''),
           total.debt > 0.5 ? C.debt : C.ink),
-        tile('TỔNG SỐ VÉ ĐÃ MUA', String(total.ticketCount), C.ink),
+        tile('TỔNG SỐ VÉ ĐÃ BÁN', String(total.ticketCount), C.ink),
       ]],
     },
     layout: {
@@ -207,7 +207,6 @@ export function buildRevenueReportDoc({ rows, fromDate, toDate, exportedAt = new
         },
       },
       { text: 'Tổng tiền vé, phí xuất vé và số vé tính trên các booking bán trong khoảng thời gian báo cáo. '
-          + 'Công nợ và số ngày công nợ là số hiện tại tại thời điểm xuất, không phụ thuộc khoảng thời gian. '
           + 'Đơn vị tiền: VND.',
         fontSize: 7.5, italics: true, color: C.mute, margin: [0, 8, 0, 0] },
     ],

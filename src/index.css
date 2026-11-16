@@ -4,12 +4,26 @@
 
 @layer base {
   * { box-sizing: border-box; }
-  html, body { overscroll-behavior: none; }
-  body { font-family: 'Inter', system-ui, sans-serif; }
+  /* 2026-11-12: chặn pan ngang cả trang + khóa zoom bằng cử chỉ trên mobile.
+     touch-action pan-x pan-y = cho cuộn, cấm pinch-zoom (Android/Chrome tôn
+     trọng; iOS Safari bổ sung bằng handler gesture* trong main.jsx). */
+  html, body { overscroll-behavior: none; overflow-x: hidden; touch-action: pan-x pan-y; }
+  /* 2026-11-12: Font Inter đang load render thiếu glyph nguyên âm mũ+ngã của
+     tiếng Việt (Ễ, Ỗ, ễ, ỗ…) → rớt dấu ngã. Ưu tiên font HỆ THỐNG (San
+     Francisco trên Apple, Segoe UI trên Windows, Roboto trên Android) — đều
+     hỗ trợ tiếng Việt đầy đủ, không cần tải font. Inter giữ làm fallback. */
+  html, body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+      'Be Vietnam Pro', 'Inter', system-ui, 'Helvetica Neue', Arial, sans-serif;
+  }
   ::-webkit-scrollbar { width: 5px; height: 5px; }
   ::-webkit-scrollbar-track { @apply bg-gray-100; }
   ::-webkit-scrollbar-thumb { @apply bg-gray-300 rounded-full; }
 }
+
+/* 2026-11-12: ẩn thanh cuộn nhưng vẫn cuộn được — dùng cho vùng cuộn mobile. */
+.no-scrollbar { scrollbar-width: none; -ms-overflow-style: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; width: 0; height: 0; }
 
 @layer components {
   .btn-primary {

@@ -27,7 +27,9 @@ export default function CompanySearchSelect({
   options,
   onChange,
   placeholder = '— Khách lẻ —',
-  allowNone = true,
+  // 2026-11-11: mặc định KHÔNG hiện mục none ảo nữa vì công ty
+  // 'Khách lẻ' thật đã nằm trong options.
+  allowNone = false,
   noneLabel = '— Khách lẻ —',
   size = 'md',
   className = '',
@@ -238,8 +240,33 @@ function OptionRow({ idx, activeIdx, setActiveIdx, onPick, isSelected, label, it
  * Flatten company tree (có parent/branch) thành list phẳng với branch được
  * indent "  ↳ ". Dùng cho options của CompanySearchSelect.
  */
+/**
+ * Nhận biết công ty "Khách lẻ" seed sẵn trong DB (thường id = 1). Trước đây
+ * dropdown có hai mục "Khách lẻ": một ảo (companyId = null) do allowNone và
+ * một thật (id = 1), nhưng BE lại tự ghép null → id 1 lúc lưu. Giờ chỉ trả
+ * về đúng công ty thật và luôn đặt nó lên đầu danh sách.
+ */
+export function isWalkInCompany(c) {
+  if (!c) return false
+  if (c.id === 1 && !c.parentId) return true
+  const name = (c.name || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'd').trim().toLowerCase()
+  return !c.parentId && (name === 'khach le' || name === 'khach le (mac dinh)')
+}
+
+/**
+ * Trả về id của công ty "Khách lẻ" trong danh sách (hoặc 1 nếu không tìm thấy
+ * — id seed mặc định của VmbSeedRunner).
+ */
+export function walkInCompanyId(companies) {
+  const found = (companies || []).find(isWalkInCompany)
+  return found ? found.id : 1
+}
+
 export function companyOptions(companies) {
-  const roots = companies.filter(c => !c.parentId).sort((a, b) => a.name.localeCompare(b.name, 'vi'))
+  const walkIn = (companies || []).find(isWalkInCompany) || null
+  const roots = (companies || []).filter(c => !c.parentId && !isWalkInCompany(c))
+    .sort((a, b) => a.name.localeCompare(b.name, 'vi'))
   const byParent = new Map()
   for (const c of companies) {
     if (c.parentId) {
@@ -248,6 +275,8 @@ export function companyOptions(companies) {
     }
   }
   const out = []
+  // 2026-11-11: Mục Khách lẻ luôn đứng đầu, nhãn thống nhất với placeholder cũ.
+  if (walkIn) out.push({ id: walkIn.id, label: '— Khách lẻ —', isBranch: false, isWalkIn: true })
   for (const r of roots) {
     out.push({ id: r.id, label: r.name, isBranch: false })
     const branches = (byParent.get(r.id) || []).sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))

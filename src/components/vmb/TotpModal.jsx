@@ -206,20 +206,27 @@ function InputView({ code, onCodeChange, remaining, busy, inputRef, onSubmit }) 
     <div className="text-center py-2">
       <div className="text-5xl mb-2">🔐</div>
       <p className="text-sm text-gray-700 mb-1">
-        Mở ứng dụng Authenticator và nhập 6 số:
+        Nhập mã PIN 6 số để xem mật khẩu:
       </p>
       <p className="text-xs text-gray-500 mb-4">
-        (Google Authenticator / Microsoft Authenticator)
+        (Mã 6 số do admin cấp cho tài khoản)
       </p>
 
+      {/* 2026-11-12: Che hết các số đã nhập, CHỈ hiện số mới nhất. Xóa 1 số →
+          số kế cuối lộ ra. value hiển thị là bản đã che; onChange so độ dài để
+          biết user vừa gõ thêm hay xóa, rồi cập nhật code THẬT ở parent. */}
       <input
         ref={inputRef}
         type="text"
         inputMode="numeric"
         maxLength={6}
         autoComplete="one-time-code"
-        value={code}
-        onChange={e => onCodeChange(e.target.value)}
+        value={code.length ? '•'.repeat(code.length - 1) + code.slice(-1) : ''}
+        onChange={e => {
+          const v = e.target.value
+          if (v.length > code.length) onCodeChange(code + v.slice(code.length))
+          else if (v.length < code.length) onCodeChange(code.slice(0, v.length))
+        }}
         onKeyDown={e => e.key === 'Enter' && onSubmit()}
         disabled={busy}
         placeholder="——————"
@@ -284,7 +291,7 @@ function LockedView({ lockedUntil, now, isAdmin, onUnlock }) {
       <div className="text-5xl mb-2">🔒</div>
       <h3 className="text-base font-bold text-rose-700 mb-2">Bạn đã bị khóa trong 24 giờ</h3>
       <p className="text-sm text-gray-600 mb-2">
-        Do đã nhập sai mã 2FA quá 5 lần liên tiếp.
+        Do đã nhập sai mã quá 5 lần liên tiếp.
       </p>
       <div className="inline-block px-4 py-2 rounded-lg bg-rose-50 border border-rose-200">
         <div className="text-[10px] font-bold text-rose-600 uppercase">Mở khóa sau</div>

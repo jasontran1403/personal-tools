@@ -50,7 +50,8 @@ export default function Tabs({
 
   return (
     <div className={`${sticky ? 'sticky top-0 z-30' : ''} bg-white/85 backdrop-blur-xl border-b border-gray-200 ${className}`}>
-      <div className="w-full px-4 sm:px-6 lg:px-8 flex items-center gap-1 overflow-x-auto
+      <div className="w-full px-4 sm:px-6 lg:px-8 flex items-center gap-1 overflow-x-auto overflow-y-hidden
+        [touch-action:pan-x] [overscroll-behavior-x:contain]
         [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {tabs.map(({ key, icon, label, badge }) => {
           const isActive = key === active

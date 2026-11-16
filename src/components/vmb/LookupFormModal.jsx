@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import Modal from '../common/Modal'
 import { createLookup, updateLookup } from '../../services/vmbApi'
+import { generateTOTP, parseOtpauth, parseMigration, decodeQrFromImage } from '../../lib/totp'
+import { add2fa, addMany2fa } from '../../lib/twoFaStore'
 
 /**
  * Form thêm / sửa mục tra cứu.
@@ -19,6 +21,10 @@ export default function LookupFormModal({ mode = 'create', row, onClose, onSaved
   const isEdit = mode === 'edit'
   const [busy, setBusy] = useState(false)
   const [showPw, setShowPw] = useState(false)
+  // 2026-11-12: state cho loại 2FA (lưu local, không gọi backend)
+  const [twoFaTab, setTwoFaTab] = useState('secret') // 'secret' | 'qr'
+  const [qrErr, setQrErr] = useState('')
+  const fileRef = useRef(null)
 
   const [form, setForm] = useState(() => ({
     type: row?.type || 'PLAIN',
@@ -28,6 +34,8 @@ export default function LookupFormModal({ mode = 'create', row, onClose, onSaved
     loginUsername: row?.loginUsername || '',
     agencyCode: row?.agencyCode || '',
     password: '',
+    issuer: '',
+    secret: '',
   }))
 
   useEffect(() => {
@@ -48,7 +56,23 @@ export default function LookupFormModal({ mode = 'create', row, onClose, onSaved
 
   const submit = async (e) => {
     e.preventDefault()
-    if (!form.keyword.trim()) return toast.error('Từ khóa không được để trống')
+    if (!form.keyword.trim()) return toast.error('Tên / từ khóa không được để trống')
+
+    // ── 2026-11-12: Loại 2FA — lưu LOCAL (localStorage), không gọi backend ──
+    if (form.type === '2FA') {
+      const s = (form.secret || '').replace(/\s/g, '')
+      if (!s) return toast.error('Nhập chuỗi bí mật hoặc quét QR')
+      setBusy(true)
+      try {
+        const code = await generateTOTP(s, {})
+        if (!code) { toast.error('Chuỗi bí mật không hợp lệ (base32)'); return }
+        add2fa({ name: form.keyword.trim(), issuer: form.issuer.trim(), secret: s, digits: 6, period: 30, algorithm: 'SHA1' })
+        toast.success('Đã thêm 2FA')
+        onSaved()
+      } finally { setBusy(false) }
+      return
+    }
+
     if (form.type === 'ACCOUNT') {
       if (!form.loginUsername.trim()) return toast.error('Tài khoản đăng nhập không được để trống')
       if (!isEdit && !form.password) return toast.error('Mật khẩu không được để trống')
@@ -65,6 +89,36 @@ export default function LookupFormModal({ mode = 'create', row, onClose, onSaved
     } finally {
       setBusy(false)
     }
+  }
+
+  // Quét/chụp ảnh QR → nhập 2FA (hỗ trợ cả QR export nhiều tài khoản).
+  const onPickQr = async (file) => {
+    if (!file) return
+    setQrErr('')
+    try {
+      const raw = await decodeQrFromImage(file)
+      if (/^otpauth-migration:/i.test(raw)) {
+        const accounts = parseMigration(raw)
+        if (accounts && accounts.length) {
+          const n = addMany2fa(accounts)
+          toast.success(`Đã nhập ${n} tài khoản 2FA`)
+          onSaved(); return
+        }
+        setQrErr('Không đọc được dữ liệu export (otpauth-migration).'); return
+      }
+      const parsed = parseOtpauth(raw)
+      if (parsed) {
+        add2fa({
+          name: form.keyword.trim() || parsed.name, issuer: form.issuer.trim() || parsed.issuer,
+          secret: parsed.secret, digits: parsed.digits, period: parsed.period, algorithm: parsed.algorithm,
+        })
+        toast.success('Đã thêm 2FA'); onSaved(); return
+      }
+      setField('secret', raw.replace(/\s/g, '')); setTwoFaTab('secret')
+      setQrErr('QR không theo chuẩn otpauth — đã điền vào ô chuỗi bí mật, kiểm tra & lưu.')
+    } catch (err) {
+      setQrErr(err.message || 'Không đọc được QR.'); setTwoFaTab('secret')
+    } finally { if (fileRef.current) fileRef.current.value = '' }
   }
 
   return (
@@ -94,8 +148,10 @@ export default function LookupFormModal({ mode = 'create', row, onClose, onSaved
           <div className="text-xs font-semibold text-gray-600 mb-1">Loại</div>
           <div className="flex gap-2">
             {[
-              { key: 'PLAIN',   label: '📄 Thông tin (từ khóa + chi tiết)' },
-              { key: 'ACCOUNT', label: '🔐 Tài khoản (URL + user + pass)' },
+              { key: 'PLAIN',   label: '📄 Thông tin' },
+              { key: 'ACCOUNT', label: '🔐 Tài khoản' },
+              // 2FA chỉ cho TẠO mới (entry 2FA lưu local, không sửa qua form này)
+              ...(!isEdit ? [{ key: '2FA', label: '🔑 2FA' }] : []),
             ].map(t => (
               <label key={t.key}
                 className={`flex-1 px-3 py-2 rounded-lg border text-sm font-medium cursor-pointer transition ${
@@ -111,10 +167,12 @@ export default function LookupFormModal({ mode = 'create', row, onClose, onSaved
           </div>
         </div>
 
-        <Field label="Từ khóa">
+        <Field label={form.type === '2FA' ? 'Tên' : 'Từ khóa'}>
           <input type="text" value={form.keyword} autoFocus
             onChange={e => setField('keyword', e.target.value)}
-            placeholder="Ví dụ: Điều kiện vé VJ / Tài khoản Amadeus"
+            placeholder={form.type === '2FA'
+              ? 'VD: Gmail công ty, Amadeus…'
+              : 'Ví dụ: Điều kiện vé VJ / Tài khoản Amadeus'}
             className="input" />
         </Field>
 
@@ -157,7 +215,54 @@ export default function LookupFormModal({ mode = 'create', row, onClose, onSaved
               </div>
             </Field>
             <div className="p-2 rounded-md bg-blue-50 border border-blue-100 text-[11px] text-blue-800">
-              🔒 Mật khẩu được mã hóa AES-GCM ở máy chủ, xem lại cần 2FA (mã Google Authenticator 6 số).
+              🔒 Mật khẩu được mã hóa AES-GCM ở máy chủ, xem lại cần nhập mã PIN 6 số.
+            </div>
+          </>
+        )}
+
+        {form.type === '2FA' && (
+          <>
+            <Field label="Nhà cung cấp (tùy chọn)">
+              <input type="text" value={form.issuer}
+                onChange={e => setField('issuer', e.target.value)}
+                placeholder="VD: Google, Microsoft…" className="input" />
+            </Field>
+
+            <div className="flex gap-1 p-0.5 rounded-lg bg-gray-100 border border-gray-200">
+              <button type="button" onClick={() => setTwoFaTab('secret')}
+                className={`flex-1 px-3 py-1.5 rounded-md text-xs font-semibold ${twoFaTab === 'secret' ? 'bg-white shadow text-blue-700' : 'text-gray-600'}`}>
+                🔑 Chuỗi bí mật
+              </button>
+              <button type="button" onClick={() => setTwoFaTab('qr')}
+                className={`flex-1 px-3 py-1.5 rounded-md text-xs font-semibold ${twoFaTab === 'qr' ? 'bg-white shadow text-blue-700' : 'text-gray-600'}`}>
+                📷 Mã QR
+              </button>
+            </div>
+
+            {twoFaTab === 'secret' ? (
+              <Field label="Chuỗi bí mật (base32)">
+                <input type="text" value={form.secret}
+                  onChange={e => setField('secret', e.target.value)}
+                  placeholder="VD: JBSWY3DPEHPK3PXP" className="input font-mono" />
+              </Field>
+            ) : (
+              <div>
+                <button type="button" onClick={() => fileRef.current?.click()}
+                  className="w-full px-3 py-3 rounded-lg border-2 border-dashed border-blue-300 text-blue-700 text-sm font-semibold hover:bg-blue-50">
+                  📷 Chụp / chọn ảnh mã QR
+                </button>
+                <input ref={fileRef} type="file" accept="image/*" capture="environment" className="hidden"
+                  onChange={e => onPickQr(e.target.files?.[0])} />
+                <div className="text-[11px] text-gray-400 mt-1">
+                  Hỗ trợ QR otpauth lẻ và QR export nhiều tài khoản của Google Authenticator (Chrome/Android).
+                </div>
+              </div>
+            )}
+
+            {qrErr && <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{qrErr}</div>}
+
+            <div className="p-2 rounded-md bg-amber-50 border border-amber-200 text-[11px] text-amber-700">
+              🔒 Secret chỉ lưu trên thiết bị này (không đồng bộ lên máy chủ).
             </div>
           </>
         )}

@@ -36,10 +36,12 @@ export default function LoginPage() {
     if (u) setUsername(u)
   }, [])
 
-  // Đã đăng nhập thì đi thẳng vào chỗ đang cần đến
+  // Đã đăng nhập thì đi thẳng vào chỗ đang cần đến.
+  // 2026-11-16: Nếu không có ?back, điều hướng mặc định theo tài khoản —
+  //   chỉ "phuongthao" vào "/", các tài khoản còn lại vào "/vmb".
   useEffect(() => {
     if (!ready || !auth) return
-    nav(safeBack(params.get('back')), { replace: true })
+    nav(safeBack(params.get('back'), defaultHomeFor(auth?.username)), { replace: true })
   }, [ready, auth, nav, params])
 
   const submit = async e => {
@@ -52,7 +54,9 @@ export default function LoginPage() {
       const res = await login(username.trim(), password, remember)
       if (res.ok) {
         toast.success('Đăng nhập thành công')
-        nav(safeBack(params.get('back')), { replace: true })
+        // 2026-11-16: điều hướng mặc định theo tài khoản vừa đăng nhập.
+        const uname = res.user?.username || username.trim()
+        nav(safeBack(params.get('back'), defaultHomeFor(uname)), { replace: true })
       } else {
         toast.error(res.message || 'Sai tài khoản hoặc mật khẩu')
         setPassword('')  // clear pass để không lỡ nhấn tiếp tự đăng nhập lại
@@ -168,12 +172,37 @@ export default function LoginPage() {
   )
 }
 
-/** Chỉ chấp nhận đường dẫn nội bộ, chặn open-redirect ra domain khác */
-function safeBack(raw) {
-  if (!raw) return '/'
+/**
+ * Chỉ chấp nhận đường dẫn nội bộ, chặn open-redirect ra domain khác.
+ * `fallback` = nơi đến mặc định khi KHÔNG có ?back hợp lệ (mặc định "/").
+ *
+ * 2026-11-16: back = "/" (trang gốc) được coi là KHÔNG phải deep-link cụ thể
+ *   — vì RequireToolsAuth tự gắn back="/" khi user chưa đăng nhập vào trang
+ *   gốc. Trường hợp này dùng `fallback` (điều hướng theo tài khoản), để
+ *   nguyenhai vẫn vào "/vmb" thay vì bị kẹt ở "/". Chỉ các back trỏ tới path
+ *   cụ thể khác "/" (vd /vmb, /qr) mới được tôn trọng.
+ */
+function safeBack(raw, fallback = '/') {
+  if (!raw) return fallback
   try {
     const v = decodeURIComponent(raw)
-    if (v.startsWith('/') && !v.startsWith('//')) return v
-  } catch { /* thôi bỏ qua, về /  */ }
-  return '/'
+    if (v.startsWith('/') && !v.startsWith('//')) {
+      // Bỏ query/hash khi so sánh "chỉ là trang gốc".
+      const pathOnly = v.split('?')[0].split('#')[0]
+      if (pathOnly === '/') return fallback
+      return v
+    }
+  } catch { /* thôi bỏ qua, dùng fallback */ }
+  return fallback
+}
+
+/**
+ * 2026-11-16: Trang mặc định sau đăng nhập theo tài khoản.
+ *   - "phuongthao" → "/" (trang Tools tổng).
+ *   - Mọi tài khoản vmb/tools khác → "/vmb".
+ * So khớp không phân biệt hoa/thường, bỏ khoảng trắng thừa.
+ */
+function defaultHomeFor(username) {
+  const u = (username || '').trim().toLowerCase()
+  return u === 'phuongthao' ? '/' : '/vmb'
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 
 /**
  * ── 2026-10-09: Fix "trang bị kẹt không scroll được" ──────────
@@ -93,7 +94,10 @@ export default function Modal({
 
   if (!open) return null
 
-  return (
+  // 2026-11-15: portal ra body để modal KHÔNG bị bẫy bởi ancestor có
+  // CSS transform (vd container swipe ở VmbPage) — transform tạo
+  // containing block khiến position:fixed lệch/méo.
+  return createPortal(
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6"
       onMouseDown={e => {
@@ -143,6 +147,7 @@ export default function Modal({
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

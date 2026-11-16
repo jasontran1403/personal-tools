@@ -26,10 +26,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { listBookings, listCompanies, listPassengers, updatePassengerReferrer } from '../../services/vmbApi'
-import { parseAmount, formatMoney } from '../../lib/money'
+import { parseAmount, formatMoney, sumTicketFees } from '../../lib/money'
 import { isTicketUnpaid, narrowBooking } from '../../lib/ticketDebt'
 import DateRangePicker, { presetRange } from '../common/DateRangePicker'
 import Modal from '../common/Modal'
+import MobileFabCluster, { Fab } from '../common/MobileFabCluster'
 
 // ── Config ─────────────────────────────────────────────────
 // 2026-11-07 (rev): bump schema version — giờ lưu { dates, notes } thay vì array.
@@ -217,7 +218,10 @@ function toVnd(amount, booking) {
 function ticketSums(t, b) {
   const base = parseAmount(t.basePrice) || 0
   const coll = parseAmount(t.collectionFee) || 0
-  const feesSum = (t.fees || []).reduce((s, f) => s + (parseAmount(f.amount) || 0), 0)
+  // 2026-11-11: phải quy đổi theo currency của TỪNG dòng phí. Trước đây cộng
+  //   thẳng rồi nhân tỷ giá cả cụm → phí VNĐ trong booking USD bị nhân ~26.000
+  //   lần, doanh thu vọt lên hàng trăm tỷ.
+  const feesSum = sumTicketFees(t.fees, b.currency || 'VND', b.exchangeRate)
   const iss = parseAmount(t.issuanceFee) || 0
   // 2026-11-11: cộng phí xuất vé HNH (luôn VND, không quy đổi) để doanh thu /
   //   công nợ khớp tổng hoá đơn BE tính và khớp báo cáo công nợ.
@@ -253,7 +257,7 @@ function DebtAgeBadge({ fromMs }) {
 //   Xanh LÁ   = ngày phát hành hóa đơn (invoice đã có số).
 //   Xanh DƯƠNG = ngày xuất vé (fallback khi booking chưa phát hành hóa đơn).
 // ═══════════════════════════════════════════════════════════
-function DebtDatesBadges({ bookings }) {
+function DebtDatesBadges({ bookings, fluid = false }) {
   const items = useMemo(() => buildDebtItems(bookings || []), [bookings])
   if (!items.length) return null
   // Group theo (kind, dd/MM/yyyy) — các timestamp cùng NGÀY gộp 1 badge, có
@@ -281,8 +285,8 @@ function DebtDatesBadges({ bookings }) {
     //   Dùng cùng 1 value cho gap-x / gap-y → spacing đều.
     // ml-auto để wrapper flex này được đẩy sát biên phải của cell (vì td
     //   `text-right` chỉ ảnh hưởng inline content).
-    <div className="mt-1 ml-auto flex flex-wrap gap-1.5 justify-end"
-         style={{ width: 260 }}>
+    <div className={`mt-1 flex flex-wrap gap-1.5 ${fluid ? 'justify-start' : 'ml-auto justify-end'}`}
+         style={fluid ? undefined : { width: 260 }}>
       {out.map((x, i) => (
         <span key={i}
           title={x.kind === 'issue'
@@ -355,13 +359,15 @@ export default function CustomersTab() {
   //   mode='referrer'  → click vào tên khách lẻ: chỉ show người giới thiệu.
   //   mode='revenue'   → click vào cột doanh thu: chỉ show phí xuất vé QT/QN.
   const [detailFor, setDetailFor] = useState(null)   // { row, mode }
-  // 2026-11-11: Khoảng ngày (theo ngày bán của booking). Mặc định = tháng hiện
-  //   tại. { from:'', to:'' } = tất cả thời gian. Chỉ áp cho tiền vé / phí
-  //   xuất vé / số vé / doanh thu — công nợ luôn là số HIỆN TẠI.
-  const [range, setRange]         = useState(() => presetRange('thisMonth'))
+  // 2026-11-11: Khoảng ngày (theo ngày bán của booking). Mặc định = TẤT CẢ
+  //   thời gian ({ from:'', to:'' }). Chỉ áp cho tiền vé / phí xuất vé / số vé
+  //   / doanh thu — công nợ luôn là số HIỆN TẠI.
+  const [range, setRange]         = useState({ from: '', to: '' })
   const [exporting, setExporting] = useState(false)
   // 2026-11-11 (rev2): modal chọn cách sắp xếp trước khi xuất báo cáo.
   const [sortPick, setSortPick]   = useState(false)
+  // 2026-11-12: Panel mobile — 'filter' | null (tìm kiếm + khoảng ngày gom modal).
+  const [mobilePanel, setMobilePanel] = useState(false)
 
   // Load companies + fetch toàn bộ booking (phân trang).
   useEffect(() => {
@@ -692,7 +698,7 @@ export default function CustomersTab() {
             note: r.isWalkIn ? '' : `${r.paxCount} hành khách`,
           }
         })
-      const mod = await import('../../lib/revenueReportPdf')
+      const mod = await import('../../lib/revenueReportpdf')
       await mod.exportRevenueReport({
         rows: out, fromDate, toDate, exportedAt: now, sortLabel: sortOpt.label,
       })
@@ -704,6 +710,16 @@ export default function CustomersTab() {
       setExporting(false)
     }
   }
+
+  // 2026-11-11: Tổng của DANH SÁCH ĐANG HIỂN THỊ — đổi theo tab Công ty /
+  //   Khách lẻ, theo ô tìm kiếm và theo khoảng ngày đang chọn.
+  const totals = useMemo(() => filtered.reduce((a, r) => ({
+    ticket: a.ticket + r.ticket,
+    iss: a.iss + r.iss,
+    revenue: a.revenue + r.revenue,
+    debt: a.debt + r.debt,
+    ticketCount: a.ticketCount + r.ticketCount,
+  }), { ticket: 0, iss: 0, revenue: 0, debt: 0, ticketCount: 0 }), [filtered])
 
   const SortH = ({ k, children, align = 'left', style }) => {
     const active = sortKey === k
@@ -723,7 +739,20 @@ export default function CustomersTab() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="shrink-0 flex flex-wrap items-center gap-2 mb-3 px-1">
+      {/* ── 2026-11-11: Dòng thông số tổng của danh sách đang hiển thị ── */}
+      <div className="shrink-0 grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 px-1">
+        <StatTile label="Tổng tiền vé" value={totals.ticket}
+          sub={`${filtered.length} khách hàng`} tone="slate" />
+        <StatTile label="Tổng phí xuất vé" value={totals.iss}
+          sub={`${totals.ticketCount} vé`} tone="slate" align="right" />
+        <StatTile label="Tổng doanh thu" value={totals.revenue} tone="emerald" />
+        <StatTile label="Công nợ hiện tại" value={totals.debt}
+          tone={totals.debt > 0.5 ? 'rose' : 'slate'} align="right" />
+      </div>
+
+      {/* 2026-11-12: Toolbar — chỉ desktop. Mobile: tìm kiếm + ngày vào modal,
+          toggle + xuất báo cáo là FAB ở góc phải dưới. */}
+      <div className="shrink-0 hidden lg:flex flex-wrap items-center gap-2 mb-3 px-1">
         <input type="search" value={q} onChange={e => setQ(e.target.value)}
           placeholder="Tìm khách hàng…"
           className="flex-1 min-w-[220px] max-w-[460px] px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200" />
@@ -763,17 +792,21 @@ export default function CustomersTab() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-auto rounded-xl border border-gray-200 bg-white">
+      {/* Desktop table — chỉ hiện lg+ */}
+      <div className="hidden lg:block flex-1 overflow-auto rounded-xl border border-gray-200 bg-white">
         {/* 2026-11-08 (rev4): table-layout fixed + colgroup — đảm bảo widths
             giống hệt ở cả 2 tab Công ty / Khách lẻ, không bị flick layout. */}
         <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+          {/* 2026-11-12: KHÔNG chèn comment JSX giữa các <col/> — sinh whitespace
+              text node → React warning validateDOMNesting trong <colgroup>.
+              Thứ tự cột: Tên · Tổng tiền vé · Phí xuất vé · Doanh thu · Công nợ · Ngày sắp tới. */}
           <colgroup>
-            <col style={{ width: '26%' }} />   {/* Tên khách hàng */}
-            <col style={{ width: '12%' }} />   {/* Tổng tiền vé */}
-            <col style={{ width: '14%' }} />   {/* Tổng phí xuất vé (+ vé) */}
-            <col style={{ width: '13%' }} />   {/* Tổng doanh thu */}
-            <col style={{ width: '20%' }} />   {/* Công nợ hiện tại (+15% share) */}
-            <col style={{ width: '15%' }} />   {/* Ngày sắp tới (-15% share) */}
+            <col style={{ width: '26%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '14%' }} />
+            <col style={{ width: '13%' }} />
+            <col style={{ width: '20%' }} />
+            <col style={{ width: '15%' }} />
           </colgroup>
           <thead className="sticky top-0 z-10 bg-gray-50">
             {/* 2026-11-08 (rev5): tương tự body — pseudo ::after inset khỏi
@@ -880,6 +913,65 @@ export default function CustomersTab() {
         </table>
       </div>
 
+      {/* Mobile cards — thay bảng trên mobile (lg:hidden) */}
+      <div className="lg:hidden flex-1 min-h-0 overflow-auto space-y-2 no-scrollbar">
+        {loading && filtered.length === 0 ? (
+          <div className="text-center text-xs text-gray-400 italic py-10">Đang tải…</div>
+        ) : filtered.length === 0 ? (
+          <div className="text-center text-xs text-gray-400 italic py-10">Không có khách hàng</div>
+        ) : filtered.map(r => (
+          <MobileCustomerCard key={r.key} r={r}
+            onMeta={() => setEditFor(r)}
+            onRevenue={() => setDetailFor({ row: r, mode: 'revenue' })}
+            onDebt={() => setDebtFor(r)} />
+        ))}
+      </div>
+
+      {/* 2026-11-12: FAB mobile — filter · toggle CTY/LẺ · xuất báo cáo */}
+      <MobileFabCluster storageKey="vmbCustomersFab">
+        <Fab tone="filter" title="Tìm & lọc ngày" onClick={() => setMobilePanel(true)}>🔍</Fab>
+        <Fab tone="toggle" title="Chuyển Công ty / Khách lẻ"
+          onClick={() => setKind(k => k === 'company' ? 'walkin' : 'company')}>
+          {kind === 'company' ? 'CTY' : 'LẺ'}
+        </Fab>
+        <Fab tone="export" title="Xuất báo cáo doanh thu"
+          onClick={() => !loading && !exporting && setSortPick(true)}>📊</Fab>
+      </MobileFabCluster>
+
+      {mobilePanel && (
+        <Modal open onClose={() => setMobilePanel(false)} title="Tìm & lọc" size="md">
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Tìm khách hàng</label>
+              <input type="search" value={q} onChange={e => setQ(e.target.value)}
+                placeholder="Tìm khách hàng…"
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 bg-white text-sm outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-200" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-gray-600 mb-1">Khoảng ngày</label>
+              <DateRangePicker value={range} onChange={setRange}
+                presets={['thisMonth', 'thisQuarter', 'thisYear']} align="left"
+                placeholder="Tất cả thời gian" portal />
+            </div>
+            <div className="pt-1">
+              <div className="text-xs font-semibold text-gray-600 mb-1">Loại khách</div>
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setKind('company')}
+                  className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border ${
+                    kind === 'company' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-600 border-gray-300'}`}>
+                  🏢 Công ty
+                </button>
+                <button type="button" onClick={() => setKind('walkin')}
+                  className={`flex-1 px-3 py-2 rounded-lg text-xs font-semibold border ${
+                    kind === 'walkin' ? 'bg-amber-500 text-white border-amber-500' : 'bg-white text-gray-600 border-gray-300'}`}>
+                  👤 Khách lẻ
+                </button>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+
       {sortPick && (
         <ReportSortModal
           onClose={() => setSortPick(false)}
@@ -964,6 +1056,97 @@ function ReportSortModal({ onClose, onPick }) {
         ))}
       </div>
     </Modal>
+  )
+}
+
+/**
+ * 2026-11-11: Ô thông số ở đầu tab Khách hàng. Số tiền luôn là VNĐ nên không
+ * in đơn vị trong ô cho gọn; `sub` là dòng phụ nhỏ bên dưới (số khách / số vé).
+ */
+/**
+ * 2026-11-12: Card khách hàng cho MOBILE — thay 1 dòng bảng. Giữ nguyên các
+ *   hành động: bấm tên → meta; doanh thu → chi tiết; công nợ → chi tiết nợ.
+ */
+function MobileCustomerCard({ r, onMeta, onRevenue, onDebt }) {
+  // 2026-11-12: có công nợ → nền cam nhạt; hết nợ → trắng.
+  const toneCls = r.debt > 0 ? 'bg-amber-50 border-amber-200' : 'bg-white border-gray-200'
+  return (
+    <div className={`border rounded-2xl p-3 shadow-sm ${toneCls}`}>
+      <button type="button" onClick={onMeta} className="text-left block w-full">
+        <span className={`mr-1.5 text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded font-bold ${
+          r.isWalkIn ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
+          {r.isWalkIn ? 'Khách lẻ' : 'Công ty'}
+        </span>
+        <span className="font-bold text-gray-900 text-sm underline decoration-dotted decoration-gray-300">{r.name}</span>
+        {r.noteCount > 0 && (
+          <span className="ml-1.5 text-[10px] font-semibold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">{r.noteCount} 📝</span>
+        )}
+      </button>
+
+      <div className="grid grid-cols-2 gap-x-3 gap-y-2 mt-3 pt-3 border-t border-dashed border-gray-200">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-gray-400">Tổng tiền vé</div>
+          <div className="font-mono tabular-nums font-bold text-gray-800 text-sm">{formatMoney(r.ticket, 'VND', { withUnit: false })}</div>
+        </div>
+        <div className="text-right">
+          <div className="text-[10px] uppercase tracking-wide text-gray-400">Phí xuất vé <span className="text-blue-700 font-semibold">({r.ticketCount} vé)</span></div>
+          <div className="font-mono tabular-nums font-bold text-gray-800 text-sm">{formatMoney(r.iss, 'VND', { withUnit: false })}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-gray-400">Doanh thu</div>
+          <button type="button" onClick={onRevenue}
+            className="font-mono tabular-nums font-bold text-emerald-700 text-sm underline decoration-dotted decoration-emerald-300">
+            {formatMoney(r.revenue, 'VND', { withUnit: false })}
+          </button>
+        </div>
+        <div className="text-right">
+          <div className="text-[10px] uppercase tracking-wide text-gray-400">Công nợ hiện tại</div>
+          {r.debt > 0 ? (
+            <button type="button" onClick={onDebt}
+              className="font-mono tabular-nums font-bold text-rose-700 text-sm underline decoration-dotted decoration-rose-300">
+              {formatMoney(r.debt, 'VND', { withUnit: false })}
+            </button>
+          ) : <div className="text-gray-400">—</div>}
+        </div>
+      </div>
+
+      {r.debt > 0 && <div className="mt-2"><DebtDatesBadges bookings={r.unpaidBookings} fluid /></div>}
+
+      {r.upcoming && r.upcoming.length > 0 && (
+        <div className="mt-3 pt-2 border-t border-dashed border-gray-200">
+          <div className="text-[10px] uppercase tracking-wide text-gray-400 mb-1">Ngày sắp tới</div>
+          <div className="flex flex-col gap-1">
+            {r.upcoming.map((d, i) => (
+              <div key={i} className="text-xs leading-tight">
+                <span className="font-bold text-indigo-700">{vnWeekday(d._date)}, {fmtLocalDate(d._date)}</span>
+                <span className="text-[11px] text-gray-500"> · {d.label}
+                  <span className="ml-1 text-[10px] text-gray-400">(còn {daysUntil(d._date)} ngày{d.year ? ' · 1 lần' : ''})</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function StatTile({ label, value, sub, tone = 'slate', align = 'left' }) {
+  const toneCls = {
+    slate:   'text-gray-900',
+    emerald: 'text-emerald-700',
+    rose:    'text-rose-700',
+  }[tone] || 'text-gray-900'
+  // 2026-11-12: canh phải chỉ trên MOBILE (desktop giữ nguyên canh trái).
+  const alignCls = align === 'right' ? 'text-right sm:text-left' : ''
+  return (
+    <div className={`rounded-xl border border-gray-200 bg-white px-3 py-2 ${alignCls}`}>
+      <div className="text-[10px] font-semibold uppercase tracking-wide text-gray-500">{label}</div>
+      <div className={`font-mono tabular-nums text-lg font-bold leading-tight ${toneCls}`}>
+        {formatMoney(value, 'VND', { withUnit: false })}
+      </div>
+      {sub && <div className="text-[10px] text-gray-400 leading-tight">{sub}</div>}
+    </div>
   )
 }
 
