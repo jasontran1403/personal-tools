@@ -375,11 +375,10 @@ export default function CustomersTab() {
     ;(async () => {
       setLoading(true)
       try {
-        // 2026-11-17: Lấy toàn bộ booking trong 1 REQUEST duy nhất.
-        //   BE đã nâng trần size lên 2000 (đủ cho toàn bộ booking hiện tại) và
-        //   batch cross-invoice để 1 call vẫn nhanh. Không còn vòng lặp phân
-        //   trang / Promise.all.
-        const res = await listBookings({ page: 0, size: 2000 })
+        // 2026-11-17: Lấy toàn bộ booking trong 1 REQUEST duy nhất, chế độ
+        //   COMPACT — BE trả payload gọn (bỏ mặt vé/file/cross-invoice/grandTotal),
+        //   hydrate nhẹ → nhanh hơn nhiều so với bản đầy đủ.
+        const res = await listBookings({ page: 0, size: 2000, compact: true })
         const all = res.data?.data?.content || []
         if (!cancel) setBookings(all)
       } catch (e) {

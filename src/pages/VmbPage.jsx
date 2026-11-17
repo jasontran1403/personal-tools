@@ -127,7 +127,7 @@ export default function VmbPage() {
         {/* ── Desktop: hàng Navbar ngang ──
             2026-11-17: bỏ bg-white/85 (không được darkmode override → trắng chói
             trong theme tối). Để trong suốt cho kế thừa nền header đã theme sẵn. */}
-        <div className="w-full px-3 sm:px-4 hidden sm:block border-t border-gray-200 dark:border-slate-700">
+        <div className="w-full px-3 sm:px-4 hidden sm:block border-t border-gray-200">
           <Navbar
             tabs={tabs}
             active={tab}

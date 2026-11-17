@@ -45,10 +45,10 @@ export default function Navbar({ tabs, active, onChange, onLogout, userName }) {
               type="button"
               onClick={() => handleClick(key)}
               className={`flex items-center gap-1.5 px-3 sm:px-4 h-12 text-sm font-semibold
-                border-b-2 -mb-px whitespace-nowrap shrink-0 transition-colors rounded-t-lg
+                border-b-2 -mb-px whitespace-nowrap shrink-0 transition-colors
                 ${isActive
-                  ? 'border-blue-600 text-blue-700 dark:text-blue-400'
-                  : 'border-transparent text-gray-500 hover:text-gray-900 hover:bg-gray-100/70 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-slate-800/70'}`}
+                  ? 'border-blue-600 text-blue-700'
+                  : 'border-transparent text-gray-500 hover:text-gray-900'}`}
             >
               {icon && <span>{icon}</span>}
               <span>{label}</span>
@@ -68,11 +68,10 @@ export default function Navbar({ tabs, active, onChange, onLogout, userName }) {
         type="button"
         onClick={() => setOpen(true)}
         className="sm:hidden inline-flex items-center justify-center w-10 h-10 rounded-full
-                   bg-white border border-gray-200 shadow-sm active:scale-95 transition
-                   dark:bg-slate-800 dark:border-slate-700"
+                   bg-white border border-gray-200 shadow-sm active:scale-95 transition"
         aria-label="Mở menu"
       >
-        <svg viewBox="0 0 20 20" className="w-5 h-5 text-gray-700 dark:text-gray-200" fill="currentColor">
+        <svg viewBox="0 0 20 20" className="w-5 h-5 text-gray-700" fill="currentColor">
           <path d="M3 5h14v2H3V5zm0 4h14v2H3V9zm0 4h14v2H3v-2z" />
         </svg>
       </button>
