@@ -1,3 +1,5 @@
+import { createPortal } from 'react-dom'
+
 /**
  * Hộp thoại xác nhận dùng chung (xóa, thao tác nguy hiểm...).
  *
@@ -9,8 +11,15 @@
  *    danger
  *    busy={deleting}
  *    onConfirm={...}
- *    onCancel={...}
+ *    onCancel={...}   // hoặc onClose — nhận cả hai
  * />
+ *
+ * ── 2026-11-17 ─────────────────────────────────────────────
+ * • PORTAL ra document.body: trước đây render inline, khi nằm trong container
+ *   có `transform` (vd khu trượt hóa đơn ở VmbPage) thì `fixed` bị tính theo
+ *   container đó → modal lệch phải & nằm sau. Portal ra body để `fixed` bám
+ *   viewport và nổi trên cùng.
+ * • Nhận cả `onClose` (alias của onCancel) — vài nơi gọi bằng onClose.
  */
 export default function ConfirmModal({
   open,
@@ -22,12 +31,14 @@ export default function ConfirmModal({
   busy = false,
   onConfirm,
   onCancel,
+  onClose,
 }) {
   if (!open) return null
+  const dismiss = onCancel || onClose
 
-  return (
-    <div className="fixed inset-0 z-[120] flex items-center justify-center p-4"
-      onClick={busy ? undefined : onCancel}>
+  const content = (
+    <div className="fixed inset-0 z-[2000] flex items-center justify-center p-4"
+      onClick={busy ? undefined : dismiss}>
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" />
       <div className="relative w-full max-w-sm bg-white rounded-2xl shadow-2xl overflow-hidden"
         onClick={e => e.stopPropagation()}>
@@ -45,7 +56,7 @@ export default function ConfirmModal({
         </div>
 
         <div className="flex gap-2 p-4 pt-0">
-          <button onClick={onCancel} disabled={busy}
+          <button onClick={dismiss} disabled={busy}
             className="flex-1 h-11 rounded-xl border border-gray-200 bg-white text-sm font-semibold
               text-gray-600 hover:bg-gray-50 active:scale-95 transition disabled:opacity-50">
             {cancelLabel}
@@ -59,4 +70,7 @@ export default function ConfirmModal({
       </div>
     </div>
   )
+
+  if (typeof document === 'undefined') return content
+  return createPortal(content, document.body)
 }

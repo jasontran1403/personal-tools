@@ -131,10 +131,11 @@ export default function ExpenseModal({ accounts, onClose, onSaved }) {
           <label className="text-xs font-semibold text-gray-600 mb-1 block">Số tiền (VND)</label>
           <input type="text" inputMode="numeric"
             value={amount}
-            onChange={e => setAmount(e.target.value)}
-            onBlur={e => {
-              const n = parseAmount(e.target.value)
-              if (Number.isFinite(n)) setAmount(formatMoney(n, 'VND', { withUnit: false }))
+            onChange={e => {
+              // 2026-11-17: Format NGAY khi gõ (thêm/bớt ký tự) — chỉ giữ chữ số
+              //   rồi chèn dấu chấm phân cách nghìn, không chờ blur.
+              const digits = e.target.value.replace(/[^\d]/g, '')
+              setAmount(digits ? digits.replace(/\B(?=(\d{3})+(?!\d))/g, '.') : '')
             }}
             placeholder="VD: 500.000"
             className="w-full px-3 py-2 rounded-lg border border-gray-300 font-mono text-lg" required />

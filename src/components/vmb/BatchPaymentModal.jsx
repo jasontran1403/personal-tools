@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import toast from 'react-hot-toast'
 import Modal from '../common/Modal'
-import { recordInvoicePayment, ensureBookingInvoice } from '../../services/vmbApi'
+import { recordInvoicePayment, ensureBookingInvoice, listFinanceAccounts } from '../../services/vmbApi'
 import { parseAmount, formatMoney } from '../../lib/money'
 
 /**
@@ -23,6 +23,10 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
   const [note, setNote] = useState('')
   const [file, setFile] = useState(null)
   const [busy, setBusy] = useState(false)
+  // 2026-11-17: Tài khoản nhận tiền (Tiền mặt / HD / VCB) — áp CHUNG cho mọi
+  //   hoá đơn trong batch; thiếu cái này thì tiền thu không vào tài khoản nào.
+  const [accounts, setAccounts] = useState([])
+  const [accountCode, setAccountCode] = useState('CASH')
   // key: `${ownerBookingId}::${fileNguồn || id}` — xem invoiceKey ở cuối file.
   const [excluded, setExcluded] = useState(() => new Set())
   const fileInputRef = useRef(null)
@@ -32,6 +36,18 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
   //   CHƯA có hoá đơn thì tự gọi BE tạo hoá đơn nháp mặc định (theo từng
   //   booking, số tiền = tổng booking đó) rồi mới dựng bảng. Nhờ vậy không còn
   //   "0 hoá đơn / không thấy số tiền cần thu".
+  // Nạp danh sách tài khoản chi được (CASH/HD/VCB) để chọn nơi nhận tiền.
+  useEffect(() => {
+    listFinanceAccounts().then(res => {
+      const list = (res.data?.data || []).filter(a => !a.isVirtual)
+      setAccounts(list)
+      if (list.length && !list.some(a => a.code === accountCode)) {
+        setAccountCode(list[0].code)
+      }
+    }).catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const [workBookings, setWorkBookings] = useState(bookings)
   const [preparing, setPreparing] = useState(false)
   useEffect(() => {
@@ -198,6 +214,9 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
     if (selectedKeys.length === 0) {
       return toast.error('Không có hoá đơn nào được chọn.')
     }
+    if (!accountCode) {
+      return toast.error('Chọn tài khoản nhận tiền.')
+    }
     setBusy(true)
     let done = 0
     const errors = []
@@ -206,7 +225,7 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
         const meta = allUniqueKeys.get(key)
         const amount = formatMoney(meta.remainOrig, meta.currency, { withUnit: false })
         try {
-          await recordInvoicePayment(meta.ownerInvoiceId, { amount, note, file })
+          await recordInvoicePayment(meta.ownerInvoiceId, { amount, note, file, accountCode })
           done++
         } catch (err) {
           console.warn('[batch pay]', key, err)
@@ -308,6 +327,25 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
       </div>
 
       <form id="batch-pay-form" onSubmit={submit} className="mt-4 space-y-3">
+        {/* 2026-11-17: Chọn tài khoản nhận tiền — áp chung cho cả batch. */}
+        <div>
+          <label className="text-[11px] font-semibold text-gray-600 mb-1 block">
+            Thanh toán vào tài khoản (chung cho mọi hoá đơn)
+          </label>
+          <div className="grid grid-cols-3 gap-2">
+            {accounts.map(a => (
+              <button key={a.id} type="button"
+                onClick={() => setAccountCode(a.code)}
+                className={`px-2 py-2 rounded-lg text-xs font-semibold border transition
+                  ${accountCode === a.code
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-white text-gray-700 border-gray-200 hover:border-emerald-300'}`}>
+                {a.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div>
           <label className="text-[11px] font-semibold text-gray-600 mb-1 block">
             Ghi chú (chung cho mọi hoá đơn vừa chọn)
