@@ -201,6 +201,7 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
             hnhFee: t.hnhFee || '',
             commission: t.commission || '',               // 2026-11-16
             commissionAmount: t.commissionAmount || '',    // 2026-11-16
+            costAmount: t.costAmount || '',                // 2026-11-17
             paidStatus: t.paidStatus || 'PENDING',
             note: t.note || '',
             fees: (t.fees || []).map(f => ({
@@ -758,6 +759,16 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                       </Field>
                     </div>
 
+                    {/* 2026-11-17: Giá vốn (VND) — để trống = tự tính theo thành tiền. */}
+                    <div className="mt-2">
+                      <Field label={
+                        <span>Giá vốn <span className="text-[10px] text-gray-500 font-normal">(VND — để trống = tự tính theo thành tiền, quy đổi nếu ngoại tệ)</span></span>
+                      }>
+                        <PriceInput value={t.costAmount || ''} currency="VND"
+                          onChange={v => setTicket(i, { costAmount: v })} />
+                      </Field>
+                    </div>
+
                     <div className="mt-2">
                       <div className="text-[10px] font-semibold text-gray-600 mb-1">Các loại phí phát sinh</div>
                       <TicketFeesEditor
@@ -837,6 +848,7 @@ function newTicket() {
     hnhFee: '',    // 2026-11-07
     commission: '',        // 2026-11-16: % hoa hồng (0 < x < 100)
     commissionAmount: '',  // 2026-11-16: Số tiền hoa hồng (1 <= x < 999999999)
+    costAmount: '',        // 2026-11-17: Giá vốn VNĐ (để trống = BE tự tính theo thành tiền)
     paidStatus: 'PENDING', note: '',
     fees: [],
     // 2026-10-16: Link tới Passenger khi chọn qua dropdown.
