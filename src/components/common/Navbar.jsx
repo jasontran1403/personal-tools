@@ -45,10 +45,10 @@ export default function Navbar({ tabs, active, onChange, onLogout, userName }) {
               type="button"
               onClick={() => handleClick(key)}
               className={`flex items-center gap-1.5 px-3 sm:px-4 h-12 text-sm font-semibold
-                border-b-2 -mb-px whitespace-nowrap shrink-0 transition-colors
+                border-b-2 -mb-px whitespace-nowrap shrink-0 transition-colors rounded-t-lg
                 ${isActive
-                  ? 'border-blue-600 text-blue-700'
-                  : 'border-transparent text-gray-500 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-100'}`}
+                  ? 'border-blue-600 text-blue-700 dark:text-blue-400'
+                  : 'border-transparent text-gray-500 hover:text-gray-900 hover:bg-gray-100/70 dark:text-gray-400 dark:hover:text-gray-100 dark:hover:bg-slate-800/70'}`}
             >
               {icon && <span>{icon}</span>}
               <span>{label}</span>

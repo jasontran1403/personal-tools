@@ -375,16 +375,12 @@ export default function CustomersTab() {
     ;(async () => {
       setLoading(true)
       try {
-        const all = []
-        let page = 0
-        const MAX = 50
-        while (page < MAX) {
-          const res = await listBookings({ page, size: 200 })
-          const d = res.data?.data
-          all.push(...(d?.content || []))
-          if (page + 1 >= (d?.totalPages || 1)) break
-          page++
-        }
+        // 2026-11-17: Lấy toàn bộ booking trong 1 REQUEST duy nhất.
+        //   BE đã nâng trần size lên 2000 (đủ cho toàn bộ booking hiện tại) và
+        //   batch cross-invoice để 1 call vẫn nhanh. Không còn vòng lặp phân
+        //   trang / Promise.all.
+        const res = await listBookings({ page: 0, size: 2000 })
+        const all = res.data?.data?.content || []
         if (!cancel) setBookings(all)
       } catch (e) {
         console.error('[customers load bookings]', e)

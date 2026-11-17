@@ -14,13 +14,15 @@ import { parseAmount, formatMoney } from '../../../lib/money'
  *   số dư nổi bật, icon trong chip bo tròn.
  */
 
-// Mỗi tài khoản 1 "accent" (dải màu trái + màu số dư + nền icon).
+// Mỗi tài khoản 1 "accent" nhẹ nhàng (dải màu trái mảnh + nền icon).
+// 2026-11-17: Dùng tone -600 trầm hơn, bỏ ring gây chói; số dư để màu trung
+//   tính cho dễ đọc, chỉ icon mang màu.
 const ACCENTS = {
-  CASH:       { bar: 'bg-emerald-500', ring: 'ring-emerald-500/20', icon: '💵', chip: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-300', val: 'text-emerald-600 dark:text-emerald-300' },
-  HD:         { bar: 'bg-indigo-500',  ring: 'ring-indigo-500/20',  icon: '🏦', chip: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-300',   val: 'text-indigo-600 dark:text-indigo-300' },
-  VCB:        { bar: 'bg-sky-500',     ring: 'ring-sky-500/20',     icon: '🏛️', chip: 'bg-sky-500/15 text-sky-600 dark:text-sky-300',          val: 'text-sky-600 dark:text-sky-300' },
-  HNH_DEBT:   { bar: 'bg-rose-500',    ring: 'ring-rose-500/20',    icon: '📋', chip: 'bg-rose-500/15 text-rose-600 dark:text-rose-300',        val: 'text-rose-600 dark:text-rose-300' },
-  VJ_DEPOSIT: { bar: 'bg-amber-500',   ring: 'ring-amber-500/20',   icon: '🧾', chip: 'bg-amber-500/15 text-amber-600 dark:text-amber-300',     val: 'text-amber-600 dark:text-amber-300' },
+  CASH:       { bar: 'bg-emerald-600', icon: '💵', chip: 'bg-emerald-500/12 text-emerald-700 dark:text-emerald-300' },
+  HD:         { bar: 'bg-blue-600',    icon: '🏦', chip: 'bg-blue-500/12 text-blue-700 dark:text-blue-300' },
+  VCB:        { bar: 'bg-cyan-600',    icon: '🏛️', chip: 'bg-cyan-500/12 text-cyan-700 dark:text-cyan-300' },
+  HNH_DEBT:   { bar: 'bg-rose-600',    icon: '📋', chip: 'bg-rose-500/12 text-rose-700 dark:text-rose-300' },
+  VJ_DEPOSIT: { bar: 'bg-amber-600',   icon: '🧾', chip: 'bg-amber-500/12 text-amber-700 dark:text-amber-300' },
 }
 
 export default function FinanceTab() {
@@ -70,14 +72,14 @@ export default function FinanceTab() {
         {/* ── Top bar ── */}
         <div className="flex items-center justify-between gap-3">
           <div>
-            <div className="text-lg font-bold text-gray-900 dark:text-gray-100">Tài chính</div>
-            <div className="text-xs text-gray-500 dark:text-gray-400">
+            <div className="text-lg font-bold text-slate-900 dark:text-white">Tài chính</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">
               Quản lý các tài khoản thu/chi &amp; công nợ.
             </div>
           </div>
           <button type="button" onClick={() => setShowExpense(true)}
-            className="px-4 py-2 rounded-xl bg-rose-600 text-white text-sm font-semibold
-                       shadow-sm hover:bg-rose-700 active:scale-95 transition">
+            className="px-4 py-2 rounded-xl bg-violet-600 text-white text-sm font-semibold
+                       shadow-sm hover:bg-violet-700 active:scale-95 transition">
             💸 Chi
           </button>
         </div>
@@ -152,20 +154,20 @@ export default function FinanceTab() {
 
 function SectionLabel({ children }) {
   return (
-    <div className="text-[11px] font-bold tracking-wide text-gray-400 dark:text-gray-500 uppercase mb-2">
+    <div className="text-[11px] font-bold tracking-wide text-slate-400 dark:text-slate-500 uppercase mb-2">
       {children}
     </div>
   )
 }
 
 function AccountCard({ acc, onHistory, onSetInitial, virtual = false }) {
-  const a = ACCENTS[acc.code] || { bar: 'bg-gray-400', ring: 'ring-gray-400/20', icon: '💼', chip: 'bg-gray-200 text-gray-600', val: 'text-gray-700' }
+  const a = ACCENTS[acc.code] || { bar: 'bg-slate-400', icon: '💼', chip: 'bg-slate-200 text-slate-600' }
   const bal = parseAmount(acc.balance) || 0
   const negative = bal < 0
   return (
-    <div className={`relative flex rounded-2xl overflow-hidden bg-white dark:bg-slate-800
-                     border border-gray-200 dark:border-slate-700 shadow-sm ring-1 ${a.ring}`}>
-      {/* Dải accent trái */}
+    <div className="relative flex rounded-2xl overflow-hidden bg-white dark:bg-slate-800/80
+                    border border-slate-200 dark:border-slate-700 shadow-sm">
+      {/* Dải accent trái mảnh */}
       <div className={`w-1.5 shrink-0 ${a.bar}`} />
 
       <div className="flex-1 min-w-0 p-4">
@@ -174,11 +176,12 @@ function AccountCard({ acc, onHistory, onSetInitial, virtual = false }) {
             {a.icon}
           </span>
           <div className="flex-1 min-w-0">
-            <div className="text-sm font-bold text-gray-800 dark:text-gray-100 truncate">{acc.name}</div>
-            <div className="text-[10px] uppercase tracking-wide text-gray-400 dark:text-gray-500">
+            <div className="text-sm font-bold text-slate-800 dark:text-slate-100 truncate">{acc.name}</div>
+            <div className="text-[10px] uppercase tracking-wide text-slate-400 dark:text-slate-500">
               {virtual ? 'Số dư ảo' : 'Số dư hiện tại'}
             </div>
-            <div className={`mt-0.5 text-2xl font-bold font-mono tabular-nums truncate ${negative ? 'text-rose-600 dark:text-rose-400' : a.val}`}>
+            {/* Số dư để màu trung tính cho dễ đọc; âm thì đỏ. */}
+            <div className={`mt-0.5 text-2xl font-bold font-mono tabular-nums truncate ${negative ? 'text-rose-600 dark:text-rose-400' : 'text-slate-800 dark:text-slate-100'}`}>
               {negative ? '−' : ''}{formatMoney(Math.abs(bal), 'VND')}
             </div>
           </div>
@@ -186,14 +189,14 @@ function AccountCard({ acc, onHistory, onSetInitial, virtual = false }) {
 
         <div className="mt-3 flex items-center gap-2">
           <button type="button" onClick={onSetInitial}
-            className="flex-1 px-2 py-1.5 rounded-lg bg-gray-100 dark:bg-slate-700
-              text-xs font-semibold text-gray-700 dark:text-gray-200
-              hover:bg-gray-200 dark:hover:bg-slate-600 transition">
+            className="flex-1 px-2 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-700
+              text-xs font-semibold text-slate-700 dark:text-slate-200
+              hover:bg-slate-200 dark:hover:bg-slate-600 transition">
             {bal === 0 ? '+ Nạp đầu kỳ' : '✎ Sửa số dư'}
           </button>
           <button type="button" onClick={onHistory}
-            className="flex-1 px-2 py-1.5 rounded-lg bg-blue-600 text-white
-              text-xs font-semibold hover:bg-blue-700 transition">
+            className="flex-1 px-2 py-1.5 rounded-lg bg-slate-700 text-white
+              text-xs font-semibold hover:bg-slate-800 transition">
             📊 Lịch sử
           </button>
         </div>

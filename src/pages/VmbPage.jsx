@@ -99,8 +99,8 @@ export default function VmbPage() {
               ✈️
             </span>
             <div>
-              <div className="text-sm font-bold text-gray-900 leading-tight">Vé máy bay</div>
-              <div className="text-[10px] text-gray-500 leading-tight">Nhật Nam Tools</div>
+              <div className="text-sm font-bold text-gray-900 leading-tight">247</div>
+              <div className="text-[10px] text-gray-500 leading-tight">Cùng Bay</div>
             </div>
           </div>
 
@@ -124,8 +124,10 @@ export default function VmbPage() {
           </div>
         </div>
 
-        {/* ── Desktop: hàng Navbar ngang ── */}
-        <div className="w-full px-3 sm:px-4 hidden sm:block bg-white/85 backdrop-blur-xl border-t border-gray-200">
+        {/* ── Desktop: hàng Navbar ngang ──
+            2026-11-17: bỏ bg-white/85 (không được darkmode override → trắng chói
+            trong theme tối). Để trong suốt cho kế thừa nền header đã theme sẵn. */}
+        <div className="w-full px-3 sm:px-4 hidden sm:block border-t border-gray-200 dark:border-slate-700">
           <Navbar
             tabs={tabs}
             active={tab}
