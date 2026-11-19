@@ -1173,8 +1173,11 @@ function renderBookingRows(b, bIdx, {
   const totalVnd = toVnd(bookingTotal, b.currency, b.exchangeRate)
   const N = b.tickets?.length || 1
   const primary = primaryDeparture(b.segments, nowTick)
-  const badgeCls =
-    primary?.band === 'warn' ? 'bg-amber-500 text-white'
+  // 2026-11-19: Chỉ hiện badge đếm ngược giờ bay cho booking Vé mới / Đổi vé.
+  //   Hoàn vé (REFUND) / Dịch vụ (SERVICE)… không cần đếm ngược chặng sắp bay.
+  const showDepartBadge = b.kind === 'NEW' || b.kind === 'EXCHANGE'
+  const badgeCls = !showDepartBadge ? ''
+    : primary?.band === 'warn' ? 'bg-amber-500 text-white'
       : primary?.band === 'future' ? 'bg-blue-600 text-white'
         : ''
 
@@ -1870,6 +1873,8 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
     sumAmounts(t.basePrice, t.collectionFee,
       sumTicketFees(t.fees, b.currency, b.exchangeRate), t.issuanceFee)))
   const primary = primaryDeparture(b.segments, nowTick)
+  // 2026-11-19: Chỉ hiện badge đếm ngược giờ bay cho booking Vé mới / Đổi vé.
+  const showDepartBadge = b.kind === 'NEW' || b.kind === 'EXCHANGE'
   const badgeCls =
     primary?.band === 'warn' ? 'bg-amber-500 text-white'
       : primary?.band === 'future' ? 'bg-blue-600 text-white'
@@ -1912,7 +1917,7 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
           onChange={() => onToggleSelect(b.id)}
           className="mt-1.5 rounded cursor-pointer shrink-0" />
         <div className="flex-1 min-w-0 flex items-center gap-1.5 flex-wrap">
-          {primary && (
+          {primary && showDepartBadge && (
             <span className={`inline-block px-1.5 py-0.5 rounded-md font-mono text-[10px] font-bold ${badgeCls}`}>
               ⏱ {primary.text}
             </span>

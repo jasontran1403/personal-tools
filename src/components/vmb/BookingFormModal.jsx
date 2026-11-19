@@ -616,7 +616,7 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
             {/* ── 2026-10-16: Gộp hóa đơn với booking khác (invoice group) ── */}
             {/* ── 2026-11-12 Link theo HÓA ĐƠN cụ thể ở booking chủ ── */}
             <InvoiceLinkSection
-              form={form} setField={setField} isEdit={isEdit}
+              form={form} setField={setField} setForm={setForm} isEdit={isEdit}
             />
 
             <Field label="Ghi chú chung (booking)">
@@ -1017,25 +1017,66 @@ function formatPaxName(raw) {
 // clearInvoiceGroup = true → clear link của mọi vé b đã link sang chủ hiện
 // tại + clear b.invoice_group_id.
 // ────────────────────────────────────────────────────────────────────
-// 2026-11-19: Link vé theo TỪNG VÉ. Ô nhập link giờ nằm trong mỗi vé ở trên
-//   (field "Link sang booking"). Section này chỉ TỔNG HỢP + cho phép booking
-//   chủ gỡ toàn bộ vé đang link về nó. Không còn chặn khi booking là member.
-function InvoiceLinkSection({ form, setField, isEdit }) {
+// 2026-11-19 (v2): 2 cách link:
+//   Cách 1 — Link CẢ BOOKING: nhập 1 mã chủ ở card này → gán cho MỌI vé.
+//   Cách 2 — Link TỪNG VÉ: nhập ở ô "🔗 Link sang booking" trong mỗi vé ở trên.
+//   Cả 2 cùng ghi vào ticket.linkedBookingCode nên BE xử lý thống nhất theo vé.
+function InvoiceLinkSection({ form, setField, setForm, isEdit }) {
   const isOwner = isEdit && form.isInvoiceGroupOwner
-  const linkedTickets = (form.tickets || [])
+  const tickets = form.tickets || []
+  const linkedTickets = tickets
     .map((t, idx) => ({ t, idx }))
     .filter(({ t }) => (t.linkedBookingCode || '').trim())
+
+  // Trạng thái "link cả booking": mọi vé cùng 1 mã chủ (không rỗng).
+  const codes = tickets.map(t => (t.linkedBookingCode || '').trim().toUpperCase())
+  const distinct = [...new Set(codes.filter(Boolean))]
+  const allSame = tickets.length > 0 && codes.every(c => c) && distinct.length === 1
+  const bookingCode = allSame ? distinct[0] : ''
+  const isMixed = distinct.length > 1 || (distinct.length >= 1 && codes.some(c => !c))
+
+  // Gán 1 mã cho TẤT CẢ vé (rỗng = gỡ link toàn bộ).
+  const setAllTicketsLink = (code) => {
+    const v = (code || '').toUpperCase().replace(/\s/g, '')
+    setForm(f => ({ ...f, tickets: f.tickets.map(t => ({ ...t, linkedBookingCode: v })) }))
+  }
 
   return (
     <div className="mt-3 p-3 rounded-xl bg-indigo-50 border border-indigo-200">
       <div className="text-sm font-semibold text-indigo-800 mb-1">
         🔗 Link vé sang booking chủ (chủ xuất hóa đơn hộ)
       </div>
+
+      {/* ── Cách 1: Link CẢ BOOKING ── */}
+      <div className="mb-2 p-2 rounded-lg bg-white border border-indigo-200">
+        <div className="text-[11px] font-semibold text-indigo-800 mb-1">
+          Cách 1 — Link cả booking (gán cho TẤT CẢ vé):
+        </div>
+        <input type="text"
+          value={bookingCode}
+          onChange={e => setAllTicketsLink(e.target.value)}
+          placeholder={isMixed ? 'Đang link theo từng vé — gõ để gán CHUNG 1 chủ' : 'Mã booking chủ (VD: QCZ5RR)'}
+          className="w-full px-3 py-2 rounded-lg bg-white border border-indigo-300
+            text-slate-900 placeholder:text-slate-400 text-sm font-mono uppercase
+            focus:border-indigo-500 focus:ring-2 focus:ring-indigo-400/30 outline-none" />
+        {isMixed && (
+          <div className="mt-1 text-[10px] text-amber-700 italic">
+            ⚠ Các vé đang link khác nhau (xem danh sách dưới). Gõ mã ở đây sẽ gán CHUNG cho mọi vé.
+          </div>
+        )}
+        {(allSame || isMixed) && (
+          <button type="button" onClick={() => setAllTicketsLink('')}
+            className="mt-1 text-[11px] text-rose-700 hover:text-rose-900 font-semibold">
+            × Gỡ link cả booking
+          </button>
+        )}
+      </div>
+
+      {/* ── Cách 2: Link từng vé ── */}
       <div className="text-[11px] text-indigo-700 mb-2 leading-relaxed">
-        Mỗi vé link <b>độc lập</b>: nhập mã booking chủ ở ô “🔗 Link sang booking”
-        trong từng vé bên trên. Các vé khác nhau có thể link sang các booking chủ
-        khác nhau. Khi chủ upload hóa đơn, vé đã link nằm trong hóa đơn của chủ —
-        booking này thấy hóa đơn đó tự động.
+        <b>Cách 2 — Link từng vé:</b> nhập mã chủ ở ô “🔗 Link sang booking” trong
+        từng vé bên trên. Các vé có thể link sang các booking chủ khác nhau. Khi chủ
+        upload hóa đơn, vé đã link nằm trong hóa đơn của chủ — booking này thấy hóa đơn đó tự động.
       </div>
 
       {linkedTickets.length > 0 && (
