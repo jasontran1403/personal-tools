@@ -405,7 +405,8 @@ function PassengerList({ items, onEdit, onCards, onCopy, onPresent, onDelete }) 
                   <td className="px-3 py-2">
                     {/* 2026-11-07: hiển thị in HOA cho đồng nhất với form (kể cả user
                         nhập chữ thường). Copy/edit vẫn giữ nguyên dữ liệu gốc. */}
-                    <div className="font-semibold text-gray-900 uppercase">{p.fullName}</div>
+                    {/* 2026-11-19: chưa có CẢ CCCD lẫn hộ chiếu → tên màu đỏ để nhắc cập nhật. */}
+                    <div className={`font-semibold uppercase ${(!cccd?.docNumber && !pp?.docNumber) ? 'text-[#dc2626]' : 'text-gray-900'}`}>{p.fullName}</div>
                   </td>
                   {/* 2026-10-08: Cột "Thẻ thành viên" (chỉ có 1 nút Xuất trình) được
                       dời sang Thao tác dạng icon 💳 để gọn hàng, giảm số cột. */}
@@ -459,7 +460,8 @@ function PassengerList({ items, onEdit, onCards, onCopy, onPresent, onDelete }) 
               <div className="flex items-center gap-2">
                 <div className="flex-1 min-w-0">
                   {/* 2026-11-07: hiển thị in HOA. */}
-                  <div className="font-semibold text-gray-900 truncate uppercase">{p.fullName}</div>
+                  {/* 2026-11-19: chưa có CẢ CCCD lẫn hộ chiếu → tên màu đỏ để nhắc cập nhật. */}
+                  <div className={`font-semibold truncate uppercase ${(!cccd?.docNumber && !pp?.docNumber) ? 'text-[#dc2626]' : 'text-gray-900'}`}>{p.fullName}</div>
                   <div className="text-[11px] text-gray-500">
                     {genderLabel(p.gender)}{p.dob && ` · ${formatDateVn(p.dob)}`}
                   </div>

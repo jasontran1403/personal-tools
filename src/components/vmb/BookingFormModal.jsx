@@ -784,6 +784,24 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                         onChange={e => setTicket(i, { note: e.target.value })}
                         className="input" placeholder="Ghi chú tùy chọn" />
                     </Field>
+
+                    {/* 2026-11-19: Link RIÊNG từng vé sang booking chủ (chủ xuất HĐ hộ).
+                        Mỗi vé link độc lập → 1 booking n vé có thể link đi n booking khác. */}
+                    <div className="mt-2">
+                      <Field label={
+                        <span>🔗 Link sang booking <span className="text-[10px] text-gray-500 font-normal">(mã booking chủ — để trống = không link; mỗi vé link riêng)</span></span>
+                      }>
+                        <input type="text"
+                          value={t.linkedBookingCode || ''}
+                          onChange={e => setTicket(i, { linkedBookingCode: e.target.value.toUpperCase().replace(/\s/g, '') })}
+                          className="input font-mono uppercase" placeholder="VD: QCZ5RR (để trống nếu không link)" />
+                      </Field>
+                      {(t.linkedBookingCode || '').trim() && (
+                        <div className="mt-1 text-[11px] text-emerald-700 font-semibold">
+                          ✓ Vé này sẽ được <span className="font-mono">{(t.linkedBookingCode || '').trim().toUpperCase()}</span> xuất hóa đơn hộ
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )
               })}
@@ -999,50 +1017,43 @@ function formatPaxName(raw) {
 // clearInvoiceGroup = true → clear link của mọi vé b đã link sang chủ hiện
 // tại + clear b.invoice_group_id.
 // ────────────────────────────────────────────────────────────────────
+// 2026-11-19: Link vé theo TỪNG VÉ. Ô nhập link giờ nằm trong mỗi vé ở trên
+//   (field "Link sang booking"). Section này chỉ TỔNG HỢP + cho phép booking
+//   chủ gỡ toàn bộ vé đang link về nó. Không còn chặn khi booking là member.
 function InvoiceLinkSection({ form, setField, isEdit }) {
-  const isMember = isEdit && form.invoiceGroupId != null && !form.isInvoiceGroupOwner
-  const isOwner  = isEdit && form.isInvoiceGroupOwner
-
-  const toggleTicketId = (id) => {
-    const cur = form.linkedTicketIds || []
-    if (cur.includes(id)) setField('linkedTicketIds', cur.filter(x => x !== id))
-    else setField('linkedTicketIds', [...cur, id])
-  }
-
-  const clearLink = () => {
-    setField('clearInvoiceGroup', true)
-    setField('linkedBookingCode', '')
-    setField('linkedTicketIds', [])
-  }
-
-  const canChoose = !isMember && (form.linkedBookingCode || '').trim().length > 0
-                   && (form.tickets || []).length > 0
-                   && !form.clearInvoiceGroup
+  const isOwner = isEdit && form.isInvoiceGroupOwner
+  const linkedTickets = (form.tickets || [])
+    .map((t, idx) => ({ t, idx }))
+    .filter(({ t }) => (t.linkedBookingCode || '').trim())
 
   return (
     <div className="mt-3 p-3 rounded-xl bg-indigo-50 border border-indigo-200">
       <div className="text-sm font-semibold text-indigo-800 mb-1">
-        🔗 Link hành khách sang booking chủ (chủ xuất hóa đơn hộ)
+        🔗 Link vé sang booking chủ (chủ xuất hóa đơn hộ)
       </div>
       <div className="text-[11px] text-indigo-700 mb-2 leading-relaxed">
-        Nhập mã booking <b>chủ</b> và tick các hành khách muốn chủ xuất hóa
-        đơn hộ. Sau khi lưu: khi chủ upload hóa đơn, các vé đã link sẽ nằm
-        trong hóa đơn của chủ — booking này sẽ thấy hóa đơn đó tự động.
+        Mỗi vé link <b>độc lập</b>: nhập mã booking chủ ở ô “🔗 Link sang booking”
+        trong từng vé bên trên. Các vé khác nhau có thể link sang các booking chủ
+        khác nhau. Khi chủ upload hóa đơn, vé đã link nằm trong hóa đơn của chủ —
+        booking này thấy hóa đơn đó tự động.
       </div>
 
-      {isMember && !form.clearInvoiceGroup && (
-        <div className="mb-2 flex flex-wrap items-center gap-1.5">
-          <span className="text-[10px] text-indigo-700">Đang link vào booking chủ:</span>
-          <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-mono font-bold
-              bg-amber-100 text-amber-800 ring-1 ring-amber-300">
-            {form.ownerBookingCode}
-          </span>
-          <button type="button" onClick={clearLink}
-            className="ml-auto text-[11px] text-rose-700 hover:text-rose-900 font-semibold">
-            × Bỏ link
-          </button>
+      {linkedTickets.length > 0 && (
+        <div className="mb-2 space-y-1">
+          <div className="text-[10px] font-semibold text-indigo-800">Các vé đang link:</div>
+          {linkedTickets.map(({ t, idx }) => (
+            <div key={t.id || idx} className="flex items-center gap-2 text-[11px]">
+              <span className="font-medium text-slate-800">{t.passengerName || `Vé #${idx + 1}`}</span>
+              <span className="text-slate-400">→</span>
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full font-mono font-bold
+                  bg-amber-100 text-amber-800 ring-1 ring-amber-300">
+                {(t.linkedBookingCode || '').trim().toUpperCase()}
+              </span>
+            </div>
+          ))}
         </div>
       )}
+
       {isOwner && (
         <div className="mb-2 flex flex-wrap items-center gap-1.5">
           <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold
@@ -1059,70 +1070,16 @@ function InvoiceLinkSection({ form, setField, isEdit }) {
             <input type="checkbox" checked={!!form.clearInvoiceGroup}
               onChange={e => setField('clearInvoiceGroup', e.target.checked)}
               className="accent-rose-500" />
-            Bỏ link
+            Gỡ toàn bộ vé đang link về booking này
           </label>
         </div>
       )}
 
       {form.clearInvoiceGroup && (
         <div className="mb-2 p-2 rounded-md bg-rose-50 border border-rose-300 text-[11px] text-rose-800">
-          ⚠ Sau khi lưu: booking này sẽ không còn link với chủ. Hóa đơn đã
-          chuyển sang chủ vẫn ở chủ (không tự chuyển ngược).
+          ⚠ Sau khi lưu: các vé của booking khác đang link về đây sẽ được gỡ.
+          Hóa đơn đã xuất vẫn giữ nguyên (không tự chuyển ngược).
         </div>
-      )}
-
-      {!isMember && (
-        <>
-          <div className="mb-2">
-            <input type="text"
-              value={form.linkedBookingCode || ''}
-              onChange={e => setField('linkedBookingCode', e.target.value.toUpperCase())}
-              placeholder="Mã booking chủ (VD: 5JW8XD)"
-              disabled={!!form.clearInvoiceGroup}
-              className="w-full px-3 py-2 rounded-lg bg-white border border-indigo-300
-                text-slate-900 placeholder:text-slate-400 text-sm font-mono uppercase
-                focus:border-indigo-500 focus:ring-2 focus:ring-indigo-400/30 outline-none
-                disabled:opacity-40" />
-          </div>
-
-          {canChoose && (
-            <div className="space-y-1">
-              <div className="text-[11px] font-semibold text-indigo-800">
-                Chọn hành khách sẽ link sang <span className="font-mono">{form.linkedBookingCode}</span>:
-              </div>
-              {(form.tickets || []).map((t, idx) => {
-                const isChosen = (form.linkedTicketIds || []).includes(t.id)
-                const existingLink = t.linkedBookingId && t.linkedBookingCode
-                    && t.linkedBookingCode !== form.linkedBookingCode
-                return (
-                  <label key={t.id || idx}
-                      className={`flex items-center gap-2 p-2 rounded-md cursor-pointer text-xs
-                      ${isChosen ? 'bg-indigo-100 ring-2 ring-indigo-400' : 'bg-white hover:bg-indigo-50 border border-indigo-200'}
-                      ${existingLink ? 'opacity-70' : ''}`}>
-                    <input type="checkbox" checked={isChosen}
-                      onChange={() => toggleTicketId(t.id)}
-                      disabled={!t.id} />
-                    <span className="font-medium text-slate-800">
-                      {t.passengerName || `Vé #${idx + 1}`}
-                    </span>
-                    {t.ticketNumber && (
-                      <span className="font-mono text-[11px] text-slate-500">· {t.ticketNumber}</span>
-                    )}
-                    {existingLink && (
-                      <span className="text-[10px] text-amber-700 italic ml-auto">
-                        đang link {t.linkedBookingCode}
-                      </span>
-                    )}
-                  </label>
-                )
-              })}
-              <div className="text-[10px] text-indigo-600 mt-1 italic">
-                Không tick vé nào + để trống → sẽ link TOÀN BỘ hành khách
-                sang chủ. Tick 1 phần → chỉ link các vé đó.
-              </div>
-            </div>
-          )}
-        </>
       )}
     </div>
   )
