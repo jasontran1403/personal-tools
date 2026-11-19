@@ -3,7 +3,7 @@ import toast from 'react-hot-toast'
 import Modal from '../common/Modal'
 import RouteInput from './RouteInput'
 import PriceInput from './PriceInput'
-import { getBooking, createBooking, updateBooking, listCompanies, listFeeTypes, listBookings, getPassenger } from '../../services/vmbApi'
+import { getBooking, createBooking, updateBooking, listCompanies, listFeeTypes, listBookings, getPassenger, getLatestRate } from '../../services/vmbApi'
 import { parseAmount, formatMoney } from '../../lib/money'
 import TicketFeesEditor from './TicketFeesEditor'
 import CompanySearchSelect, { companyOptions } from '../common/CompanySearchSelect'
@@ -240,6 +240,42 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
   const setTicket = (i, patch) => setForm(f => ({
     ...f, tickets: f.tickets.map((t, idx) => idx === i ? { ...t, ...patch } : t),
   }))
+
+  // ── 2026-11-19: Tỷ giá ──────────────────────────────────────
+  const fmtRate = (r) => String(r || '').replace(/[^0-9]/g, '').replace(/\B(?=(\d{3})+(?!\d))/g, '.')
+
+  // Đổi đồng tiền: chuyển sang USD mà chưa có tỷ giá → tự lấy tỷ giá USD mới nhất.
+  const onCurrencyChange = async (v) => {
+    setField('currency', v)
+    if (v === 'USD') {
+      setForm(f => {
+        if (f.exchangeRate) return f
+        getLatestRate('USD').then(res => {
+          const rate = res.data?.data?.rate
+          if (rate) setForm(ff => ff.exchangeRate ? ff : { ...ff, exchangeRate: fmtRate(rate) })
+        }).catch(() => {})
+        return f
+      })
+    }
+  }
+
+  // Ghi chú: gõ "/tygiaUSD" (hoặc /tygiacny…) → thay bằng tỷ giá hôm nay (đã format).
+  const onNoteChange = (e) => {
+    const v = e.target.value
+    setField('note', v)
+    const m = v.match(/\/tygia([a-zA-Z]{3})/)
+    if (!m) return
+    const cur = m[1].toUpperCase()
+    getLatestRate(cur).then(res => {
+      const rate = res.data?.data?.rate
+      if (!rate) return
+      const formatted = fmtRate(rate)
+      setForm(f => {
+        const mm = (f.note || '').match(/\/tygia([a-zA-Z]{3})/)
+        return mm ? { ...f, note: f.note.replace(mm[0], formatted) } : f
+      })
+    }).catch(() => {})
+  }
 
   // ── 2026-10-16: ID presentation picker ──
   // Khi user chọn 1 passenger qua PassengerSearchSelect → mở modal với mode
@@ -579,7 +615,7 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
               <Field label="Đồng tiền">
                 <CurrencyToggle value={form.currency}
-                  onChange={v => setField('currency', v)} />
+                  onChange={onCurrencyChange} />
               </Field>
               {form.currency === 'USD' && (
                 <Field label="Tỷ giá (1 USD = ? VND)" span={3}>
@@ -619,10 +655,10 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
               form={form} setField={setField} setForm={setForm} isEdit={isEdit}
             />
 
-            <Field label="Ghi chú chung (booking)">
+            <Field label={<span>Ghi chú chung (booking) <span className="text-[10px] font-normal text-gray-500">— gõ <b>/tygiausd</b> để chèn tỷ giá USD hôm nay</span></span>}>
               <textarea rows={2} value={form.note}
-                onChange={e => setField('note', e.target.value)}
-                className="input resize-none" placeholder="Ghi chú tùy chọn cho cả booking" />
+                onChange={onNoteChange}
+                className="input resize-none" placeholder="Ghi chú tùy chọn cho cả booking · /tygiausd" />
             </Field>
 
             {/* 2026-11-07: Người giới thiệu — chỉ cần cho booking khách lẻ,
@@ -666,12 +702,14 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                     </div>
 
                     <Field label="Công ty">
+                      {/* 2026-11-19: Bỏ allowNone (mục "Khách lẻ" ảo) — công ty
+                          "Khách lẻ" THẬT đã nằm trong options nên không còn trùng. */}
                       <CompanySearchSelect
                         value={t.companyId}
                         options={flatCompanies}
                         onChange={(id) => setTicket(i, { companyId: id })}
                         placeholder="— Khách lẻ —"
-                        allowNone={true}
+                        allowNone={false}
                       />
                     </Field>
 

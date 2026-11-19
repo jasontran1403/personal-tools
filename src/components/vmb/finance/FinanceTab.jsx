@@ -1,9 +1,17 @@
 import { useCallback, useEffect, useState } from 'react'
 import toast from 'react-hot-toast'
-import { listFinanceAccounts, setAccountInitial } from '../../../services/vmbApi'
+import { listFinanceAccounts, setAccountInitial, syncFinanceLedger } from '../../../services/vmbApi'
 import AccountHistoryModal from './AccountHistoryModal'
 import ExpenseModal from './ExpenseModal'
+import ExchangeRatePanel from './ExchangeRatePanel'
 import { parseAmount, formatMoney } from '../../../lib/money'
+
+// 2026-11-19: Gom chữ số + chèn dấu "." ngăn cách nghìn (số nguyên, chuẩn VN),
+//   format NGAY mỗi lần gõ/xóa 1 ký tự.
+export const groupVnInt = (v) => {
+  const d = String(v ?? '').replace(/[^0-9]/g, '')
+  return d ? d.replace(/\B(?=(\d{3})+(?!\d))/g, '.') : ''
+}
 
 /**
  * Tab "Tài chính".
@@ -32,6 +40,7 @@ export default function FinanceTab() {
   const [showExpense, setShowExpense] = useState(false)
   const [editInitial, setEditInitial] = useState(null)
   const [initialAmt, setInitialAmt] = useState('')
+  const [showSync, setShowSync] = useState(false)   // 2026-11-19: đồng bộ sổ cái
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -76,11 +85,18 @@ export default function FinanceTab() {
               Quản lý các tài khoản thu/chi &amp; công nợ.
             </div>
           </div>
-          <button type="button" onClick={() => setShowExpense(true)}
-            className="px-4 py-2 rounded-xl bg-violet-600 text-white text-sm font-semibold
-                       shadow-sm hover:bg-violet-700 active:scale-95 transition">
-            💸 Chi
-          </button>
+          <div className="flex items-center gap-2">
+            <button type="button" onClick={() => setShowSync(true)}
+              className="px-4 py-2 rounded-xl bg-teal-600 text-white text-sm font-semibold
+                         shadow-sm hover:bg-teal-700 active:scale-95 transition">
+              🔄 Đồng bộ sổ cái
+            </button>
+            <button type="button" onClick={() => setShowExpense(true)}
+              className="px-4 py-2 rounded-xl bg-violet-600 text-white text-sm font-semibold
+                         shadow-sm hover:bg-violet-700 active:scale-95 transition">
+              💸 Chi
+            </button>
+          </div>
         </div>
 
         {/* ── Tài khoản chi được ── */}
@@ -109,6 +125,12 @@ export default function FinanceTab() {
                 virtual />
             ))}
           </div>
+        </section>
+
+        {/* ── Tỷ giá quy đổi (2026-11-19) ── */}
+        <section>
+          <SectionLabel>Tỷ giá quy đổi</SectionLabel>
+          <ExchangeRatePanel />
         </section>
 
         {/* ── Hint ── */}
@@ -146,6 +168,121 @@ export default function FinanceTab() {
           onConfirm={saveInitial}
         />
       )}
+
+      {showSync && (
+        <LedgerSyncModal
+          accounts={accounts}
+          onCancel={() => setShowSync(false)}
+          onSaved={() => { setShowSync(false); load() }}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * ── 2026-11-19: Đồng bộ sổ cái ──────────────────────────────
+ * Nhập lại số dư 5 tài khoản (tiền mặt, VCB, HD, công nợ HNH, ký quỹ VJ).
+ * Mặc định = số dư hiện tại; user chỉ sửa ô cần đổi. Input format VN, số nguyên.
+ * Lưu → BE chốt mốc; lịch sử trước mốc không hiển thị nữa.
+ */
+const SYNC_ORDER = ['CASH', 'VCB', 'HD', 'HNH_DEBT', 'VJ_DEPOSIT']
+const SYNC_LABEL = {
+  CASH: 'Tiền mặt', VCB: 'Tài khoản Vietcombank', HD: 'Tài khoản HD',
+  HNH_DEBT: 'Công nợ HNH', VJ_DEPOSIT: 'Ký quỹ VJ',
+}
+function LedgerSyncModal({ accounts, onCancel, onSaved }) {
+  const byCode = {}
+  for (const a of accounts) byCode[a.code] = a
+  // Khởi tạo input = số dư hiện tại (đã có dấu chấm). Dùng abs cho ô, giữ dấu âm riêng.
+  const [vals, setVals] = useState(() => {
+    const init = {}
+    for (const code of SYNC_ORDER) {
+      const raw = byCode[code]?.balance || '0'
+      const neg = parseAmount(raw) < 0
+      init[code] = { text: groupVnInt(raw), neg }
+    }
+    return init
+  })
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    const onKey = e => { if (e.key === 'Escape' && !busy) onCancel() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onCancel, busy])
+
+  const setCode = (code, patch) => setVals(v => ({ ...v, [code]: { ...v[code], ...patch } }))
+
+  const submit = async () => {
+    const body = {}
+    for (const code of SYNC_ORDER) {
+      const digits = (vals[code].text || '').replace(/[^0-9]/g, '') || '0'
+      body[code] = (vals[code].neg ? '-' : '') + digits
+    }
+    setBusy(true)
+    try {
+      await syncFinanceLedger(body)
+      toast.success('Đã đồng bộ sổ cái')
+      onSaved()
+    } catch (e) {
+      toast.error(e?.response?.data?.message || 'Đồng bộ thất bại')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex: 120 }}>
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={busy ? undefined : onCancel} />
+      <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl p-5 max-h-[92vh] overflow-y-auto">
+        <h3 className="text-base font-bold text-gray-900">🔄 Đồng bộ sổ cái</h3>
+        <p className="mt-1 text-xs text-gray-500 leading-relaxed">
+          Nhập lại số dư hiện có của từng tài khoản. Ô nào không đổi thì để nguyên.
+          Sau khi đồng bộ, lịch sử giao dịch <b>trước thời điểm này</b> sẽ không hiển thị nữa.
+        </p>
+
+        <div className="mt-4 space-y-3">
+          {SYNC_ORDER.map(code => {
+            const virtual = code === 'HNH_DEBT' || code === 'VJ_DEPOSIT'
+            return (
+              <div key={code}>
+                <label className="text-xs font-semibold text-gray-600">{SYNC_LABEL[code]}</label>
+                <div className="mt-1 flex items-stretch gap-1.5">
+                  {virtual && (
+                    <button type="button"
+                      onClick={() => setCode(code, { neg: !vals[code].neg })}
+                      title="Đổi dấu âm/dương"
+                      className={`px-3 rounded-lg border text-sm font-bold shrink-0 transition
+                        ${vals[code].neg
+                          ? 'bg-rose-100 border-rose-300 text-rose-700'
+                          : 'bg-gray-100 border-gray-300 text-gray-600'}`}>
+                      {vals[code].neg ? '−' : '+'}
+                    </button>
+                  )}
+                  <input
+                    type="text" inputMode="numeric"
+                    value={vals[code].text}
+                    onChange={e => setCode(code, { text: groupVnInt(e.target.value) })}
+                    placeholder="0"
+                    className="flex-1 min-w-0 px-3 py-2 rounded-lg border border-gray-300 bg-white text-gray-900
+                               font-mono text-lg text-right outline-none focus:border-blue-500" />
+                  <span className="px-2 flex items-center text-sm text-gray-400 shrink-0">₫</span>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button type="button" onClick={onCancel} disabled={busy}
+            className="px-4 py-2 text-sm rounded-lg text-gray-600 hover:bg-gray-100 disabled:opacity-50">Hủy</button>
+          <button type="button" onClick={submit} disabled={busy}
+            className="px-4 py-2 text-sm font-semibold rounded-lg bg-teal-600 text-white hover:bg-teal-700 disabled:opacity-50">
+            {busy ? 'Đang đồng bộ…' : 'Đồng bộ'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

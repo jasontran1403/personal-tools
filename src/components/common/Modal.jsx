@@ -54,6 +54,9 @@ const SIZE = {
   full: 'max-w-[96vw]',
   // ── 2026-11-07: preset riêng cho báo cáo công nợ: 70dvw × 80dvh ──
   debt: 'max-w-[70dvw] w-[70dvw]',
+  // ── 2026-11-19: form hành khách khi bật batch — rộng hơn xl ~20% để chứa
+  //   card danh sách khách bên phải. ──
+  batch: 'max-w-[68rem]',
 }
 
 export default function Modal({

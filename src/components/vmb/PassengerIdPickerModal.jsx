@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import Modal from '../common/Modal'
 import { formatDateVn } from '../../lib/expiry'
+import ZoomablePreview from './ZoomablePreview'   // 2026-11-19: preview CCCD/PP (zoom + rotate)
 
 /**
  * ── 2026-10-16 ─────────────────────────────────────────────
@@ -95,7 +96,7 @@ export default function PassengerIdPickerModal({
         }>
         <div className="py-2">
           <div className="text-xs text-gray-600 mb-3 text-center">
-            Hành trình quốc nội — chọn giấy tờ muốn gán cho vé:
+            Chọn giấy tờ muốn gán cho vé:
           </div>
           <div className="grid grid-cols-2 gap-3">
             <IdChoiceButton icon="🪪" label="CCCD" hint={cccdDoc.docNumber}
@@ -103,6 +104,12 @@ export default function PassengerIdPickerModal({
             <IdChoiceButton icon="📘" label="Hộ chiếu" hint={ppDoc.docNumber}
               onClick={() => setPick('pp')} />
           </div>
+          {/* 2026-11-19: tùy chọn không gắn giấy tờ nào. */}
+          <button type="button" onClick={() => onConfirm({ type: null, doc: null })}
+            className="mt-3 w-full px-4 py-2 text-sm rounded-lg border border-gray-300 bg-white
+              text-gray-600 hover:bg-gray-50 hover:text-gray-800 transition">
+            Không gắn giấy tờ — vẫn chọn khách này
+          </button>
         </div>
       </Modal>
     )
@@ -110,13 +117,15 @@ export default function PassengerIdPickerModal({
 
   const doc = pick === 'cccd' ? cccdDoc : ppDoc
   const docLabel = pick === 'cccd' ? 'CCCD' : 'Hộ chiếu'
+  const hasFile = !!doc?.fileUrl   // 2026-11-19: có ảnh/PDF để preview không
   const expiresTooSoon = earliestDepartMs && doc?.expiryDate
     ? isWithin6MonthsBeforeDepart(doc.expiryDate, earliestDepartMs)
     : false
 
   return (
+    // 2026-11-19: mở rộng sang 2 panel — trái preview (zoom/rotate), phải thông tin.
     <Modal open onClose={onCancel} title={`${docLabel} — ${passenger?.fullName}`}
-      size="sm" closeOnBackdrop={false}
+      size="xl" closeOnBackdrop={false}
       footer={
         <div className="flex items-center justify-between w-full gap-2">
           {hasCccd && hasPp ? (
@@ -125,7 +134,12 @@ export default function PassengerIdPickerModal({
               <TabBtn active={pick === 'pp'} onClick={() => setPick('pp')}>📘 HC</TabBtn>
             </div>
           ) : <div />}
-          <div className="flex gap-2">
+          <div className="flex items-center gap-2">
+            {/* 2026-11-19: không gắn giấy tờ nào, vẫn chọn khách. */}
+            <button onClick={() => onConfirm({ type: null, doc: null })}
+              className="px-3 py-1.5 text-sm rounded-lg text-gray-500 hover:text-gray-800 hover:bg-gray-100">
+              Không gắn giấy tờ
+            </button>
             <button onClick={onCancel}
               className="px-3 py-1.5 text-sm rounded-lg bg-gray-200 hover:bg-gray-300">Hủy</button>
             <button
@@ -138,27 +152,49 @@ export default function PassengerIdPickerModal({
         </div>
       }
     >
-      <div className="space-y-2 py-1">
-        <InfoRow label="Họ tên" value={passenger?.fullName} />
-        <InfoRow label={pick === 'cccd' ? 'Số CCCD' : 'Số hộ chiếu'} value={doc?.docNumber} mono />
-        {pick === 'pp' && doc?.nationality && (
-          <InfoRow label="Quốc tịch (ISO-3)" value={doc.nationality} mono />
-        )}
-        <InfoRow label="Ngày sinh" value={formatDateVn(passenger?.dob) || '—'} mono />
-        {doc?.issueDate && (
-          <InfoRow label="Ngày cấp" value={formatDateVn(doc.issueDate)} mono />
-        )}
-        <InfoRow label="Ngày hết hạn"
-          value={formatDateVn(doc?.expiryDate) || '—'}
-          mono
-          highlight={expiresTooSoon ? 'danger' : null}
-        />
-        {expiresTooSoon && (
-          <div className="mt-2 p-2 rounded-md bg-rose-50 border border-rose-200 text-xs text-rose-700">
-            ⚠ <b>Giấy tờ hết hạn &lt; 6 tháng</b> trước ngày khởi hành chặng đầu tiên —
-            vui lòng bỏ khách này khỏi vé.
+      <div className="flex flex-col lg:grid lg:grid-cols-5 gap-4 lg:h-full lg:min-h-0">
+        {/* Panel trái: preview giấy tờ — zoom + rotate như các preview khác */}
+        <div className="lg:col-span-3 min-h-[45vh] lg:min-h-0 lg:h-full">
+          <div className="rounded-xl overflow-hidden border border-gray-200 bg-gray-100 w-full h-full min-h-[45vh]">
+            {hasFile ? (
+              <ZoomablePreview
+                filePath={doc.fileUrl}
+                fileName={doc.fileOriginal}
+                title={`${docLabel} — ${passenger?.fullName || ''}`}
+                embedded
+              />
+            ) : (
+              <div className="w-full h-full min-h-[45vh] flex flex-col items-center justify-center text-gray-400">
+                <div className="text-6xl mb-2">📭</div>
+                <div className="text-sm">Chưa có ảnh {docLabel}</div>
+              </div>
+            )}
           </div>
-        )}
+        </div>
+
+        {/* Panel phải: thông tin */}
+        <div className="lg:col-span-2 space-y-2 py-1 lg:h-full lg:overflow-y-auto lg:pr-1">
+          <InfoRow label="Họ tên" value={passenger?.fullName} />
+          <InfoRow label={pick === 'cccd' ? 'Số CCCD' : 'Số hộ chiếu'} value={doc?.docNumber} mono />
+          {pick === 'pp' && doc?.nationality && (
+            <InfoRow label="Quốc tịch (ISO-3)" value={doc.nationality} mono />
+          )}
+          <InfoRow label="Ngày sinh" value={formatDateVn(passenger?.dob) || '—'} mono />
+          {doc?.issueDate && (
+            <InfoRow label="Ngày cấp" value={formatDateVn(doc.issueDate)} mono />
+          )}
+          <InfoRow label="Ngày hết hạn"
+            value={formatDateVn(doc?.expiryDate) || '—'}
+            mono
+            highlight={expiresTooSoon ? 'danger' : null}
+          />
+          {expiresTooSoon && (
+            <div className="mt-2 p-2 rounded-md bg-rose-50 border border-rose-200 text-xs text-rose-700">
+              ⚠ <b>Giấy tờ hết hạn &lt; 6 tháng</b> trước ngày khởi hành chặng đầu tiên —
+              vui lòng bỏ khách này khỏi vé.
+            </div>
+          )}
+        </div>
       </div>
     </Modal>
   )

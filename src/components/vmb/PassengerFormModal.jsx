@@ -5,6 +5,7 @@ import ConfirmModal from '../common/ConfirmModal'
 import ZoomablePreview from './ZoomablePreview'
 import DateInputVN from '../common/DateInputVN'
 import CompanySearchSelect, { companyOptions, walkInCompanyId } from '../common/CompanySearchSelect'
+import { formatDateVn } from '../../lib/expiry'   // 2026-11-19: hiển thị ngày sinh trên card batch
 import {
   getPassenger, createPassenger, updatePassenger,
   upsertPassengerDocument, deletePassengerDocument,
@@ -53,6 +54,38 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
   const [activeTab, setActiveTab] = useState('cccd')
   const [preview, setPreview] = useState(null)   // { url, name }
   const [confirmDelDoc, setConfirmDelDoc] = useState(null)   // 'cccd' | 'passport'
+
+  // ── 2026-11-19: Thêm BATCH khách (chỉ create mode) ──────────
+  //   Mỗi khách đã nhập được "đẩy" vào danh sách chờ (card bên phải). Khi bấm
+  //   "Tạo hành khách" → tạo TẤT CẢ (danh sách chờ + khách đang nhập dở nếu có)
+  //   vào cùng 1 công ty / khách lẻ đang chọn.
+  const [batch, setBatch] = useState([])
+
+  const snapshotCurrent = () => ({
+    key: Date.now() + '_' + Math.random().toString(36).slice(2, 7),
+    fullName: (form.fullName || '').toUpperCase().trim(),
+    dob: form.dob,
+    gender: form.gender,
+    referrerName: (form.referrerName || '').trim() || null,
+    cccd: { ...cccdDoc }, cccdFile: cccdBufFile,
+    pp: { ...ppDoc }, ppFile: ppBufFile,
+  })
+
+  const resetPersonalForNext = () => {
+    setForm(f => ({ ...f, fullName: '', dob: '', gender: 'MALE', referrerName: '' }))
+    setCccdDoc(emptyDoc('CCCD')); setCccdBufFile(null)
+    setPpDoc(emptyDoc('PASSPORT')); setPpBufFile(null)
+    setActiveTab('cccd')
+  }
+
+  const addToBatch = () => {
+    if (!form.fullName.trim()) return toast.error('Nhập tên khách trước khi thêm vào danh sách')
+    setBatch(b => [...b, snapshotCurrent()])
+    resetPersonalForNext()
+    toast.success('Đã thêm vào danh sách — nhập khách tiếp theo')
+  }
+
+  const removeFromBatch = (key) => setBatch(b => b.filter(x => x.key !== key))
 
   // ── Load edit ─────────────────────────────────────────────
   useEffect(() => {
@@ -109,51 +142,78 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
   // ── Submit nhân thân ──────────────────────────────────────
   const submit = async (e) => {
     e.preventDefault()
-    if (!form.fullName.trim()) return toast.error('Tên khách không được để trống')
     if (companyPickMode === 'new' && !form.newCompanyName.trim())
       return toast.error('Gõ tên công ty mới')
 
-    const body = {
-      companyId: companyPickMode === 'existing' && form.companyId ? Number(form.companyId) : null,
-      newCompanyName: companyPickMode === 'new' ? form.newCompanyName : null,
-      // 2026-11-08: Force viết HOA tên khi lưu.
-      fullName: (form.fullName || '').toUpperCase(),
-      dob: form.dob,
-      gender: form.gender,
-      // 2026-11-08: Chỉ gửi referrer khi là khách lẻ (companyId = null hoặc
-      //   companyPickMode = 'none'). BE trim rỗng → null giúp đồng nhất.
-      referrerName: (form.referrerName || '').trim() || null,
-    }
-
-    setBusy(true)
-    try {
-      if (mode === 'edit') {
+    // ── EDIT mode: giữ nguyên hành vi cũ (1 khách) ──
+    if (mode === 'edit') {
+      if (!form.fullName.trim()) return toast.error('Tên khách không được để trống')
+      const body = {
+        companyId: companyPickMode === 'existing' && form.companyId ? Number(form.companyId) : null,
+        newCompanyName: companyPickMode === 'new' ? form.newCompanyName : null,
+        fullName: (form.fullName || '').toUpperCase(),
+        dob: form.dob, gender: form.gender,
+        referrerName: (form.referrerName || '').trim() || null,
+      }
+      setBusy(true)
+      try {
         await updatePassenger(id, body)
         toast.success('Đã cập nhật nhân thân')
-        // 2026-11-12: báo mode+id để parent patch tại chỗ (không reload cả list).
         onSaved({ mode: 'edit', id })
-      } else {
-        // 1) Tạo passenger
+      } catch (err) {
+        toast.error(err?.response?.data?.message || 'Lưu thất bại')
+      } finally { setBusy(false) }
+      return
+    }
+
+    // ── CREATE mode: tạo CẢ BATCH (danh sách chờ + khách đang nhập dở) ──
+    const entries = [...batch]
+    if (form.fullName.trim()) entries.push(snapshotCurrent())
+    if (entries.length === 0)
+      return toast.error('Chưa có khách nào — nhập tên khách hoặc thêm vào danh sách')
+
+    // Công ty dùng CHUNG cho mọi khách trong batch.
+    let sharedCompanyId = companyPickMode === 'existing' && form.companyId ? Number(form.companyId) : null
+    let pendingNewName = companyPickMode === 'new' ? form.newCompanyName : null
+
+    setBusy(true)
+    let okCount = 0, lastId = null
+    try {
+      for (let idx = 0; idx < entries.length; idx++) {
+        const en = entries[idx]
+        const body = {
+          companyId: sharedCompanyId,
+          // Chỉ khách ĐẦU TIÊN tạo công ty mới; các khách sau tái dùng id vừa tạo.
+          newCompanyName: sharedCompanyId == null ? pendingNewName : null,
+          fullName: en.fullName,
+          dob: en.dob,
+          gender: en.gender,
+          referrerName: en.referrerName,
+        }
         const res = await createPassenger(body)
         const saved = res.data?.data
         const newId = saved?.id
         if (!newId) throw new Error('Không nhận được passenger.id')
-        // 2) Upsert từng document đã có dữ liệu
+        lastId = newId
+        // Khóa công ty cho các khách còn lại (dù chọn sẵn hay vừa tạo mới).
+        if (sharedCompanyId == null && saved?.companyId) { sharedCompanyId = saved.companyId; pendingNewName = null }
+
         try {
-          if (isDocFilled(cccdDoc) || cccdBufFile) {
-            await upsertPassengerDocument(newId, 'cccd', extractFields(cccdDoc), cccdBufFile)
-          }
-          if (isDocFilled(ppDoc) || ppBufFile) {
-            await upsertPassengerDocument(newId, 'passport', extractFields(ppDoc), ppBufFile)
-          }
+          if (isDocFilled(en.cccd) || en.cccdFile)
+            await upsertPassengerDocument(newId, 'cccd', extractFields(en.cccd), en.cccdFile)
+          if (isDocFilled(en.pp) || en.ppFile)
+            await upsertPassengerDocument(newId, 'passport', extractFields(en.pp), en.ppFile)
         } catch (docErr) {
-          toast.error('Đã tạo khách nhưng lưu giấy tờ lỗi: ' + (docErr?.response?.data?.message || docErr?.message))
+          toast.error(`Khách "${en.fullName}": tạo OK nhưng lưu giấy tờ lỗi`)
         }
-        toast.success('Đã tạo hành khách')
-        onSaved({ mode: 'create', id: newId })
+        okCount++
       }
+      toast.success(entries.length > 1 ? `Đã tạo ${okCount} hành khách` : 'Đã tạo hành khách')
+      onSaved({ mode: 'create', id: lastId })
     } catch (err) {
-      toast.error(err?.response?.data?.message || 'Lưu thất bại')
+      toast.error((okCount > 0 ? `Đã tạo ${okCount} khách, dừng vì lỗi: ` : '') +
+        (err?.response?.data?.message || 'Lưu thất bại'))
+      if (okCount > 0) onSaved({ mode: 'create', id: lastId })
     } finally {
       setBusy(false)
     }
@@ -204,6 +264,9 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
   }
 
   const isEditMode = mode === 'edit' && id
+  // 2026-11-19: batch chỉ dành cho create mode.
+  const batchActive = !isEditMode && batch.length > 0
+  const totalToCreate = batch.length + (form.fullName.trim() ? 1 : 0)
 
   return (
     <>
@@ -211,19 +274,32 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
         open
         onClose={busy ? undefined : onClose}
         title={isEditMode ? 'Sửa hành khách' : 'Thêm hành khách mới'}
-        size="xl"
+        size={batchActive ? 'batch' : 'xl'}
         closeOnBackdrop={!busy}
         footer={
-          <div className="flex justify-end gap-2">
-            <button type="button" onClick={onClose} disabled={busy}
-              className="px-4 py-2 text-sm rounded-lg text-gray-600 hover:bg-gray-200 disabled:opacity-50">
-              Đóng
-            </button>
-            <button type="submit" form="pax-form" disabled={busy || loading}
-              className="px-4 py-2 text-sm font-semibold rounded-lg bg-blue-600 text-white
-                         hover:bg-blue-700 disabled:opacity-50">
-              {busy ? 'Đang lưu…' : (isEditMode ? 'Lưu nhân thân' : 'Tạo hành khách')}
-            </button>
+          <div className="flex items-center justify-between w-full gap-2">
+            {/* 2026-11-19: Thêm khách nữa vào danh sách (chỉ create mode) */}
+            {!isEditMode ? (
+              <button type="button" onClick={addToBatch} disabled={busy || loading}
+                className="px-3 py-2 text-sm font-semibold rounded-lg border border-blue-300
+                  text-blue-700 bg-blue-50 hover:bg-blue-100 disabled:opacity-50">
+                ➕ Thêm khách nữa
+              </button>
+            ) : <div />}
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={onClose} disabled={busy}
+                className="px-4 py-2 text-sm rounded-lg text-gray-600 hover:bg-gray-200 disabled:opacity-50">
+                Đóng
+              </button>
+              <button type="submit" form="pax-form" disabled={busy || loading}
+                className="px-4 py-2 text-sm font-semibold rounded-lg bg-blue-600 text-white
+                           hover:bg-blue-700 disabled:opacity-50">
+                {busy ? 'Đang lưu…'
+                  : isEditMode ? 'Lưu nhân thân'
+                  : totalToCreate > 1 ? `Tạo ${totalToCreate} hành khách`
+                  : 'Tạo hành khách'}
+              </button>
+            </div>
           </div>
         }
       >
@@ -231,6 +307,9 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
           <div className="py-10 text-center text-gray-400 text-sm">Đang tải…</div>
         ) : (
           <>
+            {/* 2026-11-19: khi batch bật → 2 cột (form trái · danh sách khách phải). */}
+            <div className={batchActive ? 'flex gap-4 items-start' : ''}>
+            <div className={batchActive ? 'flex-1 min-w-0' : ''}>
             {/* SECTION 1: Nhân thân */}
             <form id="pax-form" onSubmit={submit} className="space-y-3">
               <div className="text-xs font-bold text-gray-700 uppercase tracking-wide">Nhân thân</div>
@@ -332,6 +411,37 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
                 />
               )}
             </div>
+            </div>{/* /cột trái */}
+
+            {/* 2026-11-19: Cột phải — danh sách khách đã thêm vào batch */}
+            {batchActive && (
+              <div className="w-[240px] shrink-0 self-stretch border-l border-gray-200 pl-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-xs font-bold text-gray-700 uppercase tracking-wide">
+                    Danh sách ({batch.length})
+                  </div>
+                  <button type="button" onClick={() => setBatch([])}
+                    className="text-[10px] font-semibold text-rose-500 hover:text-rose-700">
+                    Xóa hết
+                  </button>
+                </div>
+                <div className="space-y-2 max-h-[62vh] overflow-y-auto pr-1">
+                  {batch.map((en, idx) => (
+                    <BatchCard key={en.key} en={en} idx={idx}
+                      onRemove={() => removeFromBatch(en.key)} />
+                  ))}
+                  {form.fullName.trim() && (
+                    <div className="p-2 rounded-lg border border-dashed border-blue-300 bg-blue-50/50 text-[11px] text-blue-700">
+                      <b>{form.fullName.toUpperCase()}</b> đang nhập — sẽ được tạo cùng khi bấm “Tạo”.
+                    </div>
+                  )}
+                </div>
+                <div className="mt-2 text-[10px] text-gray-400 leading-snug">
+                  Tất cả khách sẽ được tạo vào cùng công ty / khách lẻ đang chọn bên trái.
+                </div>
+              </div>
+            )}
+            </div>{/* /flex 2 cột */}
 
             <style>{`
               .input {
@@ -468,6 +578,37 @@ function TabBtn({ active, onClick, children }) {
         ${active ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'}`}>
       {children}
     </button>
+  )
+}
+
+// 2026-11-19: Card tóm tắt 1 khách trong batch — tên, ngày sinh, giới tính, số CCCD/PP.
+function BatchCard({ en, idx, onRemove }) {
+  const genderLabel = en.gender === 'FEMALE' ? 'Nữ' : en.gender === 'OTHER' ? 'Khác' : 'Nam'
+  const cccdNo = en.cccd?.docNumber || (en.cccdFile ? '(có ảnh)' : '')
+  const ppNo = en.pp?.docNumber || (en.ppFile ? '(có ảnh)' : '')
+  return (
+    <div className="relative p-2 rounded-lg border border-gray-200 bg-white shadow-sm">
+      <button type="button" onClick={onRemove}
+        className="absolute top-1 right-1 w-5 h-5 flex items-center justify-center rounded-full
+          text-gray-400 hover:text-rose-600 hover:bg-rose-50 text-sm leading-none"
+        title="Bỏ khỏi danh sách">×</button>
+      <div className="flex items-center gap-1.5 pr-5">
+        <span className="shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-700 text-[10px] font-bold flex items-center justify-center">
+          {idx + 1}
+        </span>
+        <div className="font-semibold text-sm text-gray-900 uppercase truncate">{en.fullName}</div>
+      </div>
+      <div className="mt-1 text-[11px] text-gray-500 flex flex-wrap gap-x-2 gap-y-0.5">
+        <span>{genderLabel}</span>
+        {en.dob && <span>· {formatDateVn(en.dob)}</span>}
+      </div>
+      {(cccdNo || ppNo) && (
+        <div className="mt-1 space-y-0.5 text-[11px] font-mono">
+          {cccdNo && <div className="text-gray-700">🪪 {cccdNo}</div>}
+          {ppNo && <div className="text-gray-700">📘 {ppNo}</div>}
+        </div>
+      )}
+    </div>
   )
 }
 

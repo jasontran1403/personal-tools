@@ -317,3 +317,25 @@ export const listAccountHistory = (accountId) =>
  */
 export const createFinanceExpense = (body) =>
   api.post('/api/tools/vmb/finance/expense', body)
+
+// ── 2026-11-19: Đồng bộ sổ cái ──────────────────────────────
+/** body = { CASH, VCB, HD, HNH_DEBT, VJ_DEPOSIT } (số VND nguyên). */
+export const syncFinanceLedger = (balancesByCode) =>
+  api.post('/api/tools/vmb/finance/sync', balancesByCode)
+
+// ── 2026-11-19: Tỷ giá ──────────────────────────────────────
+/** { date, currencies:[...], today:{cur:rate}, latest:{cur:rate} } */
+export const getExchangeRates = () =>
+  api.get('/api/tools/vmb/finance/rates')
+
+/** body = { date?, rates: { USD:"25930", ... } } */
+export const saveExchangeRates = (body) =>
+  api.post('/api/tools/vmb/finance/rates', body)
+
+/** [{ date, rates:{cur:rate} }] mới nhất trước. */
+export const getExchangeRateHistory = () =>
+  api.get('/api/tools/vmb/finance/rates/history')
+
+/** Tỷ giá mới nhất 1 tiền tệ → { currency, rate }. */
+export const getLatestRate = (currency) =>
+  api.get(`/api/tools/vmb/finance/rates/latest/${encodeURIComponent(currency)}`)
