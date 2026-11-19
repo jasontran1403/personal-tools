@@ -11,7 +11,7 @@ import { createPortal } from 'react-dom'
  * Tự portal ra body + tự khóa scroll + Esc để đóng (không dùng Modal chung
  * vì cần canh phải + bề rộng riêng).
  */
-export default function DraftInvoiceModal({ open, onClose, loading, mode, pdfBase64, error }) {
+export default function DraftInvoiceModal({ open, onClose, loading, mode, pdfBase64, error, onIssue }) {
   const pdfUrl = useMemo(() => {
     if (mode !== 'PDF' || !pdfBase64) return null
     try {
@@ -42,12 +42,22 @@ export default function DraftInvoiceModal({ open, onClose, loading, mode, pdfBas
         className="relative h-full w-full sm:w-[50dvw] max-w-full bg-white shadow-2xl flex flex-col">
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100 shrink-0">
           <h2 className="text-sm sm:text-base font-semibold text-gray-900">🧾 Hóa đơn nháp</h2>
-          <button type="button" onClick={onClose} aria-label="Đóng"
-            className="w-9 h-9 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700 flex items-center justify-center">
+          <div className="flex items-center gap-2">
+            {/* 2026-11-19: Phát hành ngay tại modal nháp (chỉ khi nháp hợp lệ). */}
+            {mode === 'PDF' && onIssue && (
+              <button type="button" onClick={onIssue}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold
+                  text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm shadow-indigo-500/20">
+                <span>🚀</span> Phát hành hóa đơn
+              </button>
+            )}
+            <button type="button" onClick={onClose} aria-label="Đóng"
+              className="w-9 h-9 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-700 flex items-center justify-center">
             <svg viewBox="0 0 20 20" className="w-5 h-5" fill="currentColor">
               <path d="M6.28 5.22a.75.75 0 0 0-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 1 0 1.06 1.06L10 11.06l3.72 3.72a.75.75 0 1 0 1.06-1.06L11.06 10l3.72-3.72a.75.75 0 0 0-1.06-1.06L10 8.94 6.28 5.22Z" />
             </svg>
-          </button>
+            </button>
+          </div>
         </div>
 
         <div className="flex-1 min-h-0">

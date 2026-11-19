@@ -12,7 +12,7 @@ import TicketNoteModal from './TicketNoteModal'
 import BookingTotalsCard from './BookingTotalsCard'
 import PaymentModal from './PaymentModal'
 import InvoicePickerModal from './InvoicePickerModal'
-import { unpaidTicketsOf, narrowBooking } from '../../lib/ticketDebt'
+import { unpaidTicketsOf, narrowBooking, invoicesOfTicket, invoiceNumbersOf } from '../../lib/ticketDebt'
 import BatchPaymentModal from './BatchPaymentModal'
 import DateRangePicker from '../common/DateRangePicker'
 import MobileFabCluster, { Fab } from '../common/MobileFabCluster'
@@ -284,6 +284,25 @@ export default function TicketsTab({ onOpenInvoices, fabHidden, refreshSignal } 
     }
     return out
   }, [rows, companyId, paymentStatus, sortMode, nowTick])
+
+  // ── 2026-11-20: Auto-fill khi lọc client-side (vd lọc CÔNG TY) ────────────
+  //   Filter công ty chạy ở FE (lọc `rows` đã tải), BE vẫn phân trang theo TOÀN
+  //   hệ thống. Nếu trang đã tải chỉ có vài booking khớp công ty → bảng quá ngắn,
+  //   không cuộn được → `loadMore` (chỉ chạy khi cuộn) KHÔNG bao giờ kích hoạt →
+  //   kẹt, không xem/nạp được các booking còn lại. Giải pháp: khi nội dung chưa
+  //   đủ cao để cuộn mà vẫn còn trang → tự nạp tiếp cho tới khi cuộn được hoặc hết.
+  const autoFillPageRef = useRef(-1)
+  useEffect(() => {
+    if (loading || loadingMore) return
+    if (page >= totalPages - 1) { autoFillPageRef.current = -1; return }
+    const el = [desktopScrollRef.current, mobileScrollRef.current].find(x => x && x.clientHeight > 0)
+    if (!el) return
+    const scrollable = el.scrollHeight > el.clientHeight + 8
+    if (scrollable) { autoFillPageRef.current = -1; return }
+    if (autoFillPageRef.current === page) return   // đã thử ở trang này → tránh lặp vô hạn khi lỗi
+    autoFillPageRef.current = page
+    loadMore()
+  }, [filteredRows, page, totalPages, loading, loadingMore, loadMore])
 
   // ── Totals: khi có filter công ty thì tính lại từ các vé khớp filter.
   //    Khi không có filter thì dùng totals từ BE (tổng toàn hệ thống theo
@@ -1493,10 +1512,21 @@ function autoShort(name) {
   return parts.slice(0, 3).map(p => p[0]?.toUpperCase() || '').join('')
 }
 
+/**
+ * 2026-11-20: Hoá đơn CỦA CHÍNH booking này — bỏ cross-invoice ("ké" từ booking
+ *   khác, vd hoá đơn group của booking chủ). Thu tiền theo TỪNG booking nên card
+ *   thanh toán chỉ hiện hoá đơn của nó → không còn card dư chưa/đã thanh toán.
+ */
+function ownInvoicesOf(b) {
+  return (b?.invoices || []).filter(
+    inv => inv.sourceBookingId == null || inv.sourceBookingId === b.id)
+}
+
 function PaymentCell({ booking, bookingTotal, onPay }) {
+  const ownInvs = ownInvoicesOf(booking)
   // 2026-11-11: Booking tách ≥ 2 hoá đơn → mỗi hoá đơn 1 nút thanh toán riêng.
-  if (bookingTotal > 0.5 && (booking.invoices || []).length > 1) {
-    return <InvoicePayButtons booking={booking} onPay={onPay} />
+  if (bookingTotal > 0.5 && ownInvs.length > 1) {
+    return <InvoicePayButtons booking={booking} invoices={ownInvs} onPay={onPay} />
   }
   const stRaw = booking.paymentStatus || 'UNPAID'
   const paid = parseAmount(booking.paidAmount) || 0
@@ -1538,8 +1568,8 @@ function PaymentCell({ booking, bookingTotal, onPay }) {
  *   rỗng) → "Chung". Nhiều hoá đơn trùng nhãn → thêm số hoá đơn / tên khách
  *   để phân biệt.
  */
-function invoicePayLabels(booking) {
-  const invs = booking.invoices || []
+function invoicePayLabels(booking, invoices) {
+  const invs = invoices || ownInvoicesOf(booking)
   const tickets = booking.tickets || []
   const byId = new Map(tickets.map(t => [t.id, t]))
   const base = invs.map(inv => {
@@ -1588,9 +1618,9 @@ function invoicePayLabels(booking) {
  *   thái riêng (Chưa thanh toán / Đã thu một phần / Đã thanh toán). Bấm nút →
  *   onPay(booking, invoice) mở PaymentModal của đúng hoá đơn đó.
  */
-function InvoicePayButtons({ booking, onPay }) {
-  const invs = booking.invoices || []
-  const labels = invoicePayLabels(booking)
+function InvoicePayButtons({ booking, invoices, onPay }) {
+  const invs = invoices || ownInvoicesOf(booking)
+  const labels = invoicePayLabels(booking, invs)
   return (
     <div className="flex flex-col gap-1 w-full">
       {invs.map((inv, i) => {
@@ -2384,6 +2414,14 @@ function DebtReportModal({ companies, onClose }) {
     return out
   }, [bookings, companyId, companies])
 
+  // 2026-11-19: map id → bookingCode của MỌI booking đã fetch (để hiện mã chủ
+  //   khi group link tới booking chủ nằm ngoài section).
+  const codeById = useMemo(() => {
+    const m = new Map()
+    for (const b of bookings) m.set(b.id, b.bookingCode)
+    return m
+  }, [bookings])
+
   // Mỗi section có 1 checkbox (default checked). State: Set<companyId>.
   const [excluded, setExcluded] = useState(new Set())
   // Khi đổi công ty → reset exclusion (tránh trạng thái cũ dính lại).
@@ -2516,34 +2554,43 @@ function DebtReportModal({ companies, onClose }) {
                   </label>
                   {!isExcluded && (
                     <div className="divide-y">
-                      {s.bookings.map(b => {
-                        const nums = collectBookingInvoiceNumbers(b)
-                        return (
-                          <div key={b.id} className="flex items-center gap-2 px-3 py-2 text-xs">
-                            <div className="w-24 font-mono font-bold text-gray-900">{b.bookingCode}</div>
-                            <div className="flex-1 text-gray-600 truncate">
-                              {(b.tickets || []).map(t => t.passengerName).join(' · ')}
-                            </div>
-                            <div className="w-16 text-right text-gray-500 font-mono tabular-nums">
-                              {(b.tickets || []).length} vé
-                            </div>
-                            {/* 2026-11-07 (rev): stack DỌC — dùng <div> block
-                                cho mỗi badge + w-fit + items-end để canh phải */}
-                            <div className="w-56 font-mono flex flex-col items-end gap-1 self-start">
-                              {nums.length === 0 ? (
-                                <span className="text-gray-400 italic text-[11px]">chưa có hoá đơn</span>
-                              ) : (
-                                nums.map(n => (
-                                  <div key={n}
-                                    className="block w-fit px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[11px] font-semibold whitespace-nowrap">
-                                    #C26MCB{n}
-                                  </div>
-                                ))
-                              )}
-                            </div>
+                      {/* 2026-11-19: gộp theo GROUP hoá đơn (vé link với nhau = 1 group). */}
+                      {buildDebtGroups(s.bookings, codeById).map(g => (
+                        <div key={g.key} className="flex items-center gap-2 px-3 py-2 text-xs">
+                          {/* Cột thời gian: xuất vé + phát hành HĐ (nếu có) */}
+                          <div className="w-28 shrink-0 flex flex-col gap-0.5 text-[10px] leading-tight self-start">
+                            <span className="text-blue-600 whitespace-nowrap">Xuất vé: {fmtDmy(g.saleDate)}</span>
+                            {g.issuedDate != null && (
+                              <span className="text-emerald-600 whitespace-nowrap">Phát hành: {fmtDmy(g.issuedDate)}</span>
+                            )}
                           </div>
-                        )
-                      })}
+                          {/* Mã booking (group có thể gồm nhiều mã đã link) */}
+                          <div className="w-28 shrink-0 font-mono font-bold text-gray-900 self-start">
+                            {g.linked && <span className="mr-0.5" title="Các vé link chung 1 hoá đơn">🔗</span>}
+                            {g.codes.map((c, i) => (
+                              <div key={c} className={i === 0 ? '' : 'text-gray-500 font-normal'}>{c}</div>
+                            ))}
+                          </div>
+                          <div className="flex-1 text-gray-600 truncate self-start">
+                            {g.tickets.map(t => t.passengerName).join(' · ')}
+                          </div>
+                          <div className="w-14 text-right text-gray-500 font-mono tabular-nums self-start">
+                            {g.tickets.length} vé
+                          </div>
+                          <div className="w-52 font-mono flex flex-col items-end gap-1 self-start">
+                            {g.nums.length === 0 ? (
+                              <span className="text-gray-400 text-[11px]">—</span>
+                            ) : (
+                              g.nums.map(n => (
+                                <div key={n}
+                                  className="block w-fit px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[11px] font-semibold whitespace-nowrap">
+                                  #C26MCB{n}
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -2561,6 +2608,55 @@ function DebtReportModal({ companies, onClose }) {
  *   invoice.invoiceNumbers là chuỗi CSV ("355,356"). Trả về list đã dedupe,
  *   sort tăng dần theo số nếu parse được, else theo alpha.
  */
+/**
+ * 2026-11-19: Gom các vé của 1 section (theo công ty) thành các GROUP hoá đơn.
+ *   Group key của 1 vé = ticket.linkedBookingId (nếu vé đã link sang booking chủ)
+ *   hoặc chính booking.id. Các vé cùng key → 1 hoá đơn → gộp 1 dòng.
+ *   → 1 group có thể gồm cả booking, hoặc vài vé của nhiều booking link với nhau.
+ */
+function buildDebtGroups(sectionBookings, codeById) {
+  const map = new Map()
+  for (const b of sectionBookings) {
+    for (const t of (b.tickets || [])) {
+      const key = t.linkedBookingId || b.id
+      if (!map.has(key)) {
+        map.set(key, { key, items: [], codes: [], invById: new Map(), linked: !!t.linkedBookingId })
+      }
+      const g = map.get(key)
+      g.items.push({ b, t })
+      if (!g.codes.includes(b.bookingCode)) g.codes.push(b.bookingCode)
+      if (t.linkedBookingId) g.linked = true
+      for (const inv of invoicesOfTicket(b, t.id)) g.invById.set(inv.id, inv)
+    }
+  }
+  return [...map.values()].map(g => {
+    const invoices = [...g.invById.values()]
+    const nums = invoiceNumbersOf(invoices)
+    const sales = g.items.map(x => x.b.saleDate).filter(v => v != null)
+    const saleDate = sales.length ? Math.min(...sales) : null
+    const issued = invoices.map(i => i.issuedDate).filter(v => v != null)
+    const issuedDate = issued.length ? Math.min(...issued) : null
+    // Mã hiển thị: ưu tiên mã chủ (codeById[key]); kèm các mã thành viên khác.
+    const masterCode = codeById.get(g.key)
+    const codes = masterCode && !g.codes.includes(masterCode)
+      ? [masterCode, ...g.codes] : g.codes
+    return {
+      key: g.key, codes, linked: g.linked,
+      tickets: g.items.map(x => x.t),
+      nums, saleDate, issuedDate,
+    }
+  })
+}
+
+/** 2026-11-19: epoch ms → dd/MM/yyyy (— nếu rỗng). */
+function fmtDmy(ms) {
+  if (ms == null) return '—'
+  const d = new Date(ms)
+  if (isNaN(d)) return '—'
+  const p = n => String(n).padStart(2, '0')
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()}`
+}
+
 export function collectBookingInvoiceNumbers(b) {
   const set = new Set()
   for (const inv of (b.invoices || [])) {

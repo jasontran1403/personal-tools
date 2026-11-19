@@ -138,7 +138,7 @@ export default function VmbPage() {
         </div>
       </header>
 
-      <main className="flex-1 overflow-hidden w-full px-2 sm:px-3 py-3">
+      <main className="flex-1 min-h-0 overflow-hidden w-full px-2 sm:px-3 py-3">
         {tab === 'tickets' && (
           <div className="relative h-full overflow-hidden">
             <div

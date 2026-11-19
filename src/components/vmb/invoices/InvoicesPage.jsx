@@ -176,13 +176,13 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
       setPreview({ filePath: row.issuedUrl, fileName: name, title: `Hóa đơn ${row.invoiceNo || ''}` })
       return
     }
-    setDraft({ open: true, loading: true, mode: null, pdfBase64: null, error: null })
+    setDraft({ open: true, loading: true, mode: null, pdfBase64: null, error: null, row })
     try {
       const res = await getInvoiceDraft(row.bookingId, row.kind)
       const d = res.data?.data || {}
-      setDraft({ open: true, loading: false, mode: d.mode || 'ERROR', pdfBase64: d.pdfBase64 || null, error: d.error || null })
+      setDraft({ open: true, loading: false, mode: d.mode || 'ERROR', pdfBase64: d.pdfBase64 || null, error: d.error || null, row })
     } catch (e) {
-      setDraft({ open: true, loading: false, mode: 'ERROR', pdfBase64: null, error: e?.response?.data?.message || 'Không lấy được hóa đơn nháp' })
+      setDraft({ open: true, loading: false, mode: 'ERROR', pdfBase64: null, error: e?.response?.data?.message || 'Không lấy được hóa đơn nháp', row })
     }
   }
 
@@ -192,7 +192,8 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
     setPreview({ filePath: row.paymentUrl, fileName: name, title: `Ảnh thanh toán — ${row.buyerDisplay || ''}` })
   }
 
-  const onIssue = () => toast('Chức năng phát hành sẽ triển khai ở bước sau (nối VinVoice).', { icon: '🧾' })
+  // 2026-11-19: Phát hành (nối VinVoice) — gọi từ trong modal HĐ Nháp. row = dòng HĐ.
+  const onIssue = (_row) => toast('Chức năng phát hành sẽ triển khai ở bước sau (nối VinVoice).', { icon: '🧾' })
 
   // Lọc client-side (tìm kiếm + bên mua + ngày phát hành).
   const shown = useMemo(() => {
@@ -321,22 +322,19 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
 
                   {/* Hành động — mobile full-width */}
                   <div className="w-full lg:w-auto lg:min-w-[230px] flex items-stretch gap-2 lg:justify-end">
+                    {/* 2026-11-19: Bỏ nút "Phát hành" ở list — chỉ còn "Xem hóa đơn"
+                        khi đã phát hành / đã upload, và "HĐ Nháp" khi chưa. Phát hành
+                        chuyển vào trong modal HĐ Nháp. */}
                     {issued ? (
                       <button type="button" onClick={() => openView(row)}
                         className={`${btnBase} border border-green-300 bg-green-100 text-green-700 hover:bg-green-200`}>
-                        <span>📄</span> HĐ Phát hành
+                        <span>📄</span> Xem hóa đơn
                       </button>
                     ) : (
-                      <>
-                        <button type="button" onClick={() => openView(row)}
-                          className={`${btnBase} border border-gray-300 bg-white text-gray-700 hover:bg-gray-50`}>
-                          <span>🧾</span> HĐ Nháp
-                        </button>
-                        <button type="button" onClick={onIssue}
-                          className={`${btnBase} text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm shadow-indigo-500/20`}>
-                          <span>🚀</span> Phát hành
-                        </button>
-                      </>
+                      <button type="button" onClick={() => openView(row)}
+                        className={`${btnBase} border border-gray-300 bg-white text-gray-700 hover:bg-gray-50`}>
+                        <span>🧾</span> HĐ Nháp
+                      </button>
                     )}
                   </div>
                 </div>
@@ -353,7 +351,8 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
       <VmbFilePreviewModal open={!!preview} onClose={() => setPreview(null)}
         filePath={preview?.filePath} fileName={preview?.fileName} title={preview?.title} />
       <DraftInvoiceModal open={!!draft?.open} onClose={() => setDraft(null)}
-        mode={draft?.mode} pdfBase64={draft?.pdfBase64} error={draft?.error} loading={!!draft?.loading} />
+        mode={draft?.mode} pdfBase64={draft?.pdfBase64} error={draft?.error} loading={!!draft?.loading}
+        onIssue={() => onIssue(draft?.row)} />
     </div>
   )
 }

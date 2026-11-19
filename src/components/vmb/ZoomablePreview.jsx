@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { vmbFileUrl } from '../../services/api'
 
 /**
@@ -77,9 +78,11 @@ export default function ZoomablePreview({ filePath, fileName, title, onClose, on
   }
   const onMouseUp = () => { dragRef.current = null }
 
+  // 2026-11-19: overlay z-[2000] để nổi TRÊN mọi modal (Modal thường z ~1000),
+  //   và portal ra body (tránh bị lệch/khuất khi nằm trong ancestor có transform).
   const wrapCls = embedded
     ? 'flex flex-col w-full h-full bg-black/85'
-    : 'fixed inset-0 z-[100] bg-black/85 flex flex-col'
+    : 'fixed inset-0 z-[2000] bg-black/85 flex flex-col'
 
   // 2026-10-09: Với PDF, trình duyệt đã có toolbar zoom thật (render lại
   // theo DPI thực) ngay trong iframe. Toolbar ngoài dùng CSS transform:
@@ -87,7 +90,7 @@ export default function ZoomablePreview({ filePath, fileName, title, onClose, on
   // PDF — chỉ giữ cho ảnh (ảnh raster không có zoom native, cần CSS zoom).
   const showOuterToolbar = !isPdf || !embedded
 
-  return (
+  const content = (
     <div className={wrapCls}
       onMouseMove={onMouseMove} onMouseUp={onMouseUp} onMouseLeave={onMouseUp}>
       {/* Toolbar — ẩn khi embedded + PDF (trùng với toolbar native của iframe) */}
@@ -185,4 +188,6 @@ export default function ZoomablePreview({ filePath, fileName, title, onClose, on
       )}
     </div>
   )
+  // embedded → inline; overlay → portal ra body để không bị transform ancestor che.
+  return embedded ? content : createPortal(content, document.body)
 }

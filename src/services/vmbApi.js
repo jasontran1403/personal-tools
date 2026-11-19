@@ -282,6 +282,30 @@ export const batchPay = ({ bookingIds, note, file } = {}) => {
   })
 }
 
+// 2026-11-20: Thu tiền hàng loạt THEO TỪNG BOOKING — mỗi booking trả phần riêng
+//   của mình (kể cả khi dùng chung 1 hóa đơn nhóm với booking chủ).
+export const collectPreview = (bookingIds = []) => {
+  const fd = new FormData()
+  for (const id of bookingIds) fd.append('bookingIds', String(id))
+  return api.post('/api/tools/vmb/bookings/collect-preview', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
+export const collectBatch = ({ rows = [], note, file, accountCode } = {}) => {
+  const fd = new FormData()
+  for (const r of rows) {
+    fd.append('bookingIds', String(r.bookingId))
+    fd.append('invoiceIds', String(r.invoiceId))
+  }
+  if (note) fd.append('note', note)
+  if (accountCode) fd.append('accountCode', accountCode)
+  if (file instanceof File) fd.append('file', file)
+  return api.post('/api/tools/vmb/bookings/collect-batch', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
 /** Lịch sử thu của 1 BOOKING (gộp mọi invoice). */
 export const listPayments = (bookingId) =>
   api.get(`/api/tools/vmb/bookings/${bookingId}/payments`)
