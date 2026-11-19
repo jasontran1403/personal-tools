@@ -724,11 +724,15 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                         <PassengerSearchSelect
                           value={t.passengerName}
                           companyId={t.companyId}
+                          // 2026-11-19: KHÔNG format/UPPERCASE khi đang gõ — làm hỏng
+                          //   bỏ dấu Telex (IME). Lưu raw; hiển thị HOA bằng CSS; chuẩn
+                          //   hóa lúc blur + tự UPPERCASE khi submit (xem onBlurText + submit).
                           onChangeText={text => setTicket(i, {
-                            passengerName: formatPaxName(text),
+                            passengerName: text,
                             // User gõ tay sửa name → clear link cũ
                             passengerId: null, passengerDocumentType: null,
                           })}
+                          onBlurText={text => setTicket(i, { passengerName: formatPaxName(text) })}
                           onPick={(p) => {
                             if (!p) {
                               // Clear

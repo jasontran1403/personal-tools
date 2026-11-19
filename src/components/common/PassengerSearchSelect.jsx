@@ -26,6 +26,7 @@ export default function PassengerSearchSelect({
   value = '',
   companyId = null,
   onChangeText,
+  onBlurText,        // 2026-11-19: chuẩn hóa (UPPERCASE…) khi rời ô — không chạy lúc gõ (IME).
   onPick,
   disabled = false,
   placeholder = 'Gõ tên khách / mã CCCD / số HC…',
@@ -97,8 +98,10 @@ export default function PassengerSearchSelect({
           disabled={disabled}
           onChange={e => { onChangeText?.(e.target.value); setOpen(true) }}
           onFocus={() => setOpen(true)}
+          onBlur={e => onBlurText?.(e.target.value)}
           placeholder={placeholder}
-          className="input pr-7"
+          // uppercase: hiển thị HOA bằng CSS, không đổi giá trị thật khi gõ (giữ IME Telex).
+          className="input pr-7 uppercase"
           autoComplete="off"
         />
         {value && (

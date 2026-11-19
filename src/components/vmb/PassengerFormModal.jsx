@@ -339,8 +339,11 @@ export default function PassengerFormModal({ mode: initialMode = 'create', passe
 
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <Field label="Họ tên" span={2}>
+                  {/* 2026-11-19: KHÔNG UPPERCASE khi đang gõ — làm hỏng bỏ dấu Telex.
+                      Lưu raw; hiển thị HOA bằng CSS; chuẩn hóa (HOA + gộp "/") khi blur. */}
                   <input type="text" value={form.fullName}
-                    onChange={e => setField('fullName', formatPaxName(e.target.value))}
+                    onChange={e => setField('fullName', e.target.value)}
+                    onBlur={e => setField('fullName', formatPaxName(e.target.value))}
                     onPaste={e => {
                       // 2026-10-10: KUWABATA/YOSHIRO → KUWABATA YOSHIRO
                       e.preventDefault()
