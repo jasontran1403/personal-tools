@@ -321,13 +321,8 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
                     <div className="flex items-center justify-between lg:justify-start gap-2 w-full lg:w-40 shrink-0">
                       <span className="lg:hidden text-[11px] text-gray-400">Hóa đơn</span>
                       <div className="flex items-center gap-1.5">
-                        {issued && days > 5 && (
-                          <span className="px-1.5 py-0.5 rounded bg-rose-500 text-white text-[10px] font-bold" title="Số ngày kể từ khi phát hành">
-                            {days}d
-                          </span>
-                        )}
                         <div className="leading-tight">
-                          <div className="text-sm font-semibold text-gray-800">{row.invoiceNo || '—'}</div>
+                          <div className="text-sm font-semibold text-gray-800">#C26MCB{row.invoiceNo || '—'}</div>
                           <div className="text-[11px] text-gray-500">{issued && row.issuedAt ? fmtDate(row.issuedAt) : '—'}</div>
                         </div>
                       </div>
@@ -413,20 +408,14 @@ function InvoiceDetailBlock({ draft }) {
   return (
     <div className="text-sm text-gray-800 bg-white rounded-xl border border-gray-200 p-3 lg:p-4">
       {/* Buộc hình thông tin */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
-        <div className="text-[12px]">
-          <div className="text-gray-400 uppercase font-semibold mb-1">Bên bán</div>
-          <div className="font-semibold text-gray-900">{seller.name || '—'}</div>
-          {seller.taxId && <div className="text-gray-500">MST: {seller.taxId}</div>}
-          {seller.address && <div className="text-gray-500 break-words">{seller.address}</div>}
-        </div>
+      <div className="grid grid-cols-1 md:grid-cols-1 gap-3 mb-3">
         <div className="text-[12px]">
           <div className="text-gray-400 uppercase font-semibold mb-1">Bên mua</div>
           <div className="font-semibold text-gray-900">
             {buyer.company ? (buyer.name || '—') : (buyer.personName || 'Khách lẻ')}
           </div>
           {buyer.taxId && <div className="text-gray-500">MST: {buyer.taxId}</div>}
-          {buyer.address && <div className="text-gray-500 break-words">{buyer.address}</div>}
+          {buyer.address && <div className="text-gray-500 break-words">Địa chỉ: {buyer.address}</div>}
           {(buyer.documentType || buyer.documentNumber) && (
             <div className="text-gray-500">{buyer.documentType} {buyer.documentNumber}</div>
           )}
@@ -480,10 +469,6 @@ function InvoiceDetailBlock({ draft }) {
           </tfoot>
         </table>
       </div>
-
-      {draft.amountInWords && (
-        <div className="mt-2 text-[11px] text-gray-500 italic">Bằng chữ: {draft.amountInWords}</div>
-      )}
     </div>
   )
 }
