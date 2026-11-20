@@ -383,7 +383,7 @@ export default function PassengersTab() {
 function PassengerList({ items, onEdit, onCards, onCopy, onPresent, onDelete }) {
   return (
     <>
-      <div className="hidden md:block overflow-x-auto">
+      <div className="hidden lg:block overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 uppercase text-[10px]">
             <tr>
@@ -446,7 +446,7 @@ function PassengerList({ items, onEdit, onCards, onCopy, onPresent, onDelete }) 
       </div>
 
       {/* Mobile cards */}
-      <div className="md:hidden divide-y divide-gray-100">
+      <div className="lg:hidden divide-y divide-gray-100">
         {items.map(p => {
           const cccd = findDoc(p, 'CCCD')
           const pp   = findDoc(p, 'PASSPORT')

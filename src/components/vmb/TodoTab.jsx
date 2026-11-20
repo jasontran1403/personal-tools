@@ -33,6 +33,12 @@ const HOUR_START = 6
 const HOUR_END = 23
 const HOUR_HEIGHT = 60
 const DAY_MIN_WIDTH = 180
+// ── 2026-11-20: Preload window = 30 ngày trước + 30 ngày sau hôm nay ──
+//   Pan tới/lui trong khoảng này CHỈ scroll, KHÔNG reload. Khi cần ra ngoài
+//   khoảng, extend window thêm 30 ngày mỗi phía (vẫn giữ task cũ).
+const PRELOAD_PAST_DAYS   = 30
+const PRELOAD_FUTURE_DAYS = 30
+const EXTEND_DAYS         = 30
 
 export default function TodoTab({ onTasksChanged }) {
   const [tasks, setTasks] = useState([])
@@ -47,43 +53,85 @@ export default function TodoTab({ onTasksChanged }) {
     return () => clearInterval(id)
   }, [])
 
-  // ── 2026-11-07: rangeStart dynamic + nút Prev/Next/Today ──────────────
-  //   Mặc định = 00:00 hôm nay. User có thể lùi về quá khứ ~6 tháng,
-  //   tiến tới tương lai ~6 tháng. Mỗi lần bấm Prev/Next shift 7 ngày.
   const todayMs = useMemo(() => {
     const t = new Date()
     return new Date(t.getFullYear(), t.getMonth(), t.getDate()).getTime()
   }, [])
-  const MIN_START = todayMs - 180 * DAY_MS   // 6 tháng past
-  const MAX_START = todayMs + 180 * DAY_MS   // 6 tháng future
-  const [rangeStart, setRangeStart] = useState(todayMs)
-  const rangeEnd = rangeStart + 7 * DAY_MS
 
+  // ── 2026-11-20: Responsive — số ngày hiển thị 1 view ──
+  //   < sm  (640):  3 ngày
+  //   < lg  (1024): 5 ngày
+  //   else:         7 ngày
+  const [visibleDays, setVisibleDays] = useState(() => {
+    if (typeof window === 'undefined') return 7
+    const w = window.innerWidth
+    return w < 640 ? 3 : w < 1024 ? 5 : 7
+  })
+  useEffect(() => {
+    const onResize = () => {
+      const w = window.innerWidth
+      setVisibleDays(w < 640 ? 3 : w < 1024 ? 5 : 7)
+    }
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  // ── 2026-11-20: Tách VIEW (7/5/3 ngày đang hiện) khỏi LOADED WINDOW ──
+  //   `viewStart` = ngày đầu tiên trong view hiện tại (shift khi pan).
+  //   `loadedRange` = khoảng ngày đã fetch task → pan trong khoảng này
+  //   KHÔNG trigger API call.
+  const [viewStart, setViewStart] = useState(todayMs)
+  const [loadedRange, setLoadedRange] = useState({
+    start: todayMs - PRELOAD_PAST_DAYS   * DAY_MS,
+    end:   todayMs + (PRELOAD_FUTURE_DAYS + 1) * DAY_MS, // end exclusive
+  })
+
+  const viewEnd = viewStart + visibleDays * DAY_MS
+
+  // Pan: dịch viewStart. Khi sát mép loaded window → mở rộng window + reload.
   const shift = (days) => {
-    setRangeStart(prev => {
-      const next = prev + days * DAY_MS
-      if (next < MIN_START) return MIN_START
-      if (next > MAX_START) return MAX_START
+    setViewStart(prev => {
+      let next = prev + days * DAY_MS
+      // Clamp khôn ngoan: nếu vượt mép thì mở rộng (xử lý ở useEffect dưới).
       return next
     })
   }
-  const goToday = () => setRangeStart(todayMs)
+  const goToday = () => setViewStart(todayMs)
+
+  // Mở rộng loaded window nếu view ra ngoài. Chỉ chạy khi KHÔNG đang tải.
+  useEffect(() => {
+    if (loading) return
+    let changed = false
+    let newStart = loadedRange.start
+    let newEnd   = loadedRange.end
+    // Nếu view bắt đầu trước loaded.start thì extend về quá khứ.
+    while (viewStart < newStart) {
+      newStart -= EXTEND_DAYS * DAY_MS
+      changed = true
+    }
+    // Nếu view kết thúc vượt loaded.end thì extend về tương lai.
+    while (viewEnd > newEnd) {
+      newEnd += EXTEND_DAYS * DAY_MS
+      changed = true
+    }
+    if (changed) setLoadedRange({ start: newStart, end: newEnd })
+  }, [viewStart, viewEnd, loading, loadedRange])
 
   const days = useMemo(() => {
     const arr = []
-    const start = new Date(rangeStart)
-    for (let i = 0; i < 7; i++) {
+    const start = new Date(viewStart)
+    for (let i = 0; i < visibleDays; i++) {
       const d = new Date(start)
       d.setDate(start.getDate() + i)
       arr.push(d)
     }
     return arr
-  }, [rangeStart])
+  }, [viewStart, visibleDays])
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await listTodo(rangeStart, rangeEnd)
+      const res = await listTodo(loadedRange.start, loadedRange.end)
       if (res.data?.error) throw new Error(res.data.message)
       setTasks(res.data?.data || [])
     } catch (e) {
@@ -91,7 +139,7 @@ export default function TodoTab({ onTasksChanged }) {
     } finally {
       setLoading(false)
     }
-  }, [rangeStart, rangeEnd])
+  }, [loadedRange])
 
   useEffect(() => { load() }, [load])
 
@@ -142,28 +190,29 @@ export default function TodoTab({ onTasksChanged }) {
         </div>
         <div className="flex-1" />
         <div className="text-[11px] text-gray-500">
-          Hiện: <b className="text-gray-800">{fmtRangeDay(rangeStart)}</b> → <b className="text-gray-800">{fmtRangeDay(rangeEnd - DAY_MS)}</b>
+          Hiện: <b className="text-gray-800">{fmtRangeDay(viewStart)}</b> → <b className="text-gray-800">{fmtRangeDay(viewEnd - DAY_MS)}</b>
         </div>
       </div>
 
-      {/* 2026-11-07 (rev): top-24 → top-16 (−15px) để nút Thêm task nổi
-          cao hơn, không bị thanh nav che. */}
+      {/* 2026-11-20: Nút Thêm task — desktop top-right, mobile FAB bottom-right. */}
       <button type="button" onClick={() => { setEditing(null); setShowForm(true) }}
         title="Thêm task mới"
-        className="fixed top-16 right-6 z-40 px-4 py-2 rounded-full
-                   bg-gradient-to-br from-blue-600 to-indigo-600 text-white
-                   text-sm font-semibold shadow-lg shadow-blue-500/40
+        className="fixed z-40 bg-gradient-to-br from-blue-600 to-indigo-600 text-white
+                   font-semibold shadow-lg shadow-blue-500/40
                    hover:scale-105 active:scale-95 transition-transform
-                   flex items-center gap-1">
-        <span className="text-lg leading-none">+</span>
-        <span>Thêm task</span>
+                   flex items-center gap-1
+                   bottom-4 right-4 w-14 h-14 rounded-full text-2xl justify-center
+                   sm:bottom-auto sm:top-16 sm:right-6 sm:w-auto sm:h-auto sm:rounded-full sm:px-4 sm:py-2 sm:text-sm">
+        <span className="leading-none">+</span>
+        <span className="hidden sm:inline">Thêm task</span>
       </button>
 
-      {/* ── Calendar ─────────────────────────────────── */}
-      {loading ? (
+      {/* ── Calendar — chỉ loading overlay lần đầu, pan không reload ── */}
+      {loading && tasks.length === 0 ? (
         <div className="text-center py-10 text-gray-400">Đang tải…</div>
       ) : (
         <CalendarGrid days={days} tasksByDay={tasksByDay} tick={tick}
+          visibleDays={visibleDays}
           onShift={shift}
           onCardAction={handleCardAction}
           onCardClick={(task) => setModal({ type: 'detail', task })}
@@ -195,7 +244,7 @@ export default function TodoTab({ onTasksChanged }) {
 //  CALENDAR GRID
 // ══════════════════════════════════════════════════════════════
 
-function CalendarGrid({ days, tasksByDay, tick, onShift, onCardAction, onCardClick, onEditPending, onDelete }) {
+function CalendarGrid({ days, tasksByDay, tick, visibleDays = 7, onShift, onCardAction, onCardClick, onEditPending, onDelete }) {
   // Layout tasks + tính maxLane cho mỗi ngày → dùng làm chiều rộng cột
   const perDay = useMemo(() => {
     const m = new Map()
@@ -208,10 +257,13 @@ function CalendarGrid({ days, tasksByDay, tick, onShift, onCardAction, onCardCli
     return m
   }, [days, tasksByDay])
 
-  // Grid columns: cột đầu là thang giờ (60px), 7 cột ngày CHIA ĐỀU.
+  // 2026-11-20: Grid columns responsive — cột giờ 60px + N cột ngày chia đều.
+  //   N = visibleDays (3 / 5 / 7 theo viewport). Mobile dayMinWidth nhỏ hơn để
+  //   3 cột vẫn vừa màn 360px (3 × 100 + 60 = 360).
   const maxLanesAllDays = Math.max(1, ...days.map(d => perDay.get(dayStart(d))?.maxLane || 1))
-  const dayMinWidth = Math.max(DAY_MIN_WIDTH, maxLanesAllDays * DAY_MIN_WIDTH)
-  const gridTemplateColumns = `60px repeat(7, minmax(${dayMinWidth}px, 1fr))`
+  const baseMinWidth = visibleDays <= 3 ? 100 : visibleDays <= 5 ? 140 : DAY_MIN_WIDTH
+  const dayMinWidth = Math.max(baseMinWidth, maxLanesAllDays * baseMinWidth)
+  const gridTemplateColumns = `60px repeat(${visibleDays}, minmax(${dayMinWidth}px, 1fr))`
 
   const bodyHeight = (HOUR_END - HOUR_START + 1) * HOUR_HEIGHT
 
@@ -226,7 +278,8 @@ function CalendarGrid({ days, tasksByDay, tick, onShift, onCardAction, onCardCli
     // Chỉ bắt chuột trái. Bỏ qua nếu click vào task (TaskCard dùng button)
     if (e.button !== 0) return
     const el = e.currentTarget
-    const colWidth = el.getBoundingClientRect().width / 8 // 1 col thang giờ + 7 cột ngày
+    // 2026-11-20: 1 col thang giờ + visibleDays cột ngày (responsive).
+    const colWidth = el.getBoundingClientRect().width / (1 + visibleDays)
     dragRef.current = { startX: e.clientX, lastShiftX: 0, colWidth, dragged: false }
   }
   const onMouseMove = (e) => {
@@ -258,7 +311,8 @@ function CalendarGrid({ days, tasksByDay, tick, onShift, onCardAction, onCardCli
     const dy = ct.clientY - ref.startY
     if (Math.abs(dx) < 60 || Math.abs(dy) > Math.abs(dx)) return  // chỉ nhận horizontal
     const bigSwipe = Math.abs(dx) > 180
-    const step = bigSwipe ? 7 : 1
+    // 2026-11-20: Swipe mạnh → nhảy 1 "trang" = visibleDays, nhẹ → 1 ngày.
+    const step = bigSwipe ? visibleDays : 1
     onShift?.(dx < 0 ? step : -step)   // swipe trái → tiến tới tương lai
   }
 
