@@ -32,7 +32,7 @@ function fmtDate(ms) {
   return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()}`
 }
 function dayStart(iso) { return iso ? new Date(iso + 'T00:00:00').getTime() : null }
-function dayEnd(iso)   { return iso ? new Date(iso + 'T23:59:59').getTime() : null }
+function dayEnd(iso) { return iso ? new Date(iso + 'T23:59:59').getTime() : null }
 
 // ── Tiện ích tìm kiếm ────────────────────────────────────────────
 function removeDiacritics(s) {
@@ -73,36 +73,36 @@ function matchSearch(row, raw) {
 // ── Trạng thái hóa đơn → tén định danh + màu kiểu ───────────────────────────
 function rowState(row) {
   const issued = row.status === 'ISSUED' || row.status === 'ADJUSTED' || !!row.issuedUrl
-  if (issued && row.paid)   return 'ISSUED_PAID'
-  if (issued && !row.paid)  return 'ISSUED_UNPAID'
-  if (!issued && row.paid)  return 'DRAFT_PAID'
+  if (issued && row.paid) return 'ISSUED_PAID'
+  if (issued && !row.paid) return 'ISSUED_UNPAID'
+  if (!issued && row.paid) return 'DRAFT_PAID'
   return 'DRAFT_UNPAID'
 }
 
 const STATE_STYLES = {
-  DRAFT_UNPAID:  { bg: 'bg-slate-50',   bar: 'bg-slate-300',   label: 'Nháp • chưa thu',    pill: 'bg-slate-100 text-slate-600' },
-  DRAFT_PAID:    { bg: 'bg-amber-50',   bar: 'bg-amber-400',   label: 'Nháp • đã thu',       pill: 'bg-amber-100 text-amber-700' },
-  ISSUED_UNPAID: { bg: 'bg-sky-50',     bar: 'bg-sky-400',     label: 'Đã phát hành • chưa thu', pill: 'bg-sky-100 text-sky-700' },
-  ISSUED_PAID:   { bg: 'bg-emerald-50', bar: 'bg-emerald-500', label: 'Đã phát hành • đã thu',   pill: 'bg-emerald-100 text-emerald-700' },
+  DRAFT_UNPAID: { bg: 'bg-slate-50', bar: 'bg-slate-300', label: 'Nháp • chưa thu', pill: 'bg-slate-100 text-slate-600' },
+  DRAFT_PAID: { bg: 'bg-amber-50', bar: 'bg-amber-400', label: 'Nháp • đã thu', pill: 'bg-amber-100 text-amber-700' },
+  ISSUED_UNPAID: { bg: 'bg-sky-50', bar: 'bg-sky-400', label: 'Đã phát hành • chưa thu', pill: 'bg-sky-100 text-sky-700' },
+  ISSUED_PAID: { bg: 'bg-emerald-50', bar: 'bg-emerald-500', label: 'Đã phát hành • đã thu', pill: 'bg-emerald-100 text-emerald-700' },
 }
 
 const PAGE_SIZE = 80
 export default function InvoicesPage({ onBack, refreshSignal }) {
-  const [rows, setRows]         = useState([])
-  const [loading, setLoading]   = useState(true)
+  const [rows, setRows] = useState([])
+  const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
-  const [page, setPage]         = useState(0)
+  const [page, setPage] = useState(0)
   const [totalPages, setTotalPages] = useState(1)
-  const [total, setTotal]       = useState(0)
+  const [total, setTotal] = useState(0)
 
-  const [q, setQ]               = useState('')
+  const [q, setQ] = useState('')
   const [fromCreated, setFromCreated] = useState('')
-  const [toCreated, setToCreated]     = useState('')
-  const [fromIssued, setFromIssued]   = useState('')
-  const [toIssued, setToIssued]       = useState('')
+  const [toCreated, setToCreated] = useState('')
+  const [fromIssued, setFromIssued] = useState('')
+  const [toIssued, setToIssued] = useState('')
 
-  const [preview, setPreview]   = useState(null)
-  const [draft, setDraft]       = useState(null)
+  const [preview, setPreview] = useState(null)
+  const [draft, setDraft] = useState(null)
 
   // ── Expand state: { [rowKey]: { loading, data, error } } ──
   const [expanded, setExpanded] = useState({})
@@ -280,8 +280,8 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
           <div>
             {shown.map(row => {
               const key = `${row.kind}-${row.bookingId}`
-              const st  = rowState(row)
-              const S   = STATE_STYLES[st]
+              const st = rowState(row)
+              const S = STATE_STYLES[st]
               const issued = st === 'ISSUED_PAID' || st === 'ISSUED_UNPAID'
               const days = issued && row.issuedAt ? Math.floor((Date.now() - row.issuedAt) / DAY) : 0
               const exp = expanded[key]
@@ -322,7 +322,9 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
                       <span className="lg:hidden text-[11px] text-gray-400">Hóa đơn</span>
                       <div className="flex items-center gap-1.5">
                         <div className="leading-tight">
-                          <div className="text-sm font-semibold text-gray-800">{`#C26MCB${row.invoiceNo || '—'}`}</div>
+                          <div className="text-sm font-semibold text-gray-800">
+                            {row.invoiceNo ? `#C26MCB${row.invoiceNo}` : '—'}
+                          </div>
                           <div className="text-[11px] text-gray-500">{issued && row.issuedAt ? fmtDate(row.issuedAt) : '—'}</div>
                         </div>
                       </div>
@@ -402,8 +404,8 @@ function fmtVnd(n) {
 }
 
 function InvoiceDetailBlock({ draft }) {
-  const items  = draft.items || []
-  const buyer  = draft.buyer || {}
+  const items = draft.items || []
+  const buyer = draft.buyer || {}
   const seller = draft.seller || {}
   return (
     <div className="text-sm text-gray-800 bg-white rounded-xl border border-gray-200 p-3 lg:p-4">
