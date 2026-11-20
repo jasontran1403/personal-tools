@@ -191,6 +191,7 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
             companyId: t.companyId || null,
             passengerId: t.passengerId || null,
             passengerDocumentType: t.passengerDocumentType || null,
+            invoiceBuyer: !!t.invoiceBuyer,   // 2026-11-20: vé chọn làm bên mua HĐ
             // 2026-11-12: Link vé qua chủ
             linkedBookingId: t.linkedBookingId || null,
             linkedBookingCode: t.linkedBookingCode || null,
@@ -242,6 +243,10 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }))
   const setTicket = (i, patch) => setForm(f => ({
     ...f, tickets: f.tickets.map((t, idx) => idx === i ? { ...t, ...patch } : t),
+  }))
+  // 2026-11-20: chọn 1 vé làm bên mua hóa đơn (radio — loại trừ nhau).
+  const setInvoiceBuyer = (i) => setForm(f => ({
+    ...f, tickets: f.tickets.map((t, idx) => ({ ...t, invoiceBuyer: idx === i })),
   }))
 
   // ── 2026-11-19: Tỷ giá ──────────────────────────────────────
@@ -744,6 +749,13 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
               💡 Sau khi lưu, click mã booking / số vé ở bảng để tải mặt vé lên.
               Vé thêm mới tự copy công ty + các giá / phí từ vé cuối để nhập nhanh.
             </div>
+            {form.tickets.length > 1 && (
+              <div className="text-[11px] text-indigo-700 mb-2 bg-indigo-50 border border-indigo-200 rounded-md p-2">
+                🧾 <b>Bên mua HĐ</b>: chọn 1 hành khách để lấy đúng thông tin người đó
+                (tên + CCCD/Hộ chiếu) lên <b>hóa đơn khách lẻ</b>. Không chọn → hệ thống tự
+                lấy người có giấy tờ. (Hóa đơn công ty không dùng mục này.)
+              </div>
+            )}
             <div className="text-[11px] text-blue-700 mb-2 bg-blue-50 border border-blue-200 rounded-md p-2">
               💰 <b>Mẹo nhập nhanh</b>: paste tổng tiền vé vào <b>Giá gốc</b> trước, sau đó paste
               các phí thu hộ (chuỗi kiểu <code>"79000AX"</code>, <code>"36362C4"</code>…) → hệ
@@ -753,14 +765,27 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
               {form.tickets.map((t, i) => {
                 return (
                   <div key={i} className="p-3 rounded-xl bg-gray-50 border border-gray-200">
-                    <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center justify-between mb-2 gap-2">
                       <div className="text-xs font-bold text-gray-700">Vé #{i + 1}</div>
-                      {form.tickets.length > 1 && (
-                        <button type="button" onClick={() => removeTicket(i)}
-                          className="text-xs text-rose-600 hover:text-rose-800 font-semibold">
-                          × Bỏ vé này
-                        </button>
-                      )}
+                      <div className="flex items-center gap-3">
+                        {form.tickets.length > 1 && (
+                          <label className={`flex items-center gap-1 text-[11px] font-semibold cursor-pointer select-none
+                            ${t.invoiceBuyer ? 'text-indigo-700' : 'text-gray-500 hover:text-gray-700'}`}
+                            title="Lấy thông tin hành khách này lên hóa đơn (khách lẻ)">
+                            <input type="radio" name="invoiceBuyer"
+                              checked={!!t.invoiceBuyer}
+                              onChange={() => setInvoiceBuyer(i)}
+                              className="w-3.5 h-3.5 accent-indigo-600 cursor-pointer" />
+                            🧾 Bên mua HĐ
+                          </label>
+                        )}
+                        {form.tickets.length > 1 && (
+                          <button type="button" onClick={() => removeTicket(i)}
+                            className="text-xs text-rose-600 hover:text-rose-800 font-semibold">
+                            × Bỏ vé này
+                          </button>
+                        )}
+                      </div>
                     </div>
 
                     <Field label="Công ty">
