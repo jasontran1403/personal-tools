@@ -226,3 +226,142 @@ export async function exportRevenueReport(opts) {
   const tag = (d) => fmtDay(d).replace(/\//g, '')
   pdfMake.createPdf(doc).download(`Bao_cao_doanh_thu_${tag(opts.fromDate)}_${tag(opts.toDate)}.pdf`)
 }
+
+// ══════════════════════════════════════════════════════════════════════
+//  2026-11-20: BÁO CÁO CÔNG NỢ (chỉ khách còn nợ)
+//  Cấu trúc tương tự báo cáo doanh thu nhưng:
+//    - Header: "BÁO CÁO CÔNG NỢ / TÍNH ĐẾN NGÀY dd/MM/yyyy"
+//    - Cột: STT · Tên công ty / khách hàng · Công nợ hiện tại · Tổng số vé
+//      của công nợ · Tổng phí xuất vé (các vé đang nợ) · Số ngày công nợ
+//    - Sort theo công nợ DESC, KHÔNG tách nhóm công ty / khách lẻ.
+//    - BỎ 4 card tổng quan ở đầu.
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * @param opts.rows       [{ name, isWalkIn, debt, debtDays,
+ *                           unpaidTicketCount, unpaidIss }]
+ * @param opts.exportedAt Date — thời điểm xuất (default: now)
+ */
+export function buildDebtOnlyReportDoc({ rows, exportedAt = new Date() }) {
+  const total = rows.reduce((a, r) => ({
+    debt: a.debt + (r.debt || 0),
+    unpaidTicketCount: a.unpaidTicketCount + (r.unpaidTicketCount || 0),
+    unpaidIss: a.unpaidIss + (r.unpaidIss || 0),
+    debtDays: Math.max(a.debtDays, r.debtDays ?? -1),
+  }), { debt: 0, unpaidTicketCount: 0, unpaidIss: 0, debtDays: -1 })
+
+  // 6 cột. Usable 842 - 2×28 = 786pt.
+  const widths = [26, '*', 118, 78, 110, 88]
+  const N = widths.length
+
+  const th = (text, alignment = 'left') => ({
+    text, alignment, bold: true, fontSize: 8.5, color: '#ffffff', fillColor: C.head,
+    margin: [0, 3, 0, 3],
+  })
+  const header = [
+    th('STT', 'center'),
+    th('Tên công ty / khách hàng'),
+    th('Công nợ hiện tại', 'right'),
+    th('Tổng số vé\ncủa công nợ', 'right'),
+    th('Tổng phí xuất vé\n(vé đang nợ)', 'right'),
+    th('Số ngày công nợ\n(HĐ lâu nhất)', 'right'),
+  ]
+
+  const body = [header]
+  const dataRow = (r, idx) => {
+    const fill = idx % 2 === 1 ? C.zebra : null
+    const cell = (text, extra = {}) => ({ text, fontSize: 8.5, fillColor: fill, color: C.ink, ...extra })
+    const hasDebt = (r.debt || 0) > 0.5
+    const kind = r.isWalkIn ? 'Khách lẻ' : 'Công ty'
+    return [
+      cell(String(idx + 1), { alignment: 'center', color: C.sub }),
+      {
+        stack: [
+          { text: r.name || '—', bold: true, fontSize: 8.5, color: C.ink },
+          { text: kind, fontSize: 7, color: r.isWalkIn ? C.walkin : C.company },
+        ],
+        fillColor: fill,
+      },
+      cell(hasDebt ? vnd(r.debt) : '—', {
+        alignment: 'right', bold: true, color: hasDebt ? C.debt : C.mute }),
+      cell(String(r.unpaidTicketCount || 0), { alignment: 'right' }),
+      cell(vnd(r.unpaidIss || 0), { alignment: 'right' }),
+      cell(hasDebt && r.debtDays != null ? `${r.debtDays} ngày` : '—', {
+        alignment: 'right', color: hasDebt && r.debtDays != null ? C.debt : C.mute }),
+    ]
+  }
+  rows.forEach((r, i) => body.push(dataRow(r, i)))
+
+  // Dòng TỔNG CỘNG cuối bảng (báo cáo công nợ không có card tổng, nên dồn vào đây).
+  if (rows.length > 0) {
+    const sumCell = (text, extra = {}) => ({
+      text, bold: true, fontSize: 9, fillColor: C.totalBg, color: '#ffffff',
+      margin: [0, 3, 0, 3], ...extra,
+    })
+    body.push([
+      sumCell('TỔNG CỘNG', { colSpan: 2, alignment: 'right' }), {},
+      sumCell(vnd(total.debt), { alignment: 'right' }),
+      sumCell(String(total.unpaidTicketCount), { alignment: 'right' }),
+      sumCell(vnd(total.unpaidIss), { alignment: 'right' }),
+      sumCell(total.debtDays >= 0 ? `${total.debtDays} ngày` : '—', { alignment: 'right' }),
+    ])
+  } else {
+    const row = [{ colSpan: N, text: 'Không có khách hàng nào đang có công nợ.',
+      italics: true, color: C.mute, alignment: 'center', margin: [0, 12, 0, 12] }]
+    while (row.length < N) row.push({})
+    body.push(row)
+  }
+
+  const stamp = fmtStamp(exportedAt)
+  const asOfDay = fmtDay(exportedAt)
+  return {
+    pageSize: 'A4',
+    pageOrientation: 'landscape',
+    pageMargins: [28, 28, 28, 34],
+    info: { title: `Báo cáo công nợ tính đến ${asOfDay}` },
+    footer: (page, pages) => ({
+      margin: [28, 12, 28, 0], fontSize: 7, color: C.mute,
+      columns: [
+        { text: `Báo cáo công nợ · Tính đến ${asOfDay} · Xuất lúc ${stamp}` },
+        { text: `Trang ${page}/${pages}`, alignment: 'right' },
+      ],
+    }),
+    content: [
+      { text: 'BÁO CÁO CÔNG NỢ', fontSize: 18, bold: true, color: C.ink, alignment: 'center',
+        characterSpacing: 1 },
+      { text: `TÍNH ĐẾN NGÀY ${asOfDay}`,
+        fontSize: 11, color: C.debt, bold: true, alignment: 'center', margin: [0, 4, 0, 0] },
+      { text: `Ngày giờ xuất báo cáo: ${stamp}`,
+        fontSize: 8.5, color: C.sub, alignment: 'center', margin: [0, 3, 0, 4] },
+      { text: `Sắp xếp theo: công nợ hiện tại (cao đến thấp) — ${rows.length} khách còn nợ`,
+        fontSize: 8.5, color: C.sub, alignment: 'center', margin: [0, 2, 0, 12] },
+      {
+        table: { headerRows: 1, widths, body, dontBreakRows: true },
+        layout: {
+          hLineWidth: (i, node) => (i === 0 || i === node.table.body.length) ? 0 : 0.5,
+          vLineWidth: () => 0,
+          hLineColor: () => C.line,
+          paddingLeft: () => 6, paddingRight: () => 6,
+          paddingTop: () => 4, paddingBottom: () => 4,
+        },
+      },
+      { text: 'Công nợ là số tiền chưa thanh toán tại thời điểm xuất báo cáo. '
+          + 'Tổng số vé và tổng phí xuất vé chỉ tính trên các vé đang có công nợ. Đơn vị tiền: VND.',
+        fontSize: 7.5, italics: true, color: C.mute, margin: [0, 8, 0, 0] },
+    ],
+    defaultStyle: { fontSize: 8.5 },
+  }
+}
+
+/** Build + tải PDF báo cáo công nợ. Tên file: Bao_cao_cong_no_<ddMMyyyy>.pdf */
+export async function exportDebtOnlyReport(opts) {
+  const doc = buildDebtOnlyReportDoc(opts)
+  const pdfMakeMod = await import('pdfmake/build/pdfmake')
+  const vfsMod = await import('pdfmake/build/vfs_fonts')
+  const pdfMake = pdfMakeMod.default || pdfMakeMod
+  const vfs = vfsMod?.pdfMake?.vfs ?? vfsMod?.default?.pdfMake?.vfs
+    ?? vfsMod?.default?.vfs ?? vfsMod?.vfs ?? vfsMod?.default ?? vfsMod
+  pdfMake.vfs = vfs
+  const tag = (d) => fmtDay(d).replace(/\//g, '')
+  pdfMake.createPdf(doc).download(`Bao_cao_cong_no_${tag(opts.exportedAt || new Date())}.pdf`)
+}

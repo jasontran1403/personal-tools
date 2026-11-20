@@ -194,6 +194,9 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
             // 2026-11-12: Link vé qua chủ
             linkedBookingId: t.linkedBookingId || null,
             linkedBookingCode: t.linkedBookingCode || null,
+            // 2026-11-20 (mới): IDs các vé của BOOKING CHỦ mà vé này nằm cùng hoá đơn.
+            //   Rỗng = link toàn bộ. Có giá trị = link theo nhóm cụ thể (tách HĐ).
+            linkedTicketIds: Array.isArray(t.linkedTicketIds) ? [...t.linkedTicketIds] : [],
             ticketNumber: t.ticketNumber || '',
             basePrice: t.basePrice || '',
             collectionFee: t.collectionFee || '',
@@ -281,6 +284,54 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
   // Khi user chọn 1 passenger qua PassengerSearchSelect → mở modal với mode
   // "picker". Lưu { ticketIdx, passenger } vào state. Confirm → cập nhật ticket.
   const [idPicker, setIdPicker] = useState(null)  // { ticketIdx, passenger } | null
+
+  // ── 2026-11-20: Cache booking chủ theo mã (dùng khi link vé theo nhóm) ──
+  //   key = bookingCode uppercase. Value: { loading, booking, error, ts }.
+  //   Khi user nhập linkedBookingCode cho 1 vé → debounce 400ms → listBookings
+  //   với q = code, lấy booking khớp chính xác bookingCode, cache lại.
+  //   UI render checkbox các vé của booking chủ để user chọn nhóm hoá đơn.
+  const [linkedBookingsCache, setLinkedBookingsCache] = useState({})
+  // Danh sách các code đang được request để tránh gọi trùng.
+  const pendingLookupsRef = useMemo(() => ({ current: new Set() }), [])
+
+  // Lookup booking chủ theo mã — debounced bên trong useEffect.
+  useEffect(() => {
+    // Lấy danh sách unique code từ tất cả vé.
+    const codes = new Set()
+    for (const t of (form.tickets || [])) {
+      const c = (t.linkedBookingCode || '').trim().toUpperCase()
+      if (c) codes.add(c)
+    }
+    if (codes.size === 0) return
+    const ownCode = (form.bookingCode || '').trim().toUpperCase()
+    // Debounce 400ms.
+    const h = setTimeout(async () => {
+      for (const code of codes) {
+        if (code === ownCode) continue       // không link với chính mình
+        if (linkedBookingsCache[code]) continue  // đã có
+        if (pendingLookupsRef.current.has(code)) continue
+        pendingLookupsRef.current.add(code)
+        setLinkedBookingsCache(prev => ({ ...prev, [code]: { loading: true } }))
+        try {
+          const res = await listBookings({ q: code, size: 20 })
+          const content = res.data?.data?.content || []
+          // Khớp chính xác bookingCode (listBookings dùng fuzzy search).
+          const found = content.find(b => (b.bookingCode || '').toUpperCase() === code)
+          if (found) {
+            setLinkedBookingsCache(prev => ({ ...prev, [code]: { loading: false, booking: found } }))
+          } else {
+            setLinkedBookingsCache(prev => ({ ...prev, [code]: { loading: false, error: 'Không tìm thấy booking này' } }))
+          }
+        } catch (e) {
+          setLinkedBookingsCache(prev => ({ ...prev, [code]: { loading: false, error: 'Lỗi tải booking chủ' } }))
+        } finally {
+          pendingLookupsRef.current.delete(code)
+        }
+      }
+    }, 400)
+    return () => clearTimeout(h)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.tickets.map(t => (t.linkedBookingCode || '').trim().toUpperCase()).join('|'), form.bookingCode])
 
   // earliestDepartMs: epoch chặng đi đầu tiên (dùng để check expiry 6 tháng)
   const earliestDepartMs = useMemo(() => {
@@ -503,6 +554,17 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
           // 2026-11-08: Force HOA cho passengerName khi save (phòng trường hợp
           //   tên chèn vào trước đây đang lowercase ở DB).
           if (cleanT.passengerName) cleanT.passengerName = cleanT.passengerName.toUpperCase()
+          // 2026-11-20: Chuẩn hoá linkedBookingCode + linkedTicketIds (per-ticket).
+          //   - Không link → bỏ cả 2 field.
+          //   - Có link nhưng chưa chọn vé cụ thể → gửi linkedTicketIds = [] (BE
+          //     coi là link toàn bộ, backward compatible).
+          if (cleanT.linkedBookingCode) {
+            cleanT.linkedBookingCode = cleanT.linkedBookingCode.trim().toUpperCase()
+            if (!Array.isArray(cleanT.linkedTicketIds)) cleanT.linkedTicketIds = []
+          } else {
+            delete cleanT.linkedBookingCode
+            delete cleanT.linkedTicketIds
+          }
           return cleanT
         }),
       }
@@ -828,21 +890,39 @@ export default function BookingFormModal({ mode = 'create', bookingId, onClose, 
                     </Field>
 
                     {/* 2026-11-19: Link RIÊNG từng vé sang booking chủ (chủ xuất HĐ hộ).
-                        Mỗi vé link độc lập → 1 booking n vé có thể link đi n booking khác. */}
+                        Mỗi vé link độc lập → 1 booking n vé có thể link đi n booking khác.
+                        2026-11-20: Thêm checkbox chọn vé CỤ THỂ của booking chủ để link
+                        theo hoá đơn tách (nếu bỏ chọn hết = link TOÀN BỘ vé chủ như cũ). */}
                     <div className="mt-2">
                       <Field label={
                         <span>🔗 Link sang booking <span className="text-[10px] text-gray-500 font-normal">(mã booking chủ — để trống = không link; mỗi vé link riêng)</span></span>
                       }>
                         <input type="text"
                           value={t.linkedBookingCode || ''}
-                          onChange={e => setTicket(i, { linkedBookingCode: e.target.value.toUpperCase().replace(/\s/g, '') })}
+                          onChange={e => {
+                            const code = e.target.value.toUpperCase().replace(/\s/g, '')
+                            // Đổi code → clear target ticket IDs cũ (vì chúng thuộc booking cũ).
+                            setTicket(i, { linkedBookingCode: code, linkedTicketIds: [] })
+                          }}
                           className="input font-mono uppercase" placeholder="VD: QCZ5RR (để trống nếu không link)" />
                       </Field>
-                      {(t.linkedBookingCode || '').trim() && (
-                        <div className="mt-1 text-[11px] text-emerald-700 font-semibold">
-                          ✓ Vé này sẽ được <span className="font-mono">{(t.linkedBookingCode || '').trim().toUpperCase()}</span> xuất hóa đơn hộ
-                        </div>
-                      )}
+                      {(t.linkedBookingCode || '').trim() && (() => {
+                        const code = (t.linkedBookingCode || '').trim().toUpperCase()
+                        const cache = linkedBookingsCache[code]
+                        return (
+                          <>
+                            <div className="mt-1 text-[11px] text-emerald-700 font-semibold">
+                              ✓ Vé này sẽ được <span className="font-mono">{code}</span> xuất hóa đơn hộ
+                            </div>
+                            <LinkedTicketsPicker
+                              code={code}
+                              cache={cache}
+                              selectedIds={t.linkedTicketIds || []}
+                              onChange={(ids) => setTicket(i, { linkedTicketIds: ids })}
+                            />
+                          </>
+                        )
+                      })()}
                     </div>
                   </div>
                 )
@@ -914,6 +994,15 @@ function newTicket() {
     // 2026-10-16: Link tới Passenger khi chọn qua dropdown.
     passengerId: null,
     passengerDocumentType: null,
+    // 2026-11-12: Link TOÀN BỘ hoặc 1 phần sang booking chủ.
+    linkedBookingCode: '',
+    // ── 2026-11-20 (mới) ─────────────────────────────────────
+    //   Khi vé này link sang booking chủ (linkedBookingCode):
+    //   - linkedTicketIds RỖNG → vé sẽ dùng chung hoá đơn với TOÀN BỘ vé chủ
+    //     (hành vi cũ, backward compatible).
+    //   - linkedTicketIds CÓ GIÁ TRỊ → chỉ dùng chung với các vé CỤ THỂ đã
+    //     chọn trong booking chủ (link theo hóa đơn tách).
+    linkedTicketIds: [],
     // Client-only: theo dõi "tổng tiền gốc từ vendor" để đồng bộ basePrice
     // với collectionFee. Bị strip trong submit.
     _originalTotal: null,
@@ -1162,6 +1251,96 @@ function InvoiceLinkSection({ form, setField, setForm, isEdit }) {
         <div className="mb-2 p-2 rounded-md bg-rose-50 border border-rose-300 text-[11px] text-rose-800">
           ⚠ Sau khi lưu: các vé của booking khác đang link về đây sẽ được gỡ.
           Hóa đơn đã xuất vẫn giữ nguyên (không tự chuyển ngược).
+        </div>
+      )}
+    </div>
+  )
+}
+// ═══════════════════════════════════════════════════════════════
+//  2026-11-20: LinkedTicketsPicker
+//  Hiển thị danh sách vé của BOOKING CHỦ dưới dạng checkbox để user
+//  chọn các vé mà vé hiện tại sẽ dùng chung hoá đơn.
+//  - Bỏ trống (không chọn gì) = link TOÀN BỘ vé chủ (hành vi cũ).
+//  - Chọn 1+ vé = link theo nhóm cụ thể (hoá đơn tách theo nhóm).
+// ═══════════════════════════════════════════════════════════════
+function LinkedTicketsPicker({ code, cache, selectedIds, onChange }) {
+  if (!cache || cache.loading) {
+    return (
+      <div className="mt-1 text-[11px] text-gray-400 italic">
+        Đang tải vé của booking chủ <span className="font-mono">{code}</span>…
+      </div>
+    )
+  }
+  if (cache.error) {
+    return (
+      <div className="mt-1 text-[11px] text-rose-600">
+        ⚠ {cache.error}
+      </div>
+    )
+  }
+  const bk = cache.booking
+  const tickets = bk?.tickets || []
+  if (tickets.length === 0) {
+    return (
+      <div className="mt-1 text-[11px] text-gray-400 italic">
+        Booking chủ <span className="font-mono">{code}</span> chưa có vé nào.
+      </div>
+    )
+  }
+
+  const selectedSet = new Set(selectedIds || [])
+  const toggle = (tid) => {
+    const next = new Set(selectedSet)
+    if (next.has(tid)) next.delete(tid); else next.add(tid)
+    onChange([...next])
+  }
+  const clearAll = () => onChange([])
+  const selectAll = () => onChange(tickets.map(t => t.id))
+
+  const hasSelection = selectedSet.size > 0
+  return (
+    <div className="mt-2 p-2 rounded-lg border border-indigo-200 bg-indigo-50/50">
+      <div className="flex items-center justify-between gap-2 mb-1.5">
+        <div className="text-[11px] font-semibold text-indigo-900">
+          Chọn vé của <span className="font-mono">{code}</span> dùng chung hoá đơn
+          <span className="font-normal text-indigo-700">
+            {' '}— bỏ chọn hết = link toàn bộ
+          </span>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          <button type="button" onClick={selectAll}
+            className="text-[10px] px-1.5 py-0.5 rounded bg-white border border-indigo-200 text-indigo-700 hover:bg-indigo-100">
+            Chọn hết
+          </button>
+          <button type="button" onClick={clearAll}
+            className="text-[10px] px-1.5 py-0.5 rounded bg-white border border-indigo-200 text-indigo-700 hover:bg-indigo-100">
+            Bỏ chọn
+          </button>
+        </div>
+      </div>
+      <div className="space-y-1">
+        {tickets.map(tt => {
+          const checked = selectedSet.has(tt.id)
+          return (
+            <label key={tt.id}
+              className={`flex items-center gap-2 text-[11px] px-2 py-1 rounded cursor-pointer transition
+                ${checked ? 'bg-indigo-100 text-indigo-900' : 'bg-white hover:bg-indigo-50 text-gray-700'}`}>
+              <input type="checkbox" checked={checked}
+                onChange={() => toggle(tt.id)}
+                className="accent-indigo-600" />
+              <span className="font-semibold truncate flex-1">
+                {tt.passengerName || '(chưa có tên)'}
+              </span>
+              <span className="font-mono text-[10px] text-gray-500 shrink-0">
+                {tt.ticketNumber || '—'}
+              </span>
+            </label>
+          )
+        })}
+      </div>
+      {hasSelection && (
+        <div className="mt-1.5 text-[10px] text-indigo-700 italic">
+          ✓ Đã chọn {selectedSet.size}/{tickets.length} vé — vé này sẽ nằm cùng hoá đơn với các vé đó.
         </div>
       )}
     </div>

@@ -650,8 +650,9 @@ export default function CustomersTab() {
   const onExportRevenue = async (sortBy = 'revenue') => {
     if (loading) return toast.error('Dữ liệu đang tải, thử lại sau giây lát')
     const sortOpt = REPORT_SORTS.find(x => x.key === sortBy) || REPORT_SORTS[0]
+    const debtOnly = sortBy === 'debt-only'   // 2026-11-20: option thứ 4
     setExporting(true)
-    const tid = toast.loading('Đang tạo báo cáo doanh thu…')
+    const tid = toast.loading(debtOnly ? 'Đang tạo báo cáo công nợ…' : 'Đang tạo báo cáo doanh thu…')
     try {
       const now = new Date()
       let firstSold = Infinity
@@ -664,40 +665,76 @@ export default function CustomersTab() {
       const toDate = toMs != null ? new Date(toMs) : now
 
       const isSentinel = (r) => !r.isWalkIn && /^kh[aá]ch\s+l[eẻ]$/i.test((r.name || '').trim())
-      const out = rows
-        .filter(r => !isSentinel(r) && (r.ticketCount > 0 || r.revenue > 0.5 || r.debt > 0.5))
-        // Nhóm trước (công ty → khách lẻ), rồi mới tới tiêu chí user chọn;
-        //   bằng nhau thì theo tổng tiền vé, cuối cùng theo tên cho ổn định.
-        .sort((a, b) => (Number(a.isWalkIn) - Number(b.isWalkIn))
-          || (b[sortOpt.key] - a[sortOpt.key])
-          || (b.revenue - a.revenue)
-          || a.name.localeCompare(b.name, 'vi'))
-        .map(r => {
-          // Số ngày công nợ của hoá đơn LÂU NHẤT: tính từ ngày phát hành (nếu
-          //   hoá đơn đã có số), ngược lại từ ngày xuất vé — cùng quy tắc với
-          //   cột "Số ngày CN" trong modal chi tiết công nợ.
-          let oldest = null
-          for (const it of buildDebtItems(r.unpaidBookings)) {
-            const ms = it.type === 'invoice' && it.issueDate ? it.issueDate : it.saleDate
-            if (ms && (oldest == null || ms < oldest)) oldest = ms
+      // 2026-11-20: Báo cáo công nợ → chỉ giữ khách có r.debt > 0.
+      //   Báo cáo doanh thu (3 option đầu) → giữ khách có mua vé hoặc có công nợ.
+      const keepFilter = debtOnly
+        ? (r) => r.debt > 0.5
+        : (r) => r.ticketCount > 0 || r.revenue > 0.5 || r.debt > 0.5
+      // Với báo cáo công nợ, sort theo `debt` DESC xuyên qua cả 2 nhóm (ko tách nhóm).
+      const sortKey = debtOnly ? 'debt' : sortOpt.key
+      const rowsOut = rows
+        .filter(r => !isSentinel(r) && keepFilter(r))
+      const sorted = debtOnly
+        ? rowsOut.sort((a, b) => (b.debt - a.debt) || a.name.localeCompare(b.name, 'vi'))
+        : rowsOut.sort((a, b) => (Number(a.isWalkIn) - Number(b.isWalkIn))
+            || (b[sortKey] - a[sortKey])
+            || (b.revenue - a.revenue)
+            || a.name.localeCompare(b.name, 'vi'))
+      // 2026-11-20: Riêng báo cáo công nợ — gom TỔNG SỐ VÉ CÒN NỢ và TỔNG PHÍ
+      //   XUẤT VÉ của các vé đang nợ (không phải tất cả vé khách đã mua).
+      const unpaidTicketsCount = (unpaidBookings) => {
+        let n = 0
+        for (const it of buildDebtItems(unpaidBookings)) {
+          // Mỗi "item" = hoặc 1 booking hoặc 1 invoice chứa list vé.
+          if (Array.isArray(it.tickets)) n += it.tickets.length
+          else if (Array.isArray(it.ticketIds)) n += it.ticketIds.length
+        }
+        return n
+      }
+      const unpaidIssSum = (unpaidBookings) => {
+        let s = 0
+        for (const b of (unpaidBookings || [])) {
+          for (const t of (b.tickets || [])) {
+            const v = Number(String(t.issuanceFee || '').replace(/[^0-9.-]/g, ''))
+            if (Number.isFinite(v)) s += v
           }
-          return {
-            name: r.name,
-            isWalkIn: !!r.isWalkIn,
-            revenue: r.revenue,
-            iss: r.iss,
-            ticketCount: r.ticketCount,
-            debt: r.debt,
-            debtDays: oldest == null ? null
-              : Math.max(0, Math.floor((now.getTime() - oldest) / 86400000)),
-            note: r.isWalkIn ? '' : `${r.paxCount} hành khách`,
-          }
-        })
-      const mod = await import('../../lib/revenueReportPdf')
-      await mod.exportRevenueReport({
-        rows: out, fromDate, toDate, exportedAt: now, sortLabel: sortOpt.label,
+        }
+        return s
+      }
+      const out = sorted.map(r => {
+        let oldest = null
+        for (const it of buildDebtItems(r.unpaidBookings)) {
+          const ms = it.type === 'invoice' && it.issueDate ? it.issueDate : it.saleDate
+          if (ms && (oldest == null || ms < oldest)) oldest = ms
+        }
+        const base = {
+          name: r.name,
+          isWalkIn: !!r.isWalkIn,
+          revenue: r.revenue,
+          iss: r.iss,
+          ticketCount: r.ticketCount,
+          debt: r.debt,
+          debtDays: oldest == null ? null
+            : Math.max(0, Math.floor((now.getTime() - oldest) / 86400000)),
+          note: r.isWalkIn ? '' : `${r.paxCount} hành khách`,
+        }
+        if (debtOnly) {
+          base.unpaidTicketCount = unpaidTicketsCount(r.unpaidBookings)
+          base.unpaidIss = unpaidIssSum(r.unpaidBookings)
+        }
+        return base
       })
-      toast.success('Đã tạo báo cáo doanh thu', { id: tid })
+      const mod = await import('../../lib/revenueReportPdf')
+      if (debtOnly) {
+        await mod.exportDebtOnlyReport({
+          rows: out, exportedAt: now,
+        })
+      } else {
+        await mod.exportRevenueReport({
+          rows: out, fromDate, toDate, exportedAt: now, sortLabel: sortOpt.label,
+        })
+      }
+      toast.success(debtOnly ? 'Đã tạo báo cáo công nợ' : 'Đã tạo báo cáo doanh thu', { id: tid })
     } catch (e) {
       console.error('[revenue report]', e)
       toast.error(e?.message || 'Tạo báo cáo thất bại', { id: tid })
@@ -1026,6 +1063,9 @@ const REPORT_SORTS = [
     hint: 'Khách đóng nhiều phí xuất vé nhất đứng đầu.' },
   { key: 'debt',    icon: '💰', label: 'Công nợ (cao đến thấp)',
     hint: 'Khách còn nợ nhiều nhất đứng đầu.' },
+  // 2026-11-20: Option thứ 4 — báo cáo công nợ (chỉ data khách còn nợ).
+  { key: 'debt-only', icon: '📋', label: 'Báo cáo công nợ (chỉ khách còn nợ)',
+    hint: 'Chỉ liệt kê khách còn công nợ. Bỏ các card tổng; cột gọn.' },
 ]
 
 function ReportSortModal({ onClose, onPick }) {
