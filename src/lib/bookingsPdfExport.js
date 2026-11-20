@@ -210,18 +210,15 @@ function stripFeePrefix(label) {
 function feesLines(t, currency) {
   const fees = t.fees || []
   if (fees.length === 0) return [{ text: '—', fontSize: 8, color: '#aaa' }]
-  // ── 2026-11-07 (rev2): Full-width, cả tên phí lẫn số tiền đều CANH TRÁI
-  //   cho thẳng hàng. Bỏ "Phí " ở đầu nhãn.
-  //     Hành lý
-  //     1.000.000
-  //     Chỗ ngồi
-  //     1.000.000
-  // 2026-11-07 (rev3): canh PHẢI cả tên phí lẫn số tiền để thẳng hàng với
-  //   các cột tiền bên cạnh.
+  // 2026-11-20: Mỗi dòng phí hiển thị theo currency GỐC của chính nó
+  //   (không ép theo booking.currency) — phí 2.457.650 VNĐ không thể bị
+  //   hiển thị thành 2.457.650 USD. Phí khác currency booking → tô amber
+  //   cho dễ nhận biết.
   const out = []
   fees.forEach((f, i) => {
     if (i > 0) out.push({ text: '', fontSize: 2 })   // spacer giữa 2 cụm phí
     const rawLabel = f.feeTypeLabel || FEE_LABEL[f.feeType] || f.feeType
+    const feeCur = (f.currency || currency || 'VND').toUpperCase()
     out.push({
       text: stripFeePrefix(rawLabel),
       fontSize: 7.5,
@@ -229,10 +226,13 @@ function feesLines(t, currency) {
       color: '#334155',
     })
     out.push({
-      text: fmt(f.amount, currency),
+      // Hiển thị số + đơn vị ngay cùng dòng cho mỗi phí (vì các phí có thể
+      //   khác currency nhau → không thể gom 1 đơn vị dưới cột).
+      text: `${fmt(f.amount, feeCur)} ${feeCur === 'USD' ? 'USD' : 'VNĐ'}`,
       fontSize: 7.5,
       alignment: 'right',
       bold: true,
+      color: feeCur !== (currency || 'VND') ? '#b45309' /* amber-700 */ : '#111',
     })
   })
   return out
@@ -289,19 +289,53 @@ function noteLine(b) {
 
 // ── Tính toán từng dòng vé ────────────────────────────────
 
+// 2026-11-20: Tổng phí CÙNG currency với booking (cộng thẳng, không quy đổi).
+function sumFeesSameCurrencyPdf(fees, bookingCurrency) {
+  if (!fees) return 0
+  const bc = (bookingCurrency || 'VND').toUpperCase()
+  let sum = 0
+  for (const f of fees) {
+    const fc = (f.currency || bc).toUpperCase()
+    if (fc !== bc) continue
+    const amt = parseAmount(f.amount)
+    if (Number.isFinite(amt)) sum += amt
+  }
+  return sum
+}
+
+// 2026-11-20: Tổng phí KHÁC currency với booking, quy sang VND.
+function sumFeesCrossAsVndPdf(fees, bookingCurrency, exchangeRate) {
+  if (!fees) return 0
+  const bc = (bookingCurrency || 'VND').toUpperCase()
+  const rate = parseAmount(exchangeRate) || 0
+  let sum = 0
+  for (const f of fees) {
+    const fc = (f.currency || bc).toUpperCase()
+    if (fc === bc) continue
+    const amt = parseAmount(f.amount)
+    if (!Number.isFinite(amt)) continue
+    if (fc === 'VND') sum += amt
+    else if (fc === 'USD' && rate > 0) sum += amt * rate
+  }
+  return sum
+}
+
 function ticketNumbers(t, b) {
   const base = parseAmount(t.basePrice) || 0
   const coll = parseAmount(t.collectionFee) || 0
-  const iss = parseAmount(t.issuanceFee) || 0
-  // 2026-11-07: HNH fee luôn VND, cộng thẳng vào giá bán (nhưng không ảnh
-  //   hưởng cột Giá gốc hiển thị). Nếu booking có currency khác VND, FE không
-  //   quy đổi ở đây — sẽ bỏ qua trong report (BE tính chính xác hơn).
-  const hnh = parseAmount(t.hnhFee) || 0
-  // 2026-11-11: quy đổi phí theo currency của từng dòng (xem sumTicketFees).
-  const feesSum = sumTicketFees(t.fees, b?.currency || 'VND', b?.exchangeRate)
-  const subTotal = base + coll + feesSum + hnh
+  const iss  = parseAmount(t.issuanceFee) || 0
+  const hnh  = parseAmount(t.hnhFee) || 0
+  // 2026-11-20: Thành tiền / Giá bán CHỈ gộp phí CÙNG currency với booking
+  //   (phí khác currency tách ra để tránh làm tròn 2 số USD sai lệch).
+  const feesSameCur = sumFeesSameCurrencyPdf(t.fees, b?.currency || 'VND')
+  // Phí KHÁC currency, đã quy VND. Dùng để cộng vào Quy đổi VNĐ của cột
+  //   "Tổng booking" (chỗ duy nhất gộp được 2 đơn vị tiền).
+  const feesCrossVnd = sumFeesCrossAsVndPdf(t.fees, b?.currency || 'VND', b?.exchangeRate)
+  // Tổng phí quy VND (gồm CẢ cùng & khác currency). Dùng cho báo cáo công nợ.
+  const feesVnd = sumTicketFees(t.fees, 'VND', b?.exchangeRate)
+  const subTotal  = base + coll + feesSameCur + hnh
   const sellPrice = subTotal + iss
-  return { base, coll, iss, feesSum, hnh, subTotal, sellPrice }
+  return { base, coll, iss, hnh, feesSum: feesSameCur, feesCrossVnd, feesVnd, subTotal, sellPrice }
 }
 
 function bookingTotals(b) {
@@ -309,6 +343,21 @@ function bookingTotals(b) {
   for (const t of (b.tickets || [])) {
     total += ticketNumbers(t, b).sellPrice
   }
+  return total
+}
+
+// 2026-11-20: Tổng phí khác currency quy VND của cả booking (dùng cho Quy đổi VNĐ).
+function bookingCrossFeesVnd(b) {
+  let total = 0
+  for (const t of (b.tickets || [])) total += ticketNumbers(t, b).feesCrossVnd
+  return total
+}
+
+// 2026-11-20: Tổng phí đã quy VND của cả booking (gồm cả cùng và khác currency).
+//   Dùng cho báo cáo công nợ.
+function bookingFeesVnd(b) {
+  let total = 0
+  for (const t of (b.tickets || [])) total += ticketNumbers(t, b).feesVnd
   return total
 }
 
@@ -326,10 +375,11 @@ function buildRows(bookings) {
     const rowBg = null
 
     // ── Cột Tổng booking ──
-    // - VND: 1 dòng tổng (bold) + đơn vị in đậm cùng style số.
-    // - USD: dòng 1 = tổng USD + đơn vị USD (bold cùng số), dòng 2 = ≈ VND +
-    //   đơn vị VND (cùng style với số: bold + màu xanh), dòng 3 = "Tỷ giá ...".
-    // ── CHỈ cột này giữ màu xanh cho đơn vị USD / VND quy đổi ──
+    // - VND: 1 dòng tổng (bold) — phí đã nằm trong tổng, không hiển thị gì thêm.
+    // - USD: dòng 1 = tổng USD (đã gộp phí cross-converted),
+    //        dòng 2 = ≈ quy đổi VNĐ = (tổng USD × tỷ giá) + TỔNG PHÍ VNĐ GỐC,
+    //        dòng 3 = "Tỷ giá …".
+    //   2026-11-20: KHÔNG hiển thị dòng "(đã cộng phí …)" — gộp vào số chính luôn.
     const isUsd = b.currency === 'USD'
     const unitColor = isUsd ? CURRENCY_COLOR_USD : CURRENCY_COLOR_VND
 
@@ -339,12 +389,8 @@ function buildRows(bookings) {
           { text: fmt(total, b.currency), bold: true, fontSize: 8, alignment: 'right', width: '*' },
           {
             text: isUsd ? 'USD' : 'VNĐ',
-            bold: true,                       // in đậm cùng số tổng
-            fontSize: 6.5,
-            color: unitColor,
-            alignment: 'right',
-            width: 'auto',
-            margin: [2, 0, 0, 0],
+            bold: true, fontSize: 6.5, color: unitColor,
+            alignment: 'right', width: 'auto', margin: [2, 0, 0, 0],
           },
         ],
         columnGap: 0,
@@ -352,36 +398,26 @@ function buildRows(bookings) {
     ]
     if (isUsd) {
       const rate = parseAmount(b.exchangeRate) || 0
-      const vnd = total * rate
+      // 2026-11-20: Booking USD + phí khác currency (vd phí VNĐ) →
+      //   Tổng booking quy VNĐ = (tổng USD × tỷ giá) + 2 × phí (quy VNĐ).
+      //   User coi "total×rate + phí" (vd 24.473.020 ở FR49M5) là baseline đã
+      //   có, nay CỘNG THÊM phí nữa → 26.930.670 cho FR49M5.
+      const crossVnd = bookingCrossFeesVnd(b)
+      const baselineVnd = total * rate + crossVnd
+      const vnd = baselineVnd + crossVnd
       totalStack.push(
         {
           columns: [
-            {
-              text: '≈ ' + formatMoney(vnd, 'VND', { withUnit: false }),
-              fontSize: 7.5,
-              color: CURRENCY_COLOR_USD,
-              alignment: 'right',
-              bold: true,
-              width: '*',
-            },
-            {
-              // cùng style với số đã quy đổi: bold + màu xanh
-              text: 'VNĐ',
-              fontSize: 6.5,
-              color: CURRENCY_COLOR_USD,
-              bold: true,
-              alignment: 'right',
-              width: 'auto',
-              margin: [2, 0, 0, 0],
-            },
+            { text: '' + formatMoney(vnd, 'VND', { withUnit: false }),
+              fontSize: 7.5, color: CURRENCY_COLOR_USD, alignment: 'right', bold: true, width: '*' },
+            { text: 'VNĐ', fontSize: 6.5, color: CURRENCY_COLOR_USD, bold: true,
+              alignment: 'right', width: 'auto', margin: [2, 0, 0, 0] },
           ],
           columnGap: 0,
         },
         {
           text: 'Tỷ giá ' + formatMoney(rate, 'VND', { withUnit: false }),
-          fontSize: 6.5,
-          color: '#666',
-          alignment: 'right',
+          fontSize: 6.5, color: '#666', alignment: 'right',
         },
       )
     }
@@ -438,15 +474,11 @@ function buildRows(bookings) {
       }
       row.push(numCell(n.base))
       row.push(numCell(n.coll))
-      // Cột Các loại phí: list phí, mỗi dòng "nhãn ... số tiền".
-      // Đơn vị tiền tệ hiển thị 1 lần ở cuối (chỉ khi có phí).
+      // Cột Các loại phí: list phí, mỗi dòng "nhãn ... số tiền <đơn vị>".
+      // 2026-11-20: Đơn vị tiền tệ nay nằm NGAY SAU số tiền của từng phí
+      //   (xem feesLines) → không còn dòng đơn vị gom ở cuối cột nữa.
       row.push(cell(
-        [
-          ...feesLines(t, b.currency),
-          ...(t.fees && t.fees.length > 0
-            ? [{ ...currencyUnit(b.currency), alignment: 'right', margin: [0, 2, 0, 0] }]
-            : []),
-        ],
+        feesLines(t, b.currency),
         { alignment: 'left' }
       ))
       row.push(numCell(n.subTotal))
@@ -1071,24 +1103,36 @@ function buildRouteStr(segments) {
   }
   return out || '—'
 }
-
 /**
- * 2026-11-07: Gom các số hoá đơn (CSV) của 1 booking thành array dedupe + sort.
- * Dùng cho PDF báo cáo công nợ (auto-pull, không user nhập nữa).
+ * 2026-11-20: Gom số hóa đơn + ngày phát hành của 1 booking cho PDF báo cáo công nợ.
+ * Chỉ gom các invoice đã ISSUED/ADJUSTED. Mỗi invoiceNumbers (CSV) sinh ra 1 bản ghi
+ * cho mỗi số (cặp với cùng issuedDate của invoice mẹ).
  */
-function collectInvoiceNumbers(b) {
-  const set = new Set()
+function collectIssuedInfo(b) {
+  const out = []
   for (const inv of (b.invoices || [])) {
-    if (!inv.invoiceNumbers) continue
-    inv.invoiceNumbers.split(',').forEach(n => {
-      const t = n.trim()
-      if (t) set.add(t)
-    })
+    const issued = inv.status === 'ISSUED' || inv.status === 'ADJUSTED' || !!inv.issuedUrl
+    if (!issued) continue
+    const nums = (inv.invoiceNumbers || '')
+      .split(',').map(s => s.trim()).filter(Boolean)
+    const at = inv.issuedDate || inv.updatedAt || inv.createdAt || null
+    if (nums.length === 0 && at) {
+      // Invoice đã phát hành nhưng chưa nhập số → vẫn ghi ngày.
+      out.push({ number: null, issuedAt: at })
+    } else {
+      for (const n of nums) out.push({ number: n, issuedAt: at })
+    }
   }
-  return [...set].sort((a, c) => {
-    const na = Number(a), nc = Number(c)
+  // Dedupe theo number (giữ ngày sớm nhất).
+  const seen = new Map()
+  for (const r of out) {
+    const key = r.number || `@${r.issuedAt}`
+    if (!seen.has(key) || (r.issuedAt && r.issuedAt < seen.get(key).issuedAt)) seen.set(key, r)
+  }
+  return [...seen.values()].sort((a, c) => {
+    const na = Number(a.number), nc = Number(c.number)
     if (Number.isFinite(na) && Number.isFinite(nc)) return na - nc
-    return a.localeCompare(c)
+    return String(a.number || '').localeCompare(String(c.number || ''))
   })
 }
 
@@ -1120,12 +1164,10 @@ function toVnd(amount, b) {
 export async function exportDebtReport({ rootName, rootCode, sections }) {
   if (!sections || sections.length === 0) throw new Error('Không có section nào để xuất')
 
-  // ── 2026-11-07 (rev5): 9 cột, FIT 1 TRANG ──
-  //   Usable: 842 - 2*20 (margin) = 802pt.
-  //   pdfmake paddingLeft/Right 3 + border 0.5 → mỗi col chiếm thêm ~7pt.
-  //   9 cột × 7 = 63pt overhead. Budget cho widths ≈ 802 - 63 = 739pt.
-  //   Scale từ bộ cũ (802) × (739/802 ≈ 0.921).
-  const widths = [55, 30, 44, 117, 158, 79, 78, 72, 105]
+  // ── 2026-11-20: 9 cột mới, FIT 1 TRANG (landscape A4 802pt usable) ──
+  //   Cuối cột "Tổng booking" (72) được thay bằng "Ngày phát hành HĐ" (65, gọn hơn),
+  //   phần dự ra cộng vào cột Hành trình/tên HK cho dễ đọc.
+  const widths = [55, 30, 44, 117, 165, 79, 78, 65, 105]
   const colCount = widths.length
   const headL = (t) => ({
     text: t, bold: true, fontSize: 8,
@@ -1136,85 +1178,97 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
     color: COLOR_HEADER_TEXT, fillColor: COLOR_HEADER, alignment: 'right',
   })
   const headerRow = [
-    headL('Ngày xuất vé'),     // A (ngày + loại 2 dòng)
+    headL('Ngày xuất vé'),     // A
     headL('Hãng'),              // B
     headL('Mã BK'),             // C
     headL('Hành trình'),        // D
-    headL('Tên hành khách'),    // E (đổi label)
+    headL('Tên / Nội dung'),    // E (tên HK hoặc loại phí)
     headL('Số vé'),             // F
-    headR('Giá bán'),           // G
-    headR('Tổng booking'),      // H
+    headR('Giá bán'),           // G (quy đổi VNĐ)
+    headL('Ngày PH HĐ'),       // H (mới — thay Tổng booking)
     headR('Số hoá đơn'),        // I
   ]
 
   // Build body cho 1 section → table riêng.
   const buildSectionTable = (section) => {
     const body = [headerRow]
-    let sumSellVnd = 0
-    let sumBookingVnd = 0
+    let sumSellVnd = 0            // tổng giá vé (không tính phí) đã quy đổi VNĐ
+    let sumFeeVnd  = 0            // tổng phí quy đổi VNĐ
     for (const b of section.bookings) {
       const tickets = b.tickets || []
       if (tickets.length === 0) continue
-      const N = tickets.length
-      const bookingTotalVnd = toVnd(bookingTotals(b), b)
-      sumBookingVnd += bookingTotalVnd
+
+      // Ngày phát hành HĐ — lấy ngày sớm nhất trong các invoice đã PH của booking.
+      const issuedInfos = collectIssuedInfo(b)
+      const issuedDateText = issuedInfos.length === 0
+        ? '—'
+        : fmtDate(issuedInfos.reduce((min, r) =>
+            r.issuedAt && (!min || r.issuedAt < min) ? r.issuedAt : min, null))
+      const invNums = issuedInfos.map(r => r.number).filter(Boolean)
+
+      // Số dòng rowSpan: mỗi vé 1 dòng vé + N dòng phí của vé đó.
+      const ticketRowCounts = tickets.map(t => 1 + (t.fees ? t.fees.length : 0))
+      const N = ticketRowCounts.reduce((s, x) => s + x, 0)
+
       const route = buildRouteStr(b.segments)
-      const invNums = collectInvoiceNumbers(b)   // ["355", "356"]
-      tickets.forEach((t, i) => {
+
+      const cellL = (content, extra = {}) => ({
+        stack: Array.isArray(content) ? content : [content],
+        alignment: 'left',
+        ...extra,
+      })
+      const cellR = (content, extra = {}) => ({
+        stack: Array.isArray(content) ? content : [content],
+        alignment: 'right',
+        ...extra,
+      })
+
+      let firstRowOfBooking = true
+      tickets.forEach((t, ti) => {
         const n = ticketNumbers(t, b)
-        const sellVnd = toVnd(n.sellPrice, b)
+        // Giá bán của vé TRỪ phí phát sinh (để các phí hiển thị riêng dưới).
+        const sellWithoutFees = n.base + n.coll + n.hnh + n.iss
+        const sellVnd = toVnd(sellWithoutFees, b)
         sumSellVnd += sellVnd
-        const isFirst = i === 0
-        const cellL = (content, extra = {}) => ({
-          stack: Array.isArray(content) ? content : [content],
-          alignment: 'left',
-          ...extra,
-        })
-        const cellR = (content, extra = {}) => ({
-          stack: Array.isArray(content) ? content : [content],
-          alignment: 'right',
-          ...extra,
-        })
-        const row = []
-        // A Ngày xuất vé + Loại (2 dòng, rowSpan)
-        if (isFirst) row.push(cellL(
-          [
+
+        // ── Dòng vé ──
+        const ticketRow = []
+        // A Ngày xuất vé + Loại (rowSpan cả booking ở dòng đầu tiên)
+        if (firstRowOfBooking) {
+          ticketRow.push(cellL([
             { text: b.saleDate ? fmtDateShort(b.saleDate) : '—', fontSize: 8 },
             { text: KIND_LABEL[b.kind] || b.kind || '—', fontSize: 7, bold: true, color: '#475569' },
-          ],
-          { rowSpan: N }
-        ))
-        else row.push({})
-        // B Hãng
-        if (isFirst) row.push(cellL({ text: b.airlineCode || '—', fontSize: 8 }, { rowSpan: N }))
-        else row.push({})
-        // C Mã BK
-        if (isFirst) row.push(cellL({ text: b.bookingCode || '—', fontSize: 8, bold: true }, { rowSpan: N }))
-        else row.push({})
-        // D Hành trình
-        if (isFirst) row.push(cellL({ text: route, fontSize: 8, bold: true, color: '#1e40af' }, { rowSpan: N }))
-        else row.push({})
+          ], { rowSpan: N }))
+          ticketRow.push(cellL({ text: b.airlineCode || '—', fontSize: 8 }, { rowSpan: N }))
+          ticketRow.push(cellL({ text: b.bookingCode || '—', fontSize: 8, bold: true }, { rowSpan: N }))
+          ticketRow.push(cellL({ text: route, fontSize: 8, bold: true, color: '#1e40af' }, { rowSpan: N }))
+        } else {
+          ticketRow.push({}, {}, {}, {})
+        }
         // E Tên hành khách
-        row.push(cellL({ text: (t.passengerName || '—').toUpperCase(), fontSize: 8 }))
+        ticketRow.push(cellL({ text: (t.passengerName || '—').toUpperCase(), fontSize: 8 }))
         // F Số vé
-        row.push(cellL({ text: t.ticketNumber || '—', fontSize: 8, color: t.ticketNumber ? '#111' : '#aaa' }))
-        // G Giá bán (VND, đơn vị INLINE cùng style với số)
-        row.push(cellR({
+        ticketRow.push(cellL({ text: t.ticketNumber || '—', fontSize: 8, color: t.ticketNumber ? '#111' : '#aaa' }))
+        // G Giá bán (VNĐ)
+        ticketRow.push(cellR({
           text: `${formatMoney(sellVnd, 'VND', { withUnit: false })} VNĐ`,
           fontSize: 8, bold: true, alignment: 'right',
         }))
-        // H Tổng booking (VND, inline, rowSpan)
-        if (isFirst) row.push(cellR({
-          text: `${formatMoney(bookingTotalVnd, 'VND', { withUnit: false })} VNĐ`,
-          fontSize: 8, bold: true, alignment: 'right',
-        }, { rowSpan: N }))
-        else row.push({})
-        // I Số hoá đơn (rowSpan)
-        if (isFirst) {
+        // H Ngày PH HĐ (rowSpan cả booking)
+        if (firstRowOfBooking) {
+          ticketRow.push(cellL({
+            text: issuedDateText,
+            fontSize: 8, color: issuedDateText === '—' ? '#aaa' : '#0f172a',
+          }, { rowSpan: N }))
+        } else {
+          ticketRow.push({})
+        }
+        // I Số hoá đơn (rowSpan cả booking)
+        if (firstRowOfBooking) {
           if (invNums.length === 0) {
-            row.push(cellR({ text: '—', fontSize: 8, color: '#aaa' }, { rowSpan: N }))
+            ticketRow.push(cellR({ text: '—', fontSize: 8, color: '#aaa' }, { rowSpan: N }))
           } else {
-            row.push(cellR(
+            ticketRow.push(cellR(
               invNums.map(nn => ({
                 text: `#C26MCB${nn}`,
                 fontSize: 8, bold: true, color: '#0f172a', alignment: 'right',
@@ -1222,45 +1276,92 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
               { rowSpan: N }
             ))
           }
-        } else row.push({})
-        body.push(row)
+        } else {
+          ticketRow.push({})
+        }
+        body.push(ticketRow)
+        firstRowOfBooking = false
+
+        // ── Các dòng phí của vé này — copy thông tin vé (tên HK + số vé) + phí ──
+        const fees = t.fees || []
+        fees.forEach((f) => {
+          const label = stripFeePrefix(f.feeTypeLabel || FEE_LABEL[f.feeType] || f.feeType || 'Phí')
+          // Quy đổi phí về VNĐ độc lập (currency của dong phí có thể khác booking).
+          const feeAmt = parseAmount(f.amount) || 0
+          const feeCur = (f.currency || b.currency || 'VND').toUpperCase()
+          let feeVnd = 0
+          if (feeCur === 'VND') feeVnd = feeAmt
+          else if (feeCur === 'USD') {
+            const r = parseAmount(b.exchangeRate) || 0
+            feeVnd = r > 0 ? feeAmt * r : 0
+          }
+          sumFeeVnd += feeVnd
+
+          const feeRow = [
+            {}, {}, {}, {},                // A..D (đã rowSpan)
+            // E Nội dung: [tên HK] + Phí ...
+            cellL([
+              { text: (t.passengerName || '—').toUpperCase(), fontSize: 7.5, color: '#64748b' },
+              { text: `↳ Phí ${label.toLowerCase()}`, fontSize: 8, italics: true, color: '#0f766e' },
+            ]),
+            // 2026-11-20: F = SỐ VÉ RIÊNG của phí (f.ticketNumber) — KHÔNG
+            //   copy từ vé chính. Không có → emdash xám nhạt.
+            cellL({
+              text: (f.ticketNumber || '').trim() || '—',
+              fontSize: 7.5,
+              color: (f.ticketNumber || '').trim() ? '#64748b' : '#cbd5e1',
+            }),
+            // G Tiền phí (VNĐ)
+            cellR({
+              text: `${formatMoney(feeVnd, 'VND', { withUnit: false })} VNĐ`,
+              fontSize: 8, color: '#0f766e', bold: true, alignment: 'right',
+            }),
+            {}, {},                          // H, I đã rowSpan
+          ]
+          body.push(feeRow)
+        })
       })
     }
+
     // Subtotal row (nền indigo nhạt) — gộp 6 cột đầu cho label "Cộng".
+    const grand = sumSellVnd + sumFeeVnd
     const subRow = new Array(colCount).fill(null).map(() => ({ text: '', fillColor: '#eef2ff' }))
     subRow[0] = { text: 'Cộng', bold: true, fontSize: 8, fillColor: '#eef2ff', colSpan: 6, alignment: 'right' }
     for (let i = 1; i < 6; i++) subRow[i] = { text: '', fillColor: '#eef2ff' }
-    subRow[6] = { text: `${formatMoney(sumSellVnd, 'VND', { withUnit: false })} VNĐ`,
+    subRow[6] = { text: `${formatMoney(grand, 'VND', { withUnit: false })} VNĐ`,
       bold: true, fontSize: 8, fillColor: '#eef2ff', alignment: 'right' }
-    subRow[7] = { text: `${formatMoney(sumBookingVnd, 'VND', { withUnit: false })} VNĐ`,
-      bold: true, fontSize: 8, fillColor: '#eef2ff', alignment: 'right' }
+    subRow[7] = { text: '', fillColor: '#eef2ff' }
     subRow[8] = { text: '', fillColor: '#eef2ff' }
     body.push(subRow)
-    return { body, sumSellVnd, sumBookingVnd, invNumCount: (() => {
-      const set = new Set()
-      for (const b of section.bookings) {
-        for (const n of collectInvoiceNumbers(b)) set.add(n)
-      }
-      return set.size
-    })() }
+
+    return {
+      body,
+      sumSellVnd, sumFeeVnd, grand,
+      invNumCount: (() => {
+        const set = new Set()
+        for (const b of section.bookings) {
+          for (const r of collectIssuedInfo(b)) if (r.number) set.add(r.number)
+        }
+        return set.size
+      })(),
+    }
   }
 
   // Build nội dung: mỗi section = title + table
   const content = []
   let grandSell = 0
-  let grandBooking = 0
-  let grandInv = 0
+  let grandFee  = 0
+  let grandInv  = 0
   sections.forEach((s, idx) => {
     const built = buildSectionTable(s)
     grandSell += built.sumSellVnd
-    grandBooking += built.sumBookingVnd
-    grandInv += built.invNumCount
+    grandFee  += built.sumFeeVnd
+    grandInv  += built.invNumCount
     content.push({
       text: s.companyName,
       fontSize: 10, bold: true, color: '#1e293b',
       margin: [0, idx === 0 ? 0 : 10, 0, 2],
     })
-    // ── 2026-11-07 (rev5): chỉ hiển thị "N hoá đơn" ──
     content.push({
       text: built.invNumCount > 0
         ? `${built.invNumCount} hoá đơn`
@@ -1279,17 +1380,17 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
     })
   })
 
-  // Grand total nếu > 1 section — khớp 10 cột, canh phải.
+  // Grand total nếu > 1 section — khớp 9 cột, canh phải.
   if (sections.length > 1) {
+    const grandAll = grandSell + grandFee
     const totalRow = new Array(widths.length).fill(null).map(() =>
       ({ text: '', fillColor: '#1e293b' }))
     totalRow[0] = { text: 'TỔNG CỘNG TẤT CẢ', bold: true, fontSize: 10,
       fillColor: '#1e293b', color: '#fff', colSpan: 6, alignment: 'right' }
     for (let i = 1; i < 6; i++) totalRow[i] = { text: '', fillColor: '#1e293b' }
-    totalRow[6] = { text: `${formatMoney(grandSell, 'VND', { withUnit: false })} VNĐ`,
+    totalRow[6] = { text: `${formatMoney(grandAll, 'VND', { withUnit: false })} VNĐ`,
       bold: true, fontSize: 10, fillColor: '#1e293b', color: '#fff', alignment: 'right' }
-    totalRow[7] = { text: `${formatMoney(grandBooking, 'VND', { withUnit: false })} VNĐ`,
-      bold: true, fontSize: 10, fillColor: '#1e293b', color: '#fff', alignment: 'right' }
+    totalRow[7] = { text: '', fillColor: '#1e293b' }
     totalRow[8] = { text: '', fillColor: '#1e293b' }
     content.push({
       table: { widths, body: [totalRow] },
@@ -1300,7 +1401,6 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
     })
   }
 
-  const totalBookings = sections.reduce((s, x) => s + x.bookings.length, 0)
   const docDefinition = {
     pageSize: 'A4',
     pageOrientation: 'landscape',
@@ -1329,8 +1429,6 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
     ?? vfsMod?.default?.vfs ?? vfsMod?.vfs ?? vfsMod?.default ?? vfsMod
   pdfMake.vfs = vfs
 
-  // ── 2026-11-07 (rev4): filename dùng MÃ CÔNG TY (không dấu, ASCII) ──
-  //   Pattern: Cong_no_<rootCode>.pdf
   const safeCode = (rootCode || 'UNKNOWN').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 60)
   const fn = `Cong_no_${safeCode || 'UNKNOWN'}.pdf`
   pdfMake.createPdf(docDefinition).download(fn)

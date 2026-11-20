@@ -159,6 +159,9 @@ export const listInvoices = (params = {}) =>
 export const getInvoiceDraft = (bookingId, kind = 'BOOKING') =>
   api.get('/api/tools/vmb/invoices/draft', { params: { bookingId, kind } })
 
+export const getInvoiceDetail = (bookingId, kind) =>
+  api.get('/api/tools/vmb/invoices/detail', { params: { bookingId, kind } })
+
 // ── COMPANIES & PASSENGERS & MEMBERSHIP ──────────────────────
 
 export const listCompanies = () =>

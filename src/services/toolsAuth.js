@@ -14,6 +14,7 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import axios from 'axios'
+import toast from 'react-hot-toast'
 
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:9009'
 
@@ -138,25 +139,49 @@ export async function login(username, password, remember = false) {
 export async function verifyToken() {
   const token = readToolsToken()
   if (!token) return null
+
+  let res
   try {
-    const res = await authClient.post('/api/tools/auth/verify', null, {
+    res = await authClient.post('/api/tools/auth/verify', null, {
       headers: { Authorization: `Bearer ${token}` },
     })
-    const data = unwrap(res)
-    // Cập nhật thông tin user mới nhất, giữ nơi lưu (local/session) đúng như cũ
-    const remember = localStorage.getItem(K_TOKEN) === token
-    saveSession(token, {
-      username: data.username,
-      displayName: data.displayName || '',
-      admin: !!data.admin,
-      expiresAt: data.expiresAt,
-    }, remember)
-    return data
+  } catch (err) {
+    // ── 2026-11-20: KHÔNG đăng xuất khi server rớt / lỗi tạm thời ──────────
+    //   Chỉ coi là "token không hợp lệ" (→ dọn phiên, đăng xuất) khi backend
+    //   TRẢ RÕ 401/403. Các lỗi còn lại (mất mạng, 5xx, timeout, server đang
+    //   khởi động lại…) KHÔNG đụng tới token: giữ nguyên phiên đã lưu để refresh
+    //   không văng ra màn đăng nhập; chỉ báo toast cho người dùng biết.
+    const status = err?.response?.status
+    if (status === 401 || status === 403) {
+      wipeToolsToken({ keepRememberedUsername: true })
+      return null
+    }
+    const cached = readToolsUser()
+    if (cached) {
+      try { toast.error('Không kết nối được máy chủ — vẫn giữ phiên đăng nhập.') } catch { /* ignore */ }
+      return cached
+    }
+    return null
+  }
+
+  // Có phản hồi: nếu backend báo token không hợp lệ (success:false) → đăng xuất.
+  let data
+  try {
+    data = unwrap(res)
   } catch {
-    // Token đã hết hạn / bị vô hiệu / sai chữ ký → dọn phiên
     wipeToolsToken({ keepRememberedUsername: true })
     return null
   }
+
+  // Cập nhật thông tin user mới nhất, giữ nơi lưu (local/session) đúng như cũ
+  const remember = localStorage.getItem(K_TOKEN) === token
+  saveSession(token, {
+    username: data.username,
+    displayName: data.displayName || '',
+    admin: !!data.admin,
+    expiresAt: data.expiresAt,
+  }, remember)
+  return data
 }
 
 /** Đổi mật khẩu của chính mình */

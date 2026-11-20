@@ -206,7 +206,7 @@ export default function BatchPaymentModal({ bookings, onClose, onSaved }) {
           <label className="text-[11px] font-semibold text-gray-600 mb-1 block">
             Thanh toán vào tài khoản (chung cho mọi hoá đơn)
           </label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             {accounts.map(a => (
               <button key={a.id} type="button"
                 onClick={() => setAccountCode(a.code)}

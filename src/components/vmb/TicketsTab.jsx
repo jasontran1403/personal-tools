@@ -736,7 +736,7 @@ export default function TicketsTab({ onOpenInvoices, fabHidden, refreshSignal } 
                 <Th>Phí xuất vé</Th>
                 <Th>Giá bán</Th>
                 <Th>Tổng booking</Th>
-                <Th>Quy đổi VND</Th>
+                <Th>Quy đổi VNĐ</Th>
                 <Th center>Thanh toán</Th>
                 <ThR>Thao tác</ThR>
               </tr>
@@ -1179,17 +1179,74 @@ function InvoiceNumbersForGroup({ booking, ticketIds }) {
 // ═══════════════════════════════════════════════════════════════
 //  RENDER — DESKTOP TABLE
 // ═══════════════════════════════════════════════════════════════
+function feeToVnd(f, b) {
+  const amt = parseAmount(f?.amount) || 0
+  const fc  = (f?.currency || b?.currency || 'VND').toUpperCase()
+  if (fc === 'VND') return amt
+  if (fc === 'USD') {
+    const r = parseAmount(b?.exchangeRate) || 0
+    return r > 0 ? amt * r : 0
+  }
+  return 0
+}
+
+// 2026-11-20: Tổng phí CÙNG currency với booking (cộng thẳng, không quy đổi).
+//   Dùng cho Thành tiền / Giá bán / Tổng booking (cột hiển thị theo booking currency).
+function sumFeesSameCurrency(fees, bookingCurrency) {
+  if (!fees) return 0
+  const bc = (bookingCurrency || 'VND').toUpperCase()
+  let sum = 0
+  for (const f of fees) {
+    const fc = (f.currency || bc).toUpperCase()
+    if (fc !== bc) continue
+    const amt = parseAmount(f.amount)
+    if (Number.isFinite(amt)) sum += amt
+  }
+  return sum
+}
+
+// 2026-11-20: Tổng phí KHÁC currency với booking, đã quy sang VND.
+//   Dùng để cộng vào cột Quy đổi VNĐ (chỗ duy nhất gộp được 2 đơn vị tiền).
+//   VD booking USD + phí VNĐ 2,457,650 → trả về 2,457,650 (không cộng vào Giá bán).
+function sumFeesCrossAsVnd(fees, bookingCurrency, exchangeRate) {
+  if (!fees) return 0
+  const bc = (bookingCurrency || 'VND').toUpperCase()
+  const rate = parseAmount(exchangeRate) || 0
+  let sum = 0
+  for (const f of fees) {
+    const fc = (f.currency || bc).toUpperCase()
+    if (fc === bc) continue   // cùng currency → đã nằm trong subTotal
+    const amt = parseAmount(f.amount)
+    if (!Number.isFinite(amt)) continue
+    if (fc === 'VND') sum += amt
+    else if (fc === 'USD' && rate > 0) sum += amt * rate
+  }
+  return sum
+}
 
 function renderBookingRows(b, bIdx, {
   page, nowTick, isSelected, onToggleSelect,
   onOpenBookingFace, onOpenTicketFace, onPresent, onUpload, onInvoice, onNote, onPay, onEdit, onDelete,
 }) {
-  // 2026-10-12: Tổng QUY về booking.currency — fees khác currency được convert
-  // qua exchangeRate (xem sumTicketFees).
+  // 2026-11-20: Thành tiền / Giá bán / Tổng booking CHỈ gộp phí CÙNG currency
+  //   với booking. Phí khác currency (vd booking USD + phí VNĐ) KHÔNG bị quy
+  //   đổi vào đây — hệ thống làm tròn 2 số lẻ USD nên quy đổi qua lại sẽ lệch.
+  //   Phí khác currency được tách ra, chỉ cộng tại cột Quy đổi VNĐ.
   const bookingTotal = sumAmounts(...(b.tickets || []).map(t =>
     sumAmounts(t.basePrice, t.collectionFee,
-      sumTicketFees(t.fees, b.currency, b.exchangeRate), t.issuanceFee)))
-  const totalVnd = toVnd(bookingTotal, b.currency, b.exchangeRate)
+      sumFeesSameCurrency(t.fees, b.currency), t.issuanceFee)))
+  // Tổng phí KHÁC currency của booking, quy VNĐ (0 nếu mọi phí cùng currency).
+  const bookingFeesVnd = (b.tickets || []).reduce(
+    (s, t) => s + sumFeesCrossAsVnd(t.fees, b.currency, b.exchangeRate), 0)
+  // 2026-11-20: Booking USD + phí khác currency (vd phí VNĐ):
+  //   Hiển thị Quy đổi VNĐ = (bookingTotal × tỷ giá) + 2 × phí (quy VNĐ).
+  //   Yêu cầu nghiệp vụ: user coi "bookingTotal × tỷ giá" là phần đã có sẵn
+  //   trên UI (vd 24.473.020 ở FR49M5), nay phải CỘNG THÊM phí vào trên con
+  //   số đó → thành 26.930.670 cho FR49M5 (= 24.473.020 + 2.457.650).
+  //   Booking VND phí VND: bookingFeesVnd = 0 (phí đã trong bookingTotal) →
+  //   công thức dưới tự rút gọn về totalVnd = bookingTotal, không ảnh hưởng.
+  const uiShownVnd = toVnd(bookingTotal, b.currency, b.exchangeRate) + bookingFeesVnd
+  const totalVnd = uiShownVnd + bookingFeesVnd
   const N = b.tickets?.length || 1
   const primary = primaryDeparture(b.segments, nowTick)
   // 2026-11-19: Chỉ hiện badge đếm ngược giờ bay cho booking Vé mới / Đổi vé.
@@ -1235,8 +1292,9 @@ function renderBookingRows(b, bIdx, {
       ? sumAmounts(t.basePrice, t.hnhFee)
       : t.basePrice
     const withCollection = sumAmounts(withHnh, t.collectionFee)
-    // 2026-10-12: fees quy về booking.currency để cộng cùng basePrice/collection.
-    const feesTotal = sumTicketFees(t.fees, b.currency, b.exchangeRate)
+    // 2026-11-20: CHỈ gộp phí CÙNG currency với booking (không quy đổi cross).
+    //   Phí khác currency tách ra, chỉ cộng tại cột Quy đổi VNĐ của booking.
+    const feesTotal = sumFeesSameCurrency(t.fees, b.currency)
     const subTotal = sumAmounts(withCollection, feesTotal)
     const sellPrice = sumAmounts(subTotal, t.issuanceFee)
     const hasFace = faceStatus(b, t.id)
@@ -1425,6 +1483,9 @@ function renderBookingRows(b, bIdx, {
               <span className="text-gray-400 text-[11px]">—</span>
             ) : (
               <>
+                {/* 2026-11-20: Với booking USD, totalVnd = bookingTotal × tỷ giá
+                    + feesVnd (phí VNĐ gốc) → ra con số gộp, không cần sub-line
+                    "+ phí" nữa. */}
                 <div className="font-mono tabular-nums text-sm font-bold text-gray-900">
                   {formatMoney(totalVnd, 'VND')}
                 </div>
@@ -1692,7 +1753,7 @@ function TdMoney({ value, currency, exchangeRate, bold, muted }) {
       <button type="button"
         onClick={isClickable ? () => copyMoneyAsClipboard(n, currency, exchangeRate) : undefined}
         disabled={!isClickable}
-        title={isClickable ? (currency === 'USD' ? 'Click để copy (quy đổi VND)' : 'Click để copy') : undefined}
+        title={isClickable ? (currency === 'USD' ? 'Click để copy (quy đổi VNĐ)' : 'Click để copy') : undefined}
         className={`${cls} text-left ${isClickable ? 'hover:bg-blue-50 hover:text-blue-700 rounded px-1 -mx-1 cursor-copy' : ''}`}>
         {formatMoney(n, currency, { withUnit: false })}
       </button>
@@ -1899,9 +1960,10 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
   onOpenBookingFace, onOpenTicketFace,
   onPresent, onUpload,
   onInvoice, onNote, onPay, onEdit, onDelete }) {
+  // 2026-11-20: Mobile cũng áp dụng rule "chỉ gộp phí cùng currency" như desktop.
   const bookingTotal = sumAmounts(...(b.tickets || []).map(t =>
     sumAmounts(t.basePrice, t.collectionFee,
-      sumTicketFees(t.fees, b.currency, b.exchangeRate), t.issuanceFee)))
+      sumFeesSameCurrency(t.fees, b.currency), t.issuanceFee)))
   const primary = primaryDeparture(b.segments, nowTick)
   // 2026-11-19: Chỉ hiện badge đếm ngược giờ bay cho booking Vé mới / Đổi vé.
   const showDepartBadge = b.kind === 'NEW' || b.kind === 'EXCHANGE'
@@ -2022,7 +2084,7 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
                 <div className="font-mono tabular-nums text-sm font-bold text-gray-900 shrink-0">
                   {formatMoney(
                     sumAmounts(t.basePrice, t.collectionFee,
-                      sumTicketFees(t.fees, b.currency, b.exchangeRate), t.issuanceFee),
+                      sumFeesSameCurrency(t.fees, b.currency), t.issuanceFee),
                     b.currency
                   )}
                 </div>
