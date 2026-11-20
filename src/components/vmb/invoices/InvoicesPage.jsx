@@ -322,7 +322,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
                       <span className="lg:hidden text-[11px] text-gray-400">Hóa đơn</span>
                       <div className="flex items-center gap-1.5">
                         <div className="leading-tight">
-                          <div className="text-sm font-semibold text-gray-800">#C26MCB{row.invoiceNo || '—'}</div>
+                          <div className="text-sm font-semibold text-gray-800">{`#C26MCB${row.invoiceNo || '—'}`}</div>
                           <div className="text-[11px] text-gray-500">{issued && row.issuedAt ? fmtDate(row.issuedAt) : '—'}</div>
                         </div>
                       </div>
