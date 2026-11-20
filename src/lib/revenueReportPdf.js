@@ -272,16 +272,10 @@ export function buildDebtOnlyReportDoc({ rows, exportedAt = new Date() }) {
     const fill = idx % 2 === 1 ? C.zebra : null
     const cell = (text, extra = {}) => ({ text, fontSize: 8.5, fillColor: fill, color: C.ink, ...extra })
     const hasDebt = (r.debt || 0) > 0.5
-    const kind = r.isWalkIn ? 'Khách lẻ' : 'Công ty'
+    // 2026-11-20 (fix): Bỏ label "Công ty" / "Khách lẻ" dưới tên.
     return [
       cell(String(idx + 1), { alignment: 'center', color: C.sub }),
-      {
-        stack: [
-          { text: r.name || '—', bold: true, fontSize: 8.5, color: C.ink },
-          { text: kind, fontSize: 7, color: r.isWalkIn ? C.walkin : C.company },
-        ],
-        fillColor: fill,
-      },
+      cell(r.name || '—', { bold: true }),
       cell(hasDebt ? vnd(r.debt) : '—', {
         alignment: 'right', bold: true, color: hasDebt ? C.debt : C.mute }),
       cell(String(r.unpaidTicketCount || 0), { alignment: 'right' }),

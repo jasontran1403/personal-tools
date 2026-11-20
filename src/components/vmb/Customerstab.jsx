@@ -680,26 +680,36 @@ export default function CustomersTab() {
             || (b[sortKey] - a[sortKey])
             || (b.revenue - a.revenue)
             || a.name.localeCompare(b.name, 'vi'))
-      // 2026-11-20: Riêng báo cáo công nợ — gom TỔNG SỐ VÉ CÒN NỢ và TỔNG PHÍ
-      //   XUẤT VÉ của các vé đang nợ (không phải tất cả vé khách đã mua).
-      const unpaidTicketsCount = (unpaidBookings) => {
+      // 2026-11-20 (fix): r.unpaidBookings là list narrowBooking(b, ts) — đã CHỨA
+      //   SẴN các vé còn nợ (ts đã được filter qua isTicketUnpaid ở trên).
+      //   Nay chỉ cần duyệt .tickets của mỗi narrowed booking là đã đúng vé đang
+      //   nợ, KHÔNG gọi lại isTicketUnpaid (narrowBooking lọc bớt invoices nên
+      //   isTicketUnpaid ở đây có thể trả sai → đếm thiếu).
+      //   Phí xuất vé: dùng ticketSums.issuanceFee (đã quy VND theo booking.currency).
+      //   HNH fee + phí phát sinh: cộng thẳng vì luôn VND và được tính riêng.
+      const unpaidTicketsStats = (unpaidBookings) => {
         let n = 0
-        for (const it of buildDebtItems(unpaidBookings)) {
-          // Mỗi "item" = hoặc 1 booking hoặc 1 invoice chứa list vé.
-          if (Array.isArray(it.tickets)) n += it.tickets.length
-          else if (Array.isArray(it.ticketIds)) n += it.ticketIds.length
-        }
-        return n
-      }
-      const unpaidIssSum = (unpaidBookings) => {
-        let s = 0
+        let iss = 0
         for (const b of (unpaidBookings || [])) {
           for (const t of (b.tickets || [])) {
-            const v = Number(String(t.issuanceFee || '').replace(/[^0-9.-]/g, ''))
-            if (Number.isFinite(v)) s += v
+            n += 1
+            // Phí xuất vé của vé đang nợ:
+            //   - booking VND: parseAmount(t.issuanceFee) trực tiếp
+            //   - booking USD: parseAmount(t.issuanceFee) × exchangeRate
+            //   + HNH fee (luôn VND, cộng thẳng) nếu có.
+            const issRaw = parseAmount(t.issuanceFee) || 0
+            const hnh = parseAmount(t.hnhFee) || 0
+            let issVnd
+            if ((b.currency || 'VND') === 'USD') {
+              const rate = parseAmount(b.exchangeRate) || 0
+              issVnd = Math.round(issRaw * rate) + hnh
+            } else {
+              issVnd = issRaw + hnh
+            }
+            iss += issVnd
           }
         }
-        return s
+        return { n, iss }
       }
       const out = sorted.map(r => {
         let oldest = null
@@ -719,8 +729,9 @@ export default function CustomersTab() {
           note: r.isWalkIn ? '' : `${r.paxCount} hành khách`,
         }
         if (debtOnly) {
-          base.unpaidTicketCount = unpaidTicketsCount(r.unpaidBookings)
-          base.unpaidIss = unpaidIssSum(r.unpaidBookings)
+          const st = unpaidTicketsStats(r.unpaidBookings)
+          base.unpaidTicketCount = st.n
+          base.unpaidIss = st.iss
         }
         return base
       })
