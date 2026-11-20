@@ -50,7 +50,7 @@
 
 import { parseAmount, formatMoney, sumTicketFees } from '../lib/money'
 import { listBookings } from '../services/vmbApi'
-import { unpaidTicketsOf } from './ticketDebt'
+import { unpaidTicketsOf, invoicesOfTicket } from './ticketDebt'
 
 const KIND_LABEL = {
   NEW: 'Vé mới',
@@ -1222,15 +1222,42 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
       const tickets = b.tickets || []
       if (tickets.length === 0) continue
 
-      // ── 2026-11-20 (fix 1): Mỗi hoá đơn 1 ngày phát hành riêng ──
-      //   Trước đây lấy ngày SỚM NHẤT chung cho tất cả. Nay cột H và cột I
-      //   cùng iterate `issuedInfos` theo thứ tự → ngày PH khớp 1-1 với số hoá đơn.
-      const issuedInfos = collectIssuedInfo(b)
+      // ── 2026-11-20 (fix): Gom vé theo HOÁ ĐƠN. Vé cùng chung 1 hoá đơn
+      //   nằm liền nhau; cột "Ngày PH HĐ" và "Số hoá đơn" rowSpan trong PHẠM VI
+      //   NHÓM (không phải cả booking). Dòng đầu nhóm hiện ngày+số, các dòng
+      //   kế trong nhóm để trống (do rowSpan).
+      const groupMap = new Map()
+      for (const t of tickets) {
+        const invs = invoicesOfTicket(b, t.id)
+        const key = invs.map(i => i.id).sort((a, c) => a - c).join(',') || '__none__'
+        if (!groupMap.has(key)) groupMap.set(key, { key, invoices: invs, tickets: [] })
+        groupMap.get(key).tickets.push(t)
+      }
+      const groups = [...groupMap.values()]
+      // Mỗi nhóm: build issuedInfos (số + ngày) & rowSpan (số dòng vé + phí).
+      for (const g of groups) {
+        g.rowSpan = g.tickets.reduce((s, t) => s + 1 + (t.fees ? t.fees.length : 0), 0)
+        g.issuedInfos = []
+        for (const inv of g.invoices) {
+          const issued = inv.status === 'ISSUED' || inv.status === 'ADJUSTED' || !!inv.issuedUrl
+          if (!issued) continue
+          const nums = (inv.invoiceNumbers || '').split(',').map(s => s.trim()).filter(Boolean)
+          const at = inv.issuedDate || inv.updatedAt || inv.createdAt || null
+          if (nums.length === 0 && at) {
+            g.issuedInfos.push({ number: null, issuedAt: at })
+          } else {
+            for (const n of nums) g.issuedInfos.push({ number: n, issuedAt: at })
+          }
+        }
+        g.issuedInfos.sort((a, c) => {
+          const na = Number(a.number), nc = Number(c.number)
+          if (Number.isFinite(na) && Number.isFinite(nc)) return na - nc
+          return String(a.number || '').localeCompare(String(c.number || ''))
+        })
+      }
 
-      // Số dòng rowSpan: mỗi vé 1 dòng vé + N dòng phí của vé đó.
-      const ticketRowCounts = tickets.map(t => 1 + (t.fees ? t.fees.length : 0))
-      const N = ticketRowCounts.reduce((s, x) => s + x, 0)
-
+      // Tổng số dòng của booking (dùng cho rowSpan cột A..D).
+      const N = groups.reduce((s, g) => s + g.rowSpan, 0)
       const route = buildRouteStr(b.segments)
 
       const cellL = (content, extra = {}) => ({
@@ -1248,106 +1275,111 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
       const bookingBody = []
 
       let firstRowOfBooking = true
-      tickets.forEach((t) => {
-        const n = ticketNumbers(t, b)
-        const sellWithoutFees = n.base + n.coll + n.hnh + n.iss
-        const sellVnd = toVnd(sellWithoutFees, b)
-        sumSellVnd += sellVnd
+      for (const group of groups) {
+        let firstRowOfGroup = true
+        for (const t of group.tickets) {
+          const n = ticketNumbers(t, b)
+          const sellWithoutFees = n.base + n.coll + n.hnh + n.iss
+          const sellVnd = toVnd(sellWithoutFees, b)
+          sumSellVnd += sellVnd
 
-        // ── Dòng vé ──
-        const ticketRow = []
-        if (firstRowOfBooking) {
-          ticketRow.push(cellL([
-            { text: b.saleDate ? fmtDateShort(b.saleDate) : '—', fontSize: 8 },
-            { text: KIND_LABEL[b.kind] || b.kind || '—', fontSize: 7, bold: true, color: '#475569' },
-          ], { rowSpan: N }))
-          ticketRow.push(cellL({ text: b.airlineCode || '—', fontSize: 8 }, { rowSpan: N }))
-          ticketRow.push(cellL({ text: b.bookingCode || '—', fontSize: 8, bold: true }, { rowSpan: N }))
-          ticketRow.push(cellL({ text: route, fontSize: 8, bold: true, color: '#1e40af' }, { rowSpan: N }))
-        } else {
-          ticketRow.push({}, {}, {}, {})
-        }
-        // E Tên hành khách
-        ticketRow.push(cellL({ text: (t.passengerName || '—').toUpperCase(), fontSize: 8 }))
-        // F Số vé
-        ticketRow.push(cellL({ text: t.ticketNumber || '—', fontSize: 8, color: t.ticketNumber ? '#111' : '#aaa' }))
-        // G Giá bán (VNĐ)
-        ticketRow.push(cellR({
-          text: `${formatMoney(sellVnd, 'VND', { withUnit: false })} VNĐ`,
-          fontSize: 8, bold: true, alignment: 'right',
-        }))
-        // H Ngày PH HĐ — stack khớp 1-1 với cột I.
-        if (firstRowOfBooking) {
-          if (issuedInfos.length === 0) {
-            ticketRow.push(cellL({ text: '—', fontSize: 8, color: '#aaa' }, { rowSpan: N }))
+          // ── Dòng vé ──
+          const ticketRow = []
+          // A..D rowSpan cả booking ở dòng đầu tiên của booking
+          if (firstRowOfBooking) {
+            ticketRow.push(cellL([
+              { text: b.saleDate ? fmtDateShort(b.saleDate) : '—', fontSize: 8 },
+              { text: KIND_LABEL[b.kind] || b.kind || '—', fontSize: 7, bold: true, color: '#475569' },
+            ], { rowSpan: N }))
+            ticketRow.push(cellL({ text: b.airlineCode || '—', fontSize: 8 }, { rowSpan: N }))
+            ticketRow.push(cellL({ text: b.bookingCode || '—', fontSize: 8, bold: true }, { rowSpan: N }))
+            ticketRow.push(cellL({ text: route, fontSize: 8, bold: true, color: '#1e40af' }, { rowSpan: N }))
           } else {
-            ticketRow.push(cellL(
-              issuedInfos.map(r => ({
-                text: r.issuedAt ? fmtDate(r.issuedAt) : '—',
-                fontSize: 8,
-                color: r.issuedAt ? '#0f172a' : '#aaa',
-              })),
-              { rowSpan: N }
-            ))
+            ticketRow.push({}, {}, {}, {})
           }
-        } else {
-          ticketRow.push({})
-        }
-        // I Số hoá đơn — stack khớp 1-1 với cột H.
-        if (firstRowOfBooking) {
-          if (issuedInfos.length === 0) {
-            ticketRow.push(cellR({ text: '—', fontSize: 8, color: '#aaa' }, { rowSpan: N }))
+          // E Tên hành khách
+          ticketRow.push(cellL({ text: (t.passengerName || '—').toUpperCase(), fontSize: 8 }))
+          // F Số vé
+          ticketRow.push(cellL({ text: t.ticketNumber || '—', fontSize: 8, color: t.ticketNumber ? '#111' : '#aaa' }))
+          // G Giá bán (VNĐ)
+          ticketRow.push(cellR({
+            text: `${formatMoney(sellVnd, 'VND', { withUnit: false })} VNĐ`,
+            fontSize: 8, bold: true, alignment: 'right',
+          }))
+          // H Ngày PH HĐ — rowSpan trong phạm vi NHÓM, dòng đầu nhóm.
+          if (firstRowOfGroup) {
+            if (group.issuedInfos.length === 0) {
+              ticketRow.push(cellL({ text: '—', fontSize: 8, color: '#aaa' }, { rowSpan: group.rowSpan }))
+            } else {
+              ticketRow.push(cellL(
+                group.issuedInfos.map(r => ({
+                  text: r.issuedAt ? fmtDate(r.issuedAt) : '—',
+                  fontSize: 8,
+                  color: r.issuedAt ? '#0f172a' : '#aaa',
+                })),
+                { rowSpan: group.rowSpan }
+              ))
+            }
           } else {
-            ticketRow.push(cellR(
-              issuedInfos.map(r => ({
-                text: r.number ? `#C26MCB${r.number}` : '—',
-                fontSize: 8, bold: true,
-                color: r.number ? '#0f172a' : '#aaa',
-                alignment: 'right',
-              })),
-              { rowSpan: N }
-            ))
+            ticketRow.push({})
           }
-        } else {
-          ticketRow.push({})
+          // I Số hoá đơn — rowSpan trong phạm vi NHÓM, dòng đầu nhóm.
+          if (firstRowOfGroup) {
+            if (group.issuedInfos.length === 0) {
+              ticketRow.push(cellR({ text: '—', fontSize: 8, color: '#aaa' }, { rowSpan: group.rowSpan }))
+            } else {
+              ticketRow.push(cellR(
+                group.issuedInfos.map(r => ({
+                  text: r.number ? `#C26MCB${r.number}` : '—',
+                  fontSize: 8, bold: true,
+                  color: r.number ? '#0f172a' : '#aaa',
+                  alignment: 'right',
+                })),
+                { rowSpan: group.rowSpan }
+              ))
+            }
+          } else {
+            ticketRow.push({})
+          }
+          bookingBody.push(ticketRow)
+          firstRowOfBooking = false
+          firstRowOfGroup = false
+
+          // ── Các dòng phí của vé này (nằm trong rowSpan của nhóm) ──
+          const fees = t.fees || []
+          fees.forEach((f) => {
+            const label = stripFeePrefix(f.feeTypeLabel || FEE_LABEL[f.feeType] || f.feeType || 'Phí')
+            const feeAmt = parseAmount(f.amount) || 0
+            const feeCur = (f.currency || b.currency || 'VND').toUpperCase()
+            let feeVnd = 0
+            if (feeCur === 'VND') feeVnd = feeAmt
+            else if (feeCur === 'USD') {
+              const r = parseAmount(b.exchangeRate) || 0
+              feeVnd = r > 0 ? feeAmt * r : 0
+            }
+            sumFeeVnd += feeVnd
+
+            const feeRow = [
+              {}, {}, {}, {},                // A..D (đã rowSpan)
+              cellL([
+                { text: (t.passengerName || '—').toUpperCase(), fontSize: 7.5, color: '#64748b' },
+                { text: `↳ Phí ${label.toLowerCase()}`, fontSize: 8, italics: true, color: '#0f766e' },
+              ]),
+              cellL({
+                text: (f.ticketNumber || '').trim() || '—',
+                fontSize: 7.5,
+                color: (f.ticketNumber || '').trim() ? '#64748b' : '#cbd5e1',
+              }),
+              cellR({
+                text: `${formatMoney(feeVnd, 'VND', { withUnit: false })} VNĐ`,
+                fontSize: 8, color: '#0f766e', bold: true, alignment: 'right',
+              }),
+              {}, {},                          // H, I đã rowSpan (nhóm)
+            ]
+            bookingBody.push(feeRow)
+          })
         }
-        bookingBody.push(ticketRow)
-        firstRowOfBooking = false
-
-        // ── Các dòng phí của vé này ──
-        const fees = t.fees || []
-        fees.forEach((f) => {
-          const label = stripFeePrefix(f.feeTypeLabel || FEE_LABEL[f.feeType] || f.feeType || 'Phí')
-          const feeAmt = parseAmount(f.amount) || 0
-          const feeCur = (f.currency || b.currency || 'VND').toUpperCase()
-          let feeVnd = 0
-          if (feeCur === 'VND') feeVnd = feeAmt
-          else if (feeCur === 'USD') {
-            const r = parseAmount(b.exchangeRate) || 0
-            feeVnd = r > 0 ? feeAmt * r : 0
-          }
-          sumFeeVnd += feeVnd
-
-          const feeRow = [
-            {}, {}, {}, {},                // A..D (đã rowSpan)
-            cellL([
-              { text: (t.passengerName || '—').toUpperCase(), fontSize: 7.5, color: '#64748b' },
-              { text: `↳ Phí ${label.toLowerCase()}`, fontSize: 8, italics: true, color: '#0f766e' },
-            ]),
-            cellL({
-              text: (f.ticketNumber || '').trim() || '—',
-              fontSize: 7.5,
-              color: (f.ticketNumber || '').trim() ? '#64748b' : '#cbd5e1',
-            }),
-            cellR({
-              text: `${formatMoney(feeVnd, 'VND', { withUnit: false })} VNĐ`,
-              fontSize: 8, color: '#0f766e', bold: true, alignment: 'right',
-            }),
-            {}, {},                          // H, I đã rowSpan
-          ]
-          bookingBody.push(feeRow)
-        })
-      })
+      }
 
       // ── 2026-11-20 (fix 2): Mỗi booking = 1 mini-table unbreakable ──
       items.push({
