@@ -181,13 +181,18 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
       setPreview({ filePath: row.issuedUrl, fileName: name, title: `Hóa đơn ${row.invoiceNo || ''}` })
       return
     }
-    setDraft({ open: true, loading: true, mode: null, pdfBase64: null, error: null, row })
+    setDraft({ open: true, loading: true, mode: null, pdfBase64: null, error: null, row, fileName: null })
     try {
       const res = await getInvoiceDraft(row.bookingId, row.kind)
       const d = res.data?.data || {}
-      setDraft({ open: true, loading: false, mode: d.mode || 'ERROR', pdfBase64: d.pdfBase64 || null, error: d.error || null, row })
+      setDraft({
+        open: true, loading: false,
+        mode: d.mode || 'ERROR', pdfBase64: d.pdfBase64 || null, error: d.error || null,
+        fileName: d.fileName || 'Draft-Invoice.pdf',
+        row,
+      })
     } catch (e) {
-      setDraft({ open: true, loading: false, mode: 'ERROR', pdfBase64: null, error: e?.response?.data?.message || 'Không lấy được hóa đơn nháp', row })
+      setDraft({ open: true, loading: false, mode: 'ERROR', pdfBase64: null, error: e?.response?.data?.message || 'Không lấy được hóa đơn nháp', row, fileName: null })
     }
   }
 
@@ -415,6 +420,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
         filePath={preview?.filePath} fileName={preview?.fileName} title={preview?.title} />
       <DraftInvoiceModal open={!!draft?.open} onClose={() => setDraft(null)}
         mode={draft?.mode} pdfBase64={draft?.pdfBase64} error={draft?.error} loading={!!draft?.loading}
+        fileName={draft?.fileName}
         creating={creatingPending}
         onCreatePending={() => onCreatePending(draft?.row)} />
     </div>

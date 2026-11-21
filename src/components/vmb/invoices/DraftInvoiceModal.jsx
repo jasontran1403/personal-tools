@@ -11,7 +11,7 @@ import { createPortal } from 'react-dom'
  * Tự portal ra body + tự khóa scroll + Esc để đóng (không dùng Modal chung
  * vì cần canh phải + bề rộng riêng).
  */
-export default function DraftInvoiceModal({ open, onClose, loading, mode, pdfBase64, error, onCreatePending, creating }) {
+export default function DraftInvoiceModal({ open, onClose, loading, mode, pdfBase64, error, onCreatePending, creating, fileName }) {
   const pdfUrl = useMemo(() => {
     if (mode !== 'PDF' || !pdfBase64) return null
     try {
@@ -43,6 +43,16 @@ export default function DraftInvoiceModal({ open, onClose, loading, mode, pdfBas
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100 shrink-0">
           <h2 className="text-sm sm:text-base font-semibold text-gray-900">🧾 Hóa đơn nháp</h2>
           <div className="flex items-center gap-2">
+            {/* Tải xuống PDF với tên file từ item (Draft-Invoice-<id1>-<id2>...pdf)
+                thay cho tên UUID mặc định của blob mà PDF viewer tự dùng. */}
+            {mode === 'PDF' && pdfUrl && (
+              <a href={pdfUrl} download={fileName || 'Draft-Invoice.pdf'}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold
+                  text-gray-700 bg-gray-100 hover:bg-gray-200 border border-gray-200"
+                title={fileName || 'Draft-Invoice.pdf'}>
+                <span>⬇</span> Tải PDF
+              </a>
+            )}
             {/*
               2026-11-22: Đổi từ "Phát hành hóa đơn" → "Tạo hóa đơn chưa phát hành".
               Hành động giờ chỉ đẩy hóa đơn lên tab "Hóa đơn chưa phát hành" trên
