@@ -159,6 +159,11 @@ export const listInvoices = (params = {}) =>
 export const getInvoiceDraft = (bookingId, kind = 'BOOKING') =>
   api.get('/api/tools/vmb/invoices/draft', { params: { bookingId, kind } })
 
+// Đẩy hóa đơn lên tab "Hóa đơn chưa phát hành" trên vinvoice.viettel.vn.
+// KHÔNG cần USB token — kế toán ký + phát hành thủ công hoặc xóa trên web vinvoice.
+export const createPendingInvoice = (bookingId, kind = 'BOOKING') =>
+  api.post('/api/tools/vmb/invoices/create-pending', null, { params: { bookingId, kind } })
+
 export const getInvoiceDetail = (bookingId, kind) =>
   api.get('/api/tools/vmb/invoices/detail', { params: { bookingId, kind } })
 

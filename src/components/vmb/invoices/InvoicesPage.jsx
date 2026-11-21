@@ -3,7 +3,7 @@ import toast from 'react-hot-toast'
 import DateRangePicker from '../../common/DateRangePicker'
 import VmbFilePreviewModal from '../VmbFilePreviewModal'
 import DraftInvoiceModal from './DraftInvoiceModal'
-import { listInvoices, getInvoiceDraft, getInvoiceDetail } from '../../../services/vmbApi'
+import { listInvoices, getInvoiceDraft, getInvoiceDetail, createPendingInvoice } from '../../../services/vmbApi'
 
 /**
  * Trang "Quản lý hóa đơn" — list theo đơn vị hóa đơn (group vé), responsive.
@@ -103,6 +103,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
 
   const [preview, setPreview] = useState(null)
   const [draft, setDraft] = useState(null)
+  const [creatingPending, setCreatingPending] = useState(false)
 
   // ── Expand state: { [rowKey]: { loading, data, error } } ──
   const [expanded, setExpanded] = useState({})
@@ -196,7 +197,31 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
     setPreview({ filePath: row.paymentUrl, fileName: name, title: `Ảnh thanh toán — ${row.buyerDisplay || ''}` })
   }
 
-  const onIssue = (_row) => toast('Chức năng phát hành sẽ triển khai ở bước sau (nối VinVoice).', { icon: '🧾' })
+  // 2026-11-22: Đẩy hóa đơn lên tab "Hóa đơn chưa phát hành" trên vinvoice.viettel.vn.
+  // KHÔNG ký USB, KHÔNG phát hành. Kế toán vào web vinvoice để ký + phát hành/xóa.
+  const onCreatePending = async (row) => {
+    if (!row?.bookingId) return
+    setCreatingPending(true)
+    try {
+      const res = await createPendingInvoice(row.bookingId, row.kind || 'BOOKING')
+      const env = res?.data
+      if (env && typeof env.code === 'number' && !(env.code >= 900 && env.code < 1000)) {
+        throw new Error(env.message || 'Không đẩy được hóa đơn')
+      }
+      const reservation = env?.data?.reservationCode
+      toast.success(
+        reservation
+          ? `Đã đẩy lên "Hóa đơn chưa phát hành" — mã nháp: ${reservation}`
+          : 'Đã đẩy lên "Hóa đơn chưa phát hành" trên vinvoice.',
+        { icon: '📤', duration: 5000 },
+      )
+      setDraft(null)   // đóng modal sau khi push thành công
+    } catch (e) {
+      toast.error(e?.response?.data?.message || e.message || 'Không đẩy được hóa đơn')
+    } finally {
+      setCreatingPending(false)
+    }
+  }
 
   // ── Expand / collapse 1 row ──
   const toggleExpand = async (row) => {
@@ -390,7 +415,8 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
         filePath={preview?.filePath} fileName={preview?.fileName} title={preview?.title} />
       <DraftInvoiceModal open={!!draft?.open} onClose={() => setDraft(null)}
         mode={draft?.mode} pdfBase64={draft?.pdfBase64} error={draft?.error} loading={!!draft?.loading}
-        onIssue={() => onIssue(draft?.row)} />
+        creating={creatingPending}
+        onCreatePending={() => onCreatePending(draft?.row)} />
     </div>
   )
 }

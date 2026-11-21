@@ -6,12 +6,11 @@ import {
 import { groupVnInt } from './FinanceTab'
 
 /**
- * ── 2026-11-19: Tỷ giá quy đổi ──────────────────────────────
- * Panel hiển thị tỷ giá hiện hành (mới nhất mỗi tiền tệ) + nút cập nhật tỷ giá
- * hôm nay + xem lịch sử (bảng: mỗi tiền tệ 1 cột, mỗi ngày 1 dòng).
+ * ── 2026-11-19 / 2026-11-22: Tỷ giá USD ─────────────────────
+ * Panel hiển thị tỷ giá hiện hành (mới nhất) + nút cập nhật tỷ giá hôm nay +
+ * xem lịch sử. Từ 2026-11-22 chỉ còn USD (các currency khác bỏ).
  *
- * Tỷ giá lưu số nguyên VND cho 1 đơn vị; hiển thị format VN (25930 → 25.930).
- * Dark-theme bằng class nên ở đây chỉ dùng class sáng.
+ * Tỷ giá lưu số nguyên VND cho 1 USD; hiển thị format VN (25930 → 25.930).
  */
 export default function ExchangeRatePanel() {
   const [data, setData] = useState(null)   // { date, currencies, today, latest }
@@ -40,16 +39,16 @@ export default function ExchangeRatePanel() {
     <div className="rounded-2xl bg-white border border-gray-200 shadow-sm p-4">
       <div className="flex items-center justify-between gap-2 mb-3">
         <div className="text-xs text-gray-500">
-          Tỷ giá hiện hành (mới nhất mỗi tiền tệ). Cập nhật 1 lần / ngày vào đầu ca.
+          Tỷ giá USD → VND. Cập nhật 1 lần / ngày vào đầu ca.
         </div>
         <div className="flex items-center gap-2 shrink-0">
           <button type="button" onClick={() => setShowHistory(true)}
             className="px-3 py-1.5 rounded-lg bg-gray-800 text-white text-xs font-semibold hover:bg-gray-900">
-            📊 Lịch sử tỷ giá
+            📊 Lịch sử
           </button>
           <button type="button" onClick={() => setShowEdit(true)}
             className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700">
-            ✎ Cập nhật tỷ giá
+            ✎ Cập nhật
           </button>
         </div>
       </div>
@@ -57,20 +56,22 @@ export default function ExchangeRatePanel() {
       {loading ? (
         <div className="py-6 text-center text-sm text-gray-400">Đang tải…</div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           {currencies.map(cur => {
             const r = latest[cur]
             const isToday = today[cur] != null
             return (
               <div key={cur}
-                className={`rounded-xl border px-3 py-2 ${r ? 'bg-gray-50 border-gray-200' : 'bg-gray-50/50 border-dashed border-gray-200'}`}>
+                className={`rounded-xl border px-4 py-3 ${r ? 'bg-gray-50 border-gray-200' : 'bg-gray-50/50 border-dashed border-gray-200'}`}>
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-gray-700">{cur}</span>
+                  <span className="text-sm font-bold text-gray-700">{cur} → VND</span>
                   {isToday && (
-                    <span className="text-[9px] font-bold text-emerald-600 uppercase">hôm nay</span>
+                    <span className="text-[9px] font-bold text-emerald-600 uppercase px-2 py-0.5 bg-emerald-50 rounded">
+                      hôm nay
+                    </span>
                   )}
                 </div>
-                <div className={`text-lg font-mono font-bold tabular-nums ${r ? 'text-gray-900' : 'text-gray-300'}`}>
+                <div className={`text-2xl font-mono font-bold tabular-nums mt-1 ${r ? 'text-gray-900' : 'text-gray-300'}`}>
                   {r ? groupVnInt(r) : '—'}
                 </div>
               </div>
@@ -137,23 +138,24 @@ function RateEditModal({ currencies, today, latest, date, onCancel, onSaved }) {
   return (
     <div className="fixed inset-0 flex items-center justify-center p-4" style={{ zIndex: 130 }}>
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={busy ? undefined : onCancel} />
-      <div className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl p-5 max-h-[92vh] overflow-y-auto">
-        <h3 className="text-base font-bold text-gray-900">✎ Cập nhật tỷ giá</h3>
+      <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl p-5 max-h-[92vh] overflow-y-auto">
+        <h3 className="text-base font-bold text-gray-900">✎ Cập nhật tỷ giá USD</h3>
         <p className="mt-1 text-xs text-gray-500">
-          Ngày áp dụng: <b>{date}</b>. Nhập số VND cho 1 đơn vị tiền tệ (số nguyên). Ô để trống sẽ không cập nhật.
+          Ngày áp dụng: <b>{date}</b>. Nhập số VND cho 1 USD (số nguyên). Ô để trống sẽ không cập nhật.
         </p>
 
-        <div className="mt-4 grid grid-cols-2 gap-3">
+        <div className="mt-4 space-y-3">
           {currencies.map(cur => (
             <div key={cur}>
-              <label className="text-xs font-semibold text-gray-600">{cur}</label>
+              <label className="text-xs font-semibold text-gray-600">{cur} → VND</label>
               <input
                 type="text" inputMode="numeric"
                 value={vals[cur] || ''}
                 onChange={e => setVals(v => ({ ...v, [cur]: groupVnInt(e.target.value) }))}
                 placeholder="VD: 25.930"
-                className="mt-1 w-full px-3 py-2 rounded-lg border border-gray-300 bg-white text-gray-900
-                           font-mono text-right outline-none focus:border-indigo-500" />
+                autoFocus
+                className="mt-1 w-full px-3 py-2.5 rounded-lg border border-gray-300 bg-white text-gray-900
+                           font-mono text-right text-lg outline-none focus:border-indigo-500" />
             </div>
           ))}
         </div>

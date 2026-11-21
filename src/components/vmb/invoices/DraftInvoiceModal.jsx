@@ -11,7 +11,7 @@ import { createPortal } from 'react-dom'
  * Tự portal ra body + tự khóa scroll + Esc để đóng (không dùng Modal chung
  * vì cần canh phải + bề rộng riêng).
  */
-export default function DraftInvoiceModal({ open, onClose, loading, mode, pdfBase64, error, onIssue }) {
+export default function DraftInvoiceModal({ open, onClose, loading, mode, pdfBase64, error, onCreatePending, creating }) {
   const pdfUrl = useMemo(() => {
     if (mode !== 'PDF' || !pdfBase64) return null
     try {
@@ -43,12 +43,18 @@ export default function DraftInvoiceModal({ open, onClose, loading, mode, pdfBas
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100 shrink-0">
           <h2 className="text-sm sm:text-base font-semibold text-gray-900">🧾 Hóa đơn nháp</h2>
           <div className="flex items-center gap-2">
-            {/* 2026-11-19: Phát hành ngay tại modal nháp (chỉ khi nháp hợp lệ). */}
-            {mode === 'PDF' && onIssue && (
-              <button type="button" onClick={onIssue}
+            {/*
+              2026-11-22: Đổi từ "Phát hành hóa đơn" → "Tạo hóa đơn chưa phát hành".
+              Hành động giờ chỉ đẩy hóa đơn lên tab "Hóa đơn chưa phát hành" trên
+              vinvoice.viettel.vn — KHÔNG ký USB token, KHÔNG có hiệu lực pháp lý.
+              Kế toán vào web vinvoice để ký + phát hành thủ công hoặc xóa.
+            */}
+            {mode === 'PDF' && onCreatePending && (
+              <button type="button" onClick={onCreatePending} disabled={creating}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold
-                  text-white bg-indigo-600 hover:bg-indigo-700 shadow-sm shadow-indigo-500/20">
-                <span>🚀</span> Phát hành hóa đơn
+                  text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed
+                  shadow-sm shadow-indigo-500/20">
+                <span>📤</span> {creating ? 'Đang đẩy...' : 'Tạo hóa đơn chưa phát hành'}
               </button>
             )}
             <button type="button" onClick={onClose} aria-label="Đóng"
