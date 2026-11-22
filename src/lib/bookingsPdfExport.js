@@ -49,7 +49,7 @@
  */
 
 import { parseAmount, formatMoney, sumTicketFees } from '../lib/money'
-import { listBookings } from '../services/vmbApi'
+import { listBookings, getReportDraftInvoices } from '../services/vmbApi'
 import { unpaidTicketsOf, invoicesOfTicket } from './ticketDebt'
 
 const KIND_LABEL = {
@@ -273,11 +273,12 @@ function noteLine(b) {
   if (b.note && b.note.trim()) lines.push({ text: b.note.trim(), fontSize: 7 })
   for (const t of (b.tickets || [])) {
     const pct = (t.commission == null ? '' : String(t.commission)).trim()
+    const pctNum = Number(pct)
+    const hasPct = pct !== '' && Number.isFinite(pctNum) && pctNum > 0
     const comAmt = parseAmount(t.commissionAmount) || 0
-    if (!pct && comAmt <= 0) continue
-    const who = (t.passengerName || '').trim() || t.ticketNumber || 'Vé'
+    if (!hasPct && comAmt <= 0) continue
     const parts = []
-    if (pct) parts.push(`${pct}%`)
+    if (hasPct) parts.push(`${pct}%`)
     if (comAmt > 0) parts.push(`${new Intl.NumberFormat('vi-VN').format(comAmt)} VNĐ`)
     lines.push({ text: `Comm. : ${parts.join(' · ')}`, fontSize: 6, color: '#555' })
   }
@@ -907,6 +908,91 @@ export async function downloadDraftInvoices(bookings, { onProgress } = {}) {
   saveBlob(zipBlob, zipName)
 
   return { total: jobs.length, done: blobs.length, errors, zipped: true, zipName }
+}
+
+function saveBlobFile(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a); a.click(); a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+function base64ToBlob(b64, type = 'application/pdf') {
+  const bin = atob(b64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return new Blob([bytes], { type })
+}
+
+function reportDraftFilename(u) {
+  const codes = ((u.bookingCodes && u.bookingCodes.length ? u.bookingCodes : [u.bookingCode]) || [])
+    .filter(Boolean)
+  const pax = u.paxCount || 0
+  const base = codes.length > 1
+    ? `Draft-Invoice-${codes.join('-')}-${pax}pax`
+    : `Draft-Invoice-${codes[0] || u.bookingId}`
+  return sanitizeFilename(base) + '.pdf'
+}
+
+export async function generateReportDraftInvoices(bookings, { onProgress } = {}) {
+  const ids = []
+  for (const b of bookings || []) if (b?.id != null) ids.push(b.id)
+  if (ids.length === 0) throw new Error('Không có booking nào để tạo hóa đơn nháp')
+
+  const res = await getReportDraftInvoices(ids)
+  const env = res?.data
+  if (env && typeof env.code === 'number' && !(env.code >= 900 && env.code < 1000)) {
+    throw new Error(env.message || 'Không tạo được hóa đơn nháp')
+  }
+  const units = env?.data || []
+
+  const blobs = []
+  const errors = []
+  let done = 0
+  for (const u of units) {
+    if (!u.pdfBase64) {
+      errors.push({ filename: u.bookingCode || `#${u.bookingId}`, error: u.error || 'Không có file' })
+    } else {
+      try {
+        blobs.push({ blob: base64ToBlob(u.pdfBase64), filename: reportDraftFilename(u) })
+      } catch (e) {
+        errors.push({ filename: u.bookingCode || `#${u.bookingId}`, error: e?.message || String(e) })
+      }
+    }
+    done++
+    onProgress?.(done, units.length)
+  }
+
+  if (blobs.length === 0) {
+    return { total: units.length, done: 0, errors, zipped: false }
+  }
+  if (blobs.length === 1) {
+    saveBlobFile(blobs[0].blob, blobs[0].filename)
+    return { total: units.length, done: 1, errors, zipped: false }
+  }
+
+  const JSZipMod = await import('jszip')
+  const JSZip = JSZipMod.default || JSZipMod
+  const zip = new JSZip()
+  const used = new Map()
+  for (const { blob, filename } of blobs) {
+    let name = filename
+    const n = (used.get(name) || 0) + 1
+    used.set(name, n)
+    if (n > 1) {
+      const dot = name.lastIndexOf('.')
+      name = dot > 0 ? `${name.slice(0, dot)} (${n - 1})${name.slice(dot)}` : `${name} (${n - 1})`
+    }
+    zip.file(name, blob)
+  }
+  const zipBlob = await zip.generateAsync({ type: 'blob' })
+  const now = new Date()
+  const pad = (n) => String(n).padStart(2, '0')
+  const zipName = `Hoa-don-nhap-${pad(now.getDate())}-${pad(now.getMonth() + 1)}-${now.getFullYear()}.zip`
+  saveBlobFile(zipBlob, zipName)
+  return { total: units.length, done: blobs.length, errors, zipped: true, zipName }
 }
 
 /**

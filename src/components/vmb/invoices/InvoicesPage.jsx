@@ -104,7 +104,6 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
   const [preview, setPreview] = useState(null)
   const [draft, setDraft] = useState(null)
   const [creatingPending, setCreatingPending] = useState(false)
-  const [checkingKey, setCheckingKey] = useState(null)
 
   // ── Expand state: { [rowKey]: { loading, data, error } } ──
   const [expanded, setExpanded] = useState({})
@@ -222,6 +221,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
         { icon: '📤', duration: 5000 },
       )
       setDraft(null)   // đóng modal sau khi push thành công
+      load()
     } catch (e) {
       toast.error(e?.response?.data?.message || e.message || 'Không đẩy được hóa đơn')
     } finally {
@@ -231,8 +231,6 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
 
   const onCheckPending = async (row) => {
     if (!row?.bookingId) return
-    const key = `${row.kind}-${row.bookingId}`
-    setCheckingKey(key)
     setDraft({ open: true, loading: true, mode: null, pdfBase64: null, error: null, row, fileName: null })
     try {
       const res = await checkPendingInvoice(row.bookingId, row.kind || 'BOOKING')
@@ -262,8 +260,6 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
       }
     } catch (e) {
       setDraft({ open: true, loading: false, mode: 'ERROR', pdfBase64: null, error: e?.response?.data?.message || e.message || 'Không kiểm tra được hóa đơn', row, fileName: null })
-    } finally {
-      setCheckingKey(null)
     }
   }
 
@@ -424,16 +420,10 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
                           <span>📄</span> Xem hóa đơn
                         </button>
                       ) : (
-                        <>
-                          <button type="button" onClick={() => openView(row)}
-                            className={`${btnBase} border border-gray-300 bg-white text-gray-700 hover:bg-gray-50`}>
-                            <span>🧾</span> HĐ Nháp
-                          </button>
-                          <button type="button" onClick={() => onCheckPending(row)} disabled={checkingKey === key}
-                            className={`${btnBase} border border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:opacity-60 disabled:cursor-not-allowed`}>
-                            <span>🔎</span> {checkingKey === key ? 'Đang kiểm tra...' : 'Kiểm tra'}
-                          </button>
-                        </>
+                        <button type="button" onClick={() => openView(row)}
+                          className={`${btnBase} border border-gray-300 bg-white text-gray-700 hover:bg-gray-50`}>
+                          <span>🧾</span> HĐ Nháp
+                        </button>
                       )}
                     </div>
                   </div>
@@ -468,6 +458,9 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
         invoiceNo={draft?.invoiceNo} issueDate={draft?.issueDate} loading={!!draft?.loading}
         fileName={draft?.fileName}
         creating={creatingPending}
+        pendingPushed={draft?.row?.pendingPushed}
+        checking={!!draft?.loading}
+        onCheck={() => onCheckPending(draft?.row)}
         onCreatePending={() => onCreatePending(draft?.row)} />
     </div>
   )

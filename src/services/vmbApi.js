@@ -167,6 +167,9 @@ export const createPendingInvoice = (bookingId, kind = 'BOOKING') =>
 export const checkPendingInvoice = (bookingId, kind = 'BOOKING') =>
   api.post('/api/tools/vmb/invoices/check-pending', null, { params: { bookingId, kind } })
 
+export const getReportDraftInvoices = (bookingIds) =>
+  api.post('/api/tools/vmb/invoices/report-drafts', { bookingIds })
+
 export const getInvoiceDetail = (bookingId, kind) =>
   api.get('/api/tools/vmb/invoices/detail', { params: { bookingId, kind } })
 

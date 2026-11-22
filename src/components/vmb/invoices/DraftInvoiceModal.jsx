@@ -13,6 +13,7 @@ import { createPortal } from 'react-dom'
 export default function DraftInvoiceModal({
   open, onClose, loading, mode, pdfBase64, error, pdfError,
   invoiceNo, issueDate, onCreatePending, creating, fileName,
+  pendingPushed, onCheck, checking,
 }) {
   const pdfUrl = useMemo(() => {
     if (!pdfBase64) return null
@@ -62,7 +63,15 @@ export default function DraftInvoiceModal({
                 <span>⬇</span> Tải PDF
               </a>
             )}
-            {mode === 'PDF' && onCreatePending && (
+            {mode === 'PDF' && pendingPushed && onCheck && (
+              <button type="button" onClick={onCheck} disabled={checking}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold
+                  text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed
+                  shadow-sm shadow-indigo-500/20">
+                <span>🔎</span> {checking ? 'Đang kiểm tra...' : 'Kiểm tra'}
+              </button>
+            )}
+            {mode === 'PDF' && !pendingPushed && onCreatePending && (
               <button type="button" onClick={onCreatePending} disabled={creating}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold
                   text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 disabled:cursor-not-allowed
