@@ -255,7 +255,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
       })
       if (d.mode === 'ISSUED') {
         toast.success(`Đã phát hành — số HĐ ${d.invoiceNo || ''}`, { icon: '✅', duration: 5000 })
-        load()
+        await load()
       } else if (d.mode === 'PENDING') {
         toast('Hóa đơn vẫn chưa được phát hành.', { icon: '⏳' })
       }
@@ -454,7 +454,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
 
       <VmbFilePreviewModal open={!!preview} onClose={() => setPreview(null)}
         filePath={preview?.filePath} fileName={preview?.fileName} title={preview?.title} />
-      <DraftInvoiceModal open={!!draft?.open} onClose={() => setDraft(null)}
+      <DraftInvoiceModal open={!!draft?.open} onClose={() => { const was = draft; setDraft(null); if (was?.mode === 'ISSUED') load() }}
         mode={draft?.mode} pdfBase64={draft?.pdfBase64} error={draft?.error} pdfError={draft?.pdfError}
         invoiceNo={draft?.invoiceNo} issueDate={draft?.issueDate} loading={!!draft?.loading}
         fileName={draft?.fileName}
