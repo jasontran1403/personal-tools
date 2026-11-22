@@ -279,7 +279,7 @@ function noteLine(b) {
     const parts = []
     if (pct) parts.push(`${pct}%`)
     if (comAmt > 0) parts.push(`${new Intl.NumberFormat('vi-VN').format(comAmt)} VNĐ`)
-    lines.push({ text: `• Com ${who}: ${parts.join(' · ')}`, fontSize: 6, color: '#555' })
+    lines.push({ text: `Comm. : ${parts.join(' · ')}`, fontSize: 6, color: '#555' })
   }
   // 2026-11-07: Hiển thị Phí xuất vé HNH của từng vé trong Ghi chú.
   for (const t of (b.tickets || [])) {
@@ -287,7 +287,7 @@ function noteLine(b) {
     if (hnh > 0) {
       const who = (t.passengerName || '').trim() || t.ticketNumber || 'Vé'
       const hnhStr = new Intl.NumberFormat('vi-VN').format(hnh)
-      lines.push({ text: `• HNH ${who}: ${hnhStr} VNĐ`, fontSize: 6, color: '#555' })
+      lines.push({ text: `• Phí HNH ${who}: ${hnhStr} VNĐ`, fontSize: 6, color: '#555' })
     }
   }
   // 2026-11-07: Người giới thiệu — hữu ích khi review báo cáo khách lẻ.
