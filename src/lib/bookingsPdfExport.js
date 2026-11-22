@@ -271,6 +271,16 @@ function kindLine(b, t) {
 function noteLine(b) {
   const lines = []
   if (b.note && b.note.trim()) lines.push({ text: b.note.trim(), fontSize: 7 })
+  for (const t of (b.tickets || [])) {
+    const pct = (t.commission == null ? '' : String(t.commission)).trim()
+    const comAmt = parseAmount(t.commissionAmount) || 0
+    if (!pct && comAmt <= 0) continue
+    const who = (t.passengerName || '').trim() || t.ticketNumber || 'Vé'
+    const parts = []
+    if (pct) parts.push(`${pct}%`)
+    if (comAmt > 0) parts.push(`${new Intl.NumberFormat('vi-VN').format(comAmt)} VNĐ`)
+    lines.push({ text: `• Com ${who}: ${parts.join(' · ')}`, fontSize: 6, color: '#555' })
+  }
   // 2026-11-07: Hiển thị Phí xuất vé HNH của từng vé trong Ghi chú.
   for (const t of (b.tickets || [])) {
     const hnh = parseAmount(t.hnhFee) || 0
