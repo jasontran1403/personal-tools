@@ -247,7 +247,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
         mode: d.mode || 'ERROR',
         pdfBase64: d.pdfBase64 || null,
         error: d.error || null,
-        pdfError: d.pdfError || null,
+        pdfError: d.pdfError || d.persistError || null,
         invoiceNo: d.invoiceNo || null,
         issueDate: d.issueDate || null,
         fileName,
