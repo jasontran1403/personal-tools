@@ -1238,15 +1238,7 @@ function renderBookingRows(b, bIdx, {
   // Tổng phí KHÁC currency của booking, quy VNĐ (0 nếu mọi phí cùng currency).
   const bookingFeesVnd = (b.tickets || []).reduce(
     (s, t) => s + sumFeesCrossAsVnd(t.fees, b.currency, b.exchangeRate), 0)
-  // 2026-11-20: Booking USD + phí khác currency (vd phí VNĐ):
-  //   Hiển thị Quy đổi VNĐ = (bookingTotal × tỷ giá) + 2 × phí (quy VNĐ).
-  //   Yêu cầu nghiệp vụ: user coi "bookingTotal × tỷ giá" là phần đã có sẵn
-  //   trên UI (vd 24.473.020 ở FR49M5), nay phải CỘNG THÊM phí vào trên con
-  //   số đó → thành 26.930.670 cho FR49M5 (= 24.473.020 + 2.457.650).
-  //   Booking VND phí VND: bookingFeesVnd = 0 (phí đã trong bookingTotal) →
-  //   công thức dưới tự rút gọn về totalVnd = bookingTotal, không ảnh hưởng.
-  const uiShownVnd = toVnd(bookingTotal, b.currency, b.exchangeRate) + bookingFeesVnd
-  const totalVnd = uiShownVnd + bookingFeesVnd
+  const totalVnd = toVnd(bookingTotal, b.currency, b.exchangeRate) + bookingFeesVnd
   const N = b.tickets?.length || 1
   const primary = primaryDeparture(b.segments, nowTick)
   // 2026-11-19: Chỉ hiện badge đếm ngược giờ bay cho booking Vé mới / Đổi vé.

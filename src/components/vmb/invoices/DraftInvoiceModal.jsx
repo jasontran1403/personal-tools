@@ -3,24 +3,26 @@ import { createPortal } from 'react-dom'
 
 /**
  * ── DraftInvoiceModal ───────────────────────────────────────────────────
- * Drawer bên PHẢI màn hình, rộng 50dvw (full trên mobile), xem hóa đơn nháp
- * lấy trực tiếp từ VinVoice.
- *   mode="PDF"   → iframe PDF (zoom mặc định ~70%).
- *   mode="ERROR" → hiển thị lỗi (không dựng bản tạm).
- *
- * Tự portal ra body + tự khóa scroll + Esc để đóng (không dùng Modal chung
- * vì cần canh phải + bề rộng riêng).
+ * Drawer bên PHẢI màn hình, rộng 50dvw (full trên mobile).
+ *   mode="PDF"     → bản thể hiện hóa đơn nháp (xem tạm từ VinVoice).
+ *   mode="PENDING" → đã đẩy lên VinVoice nhưng kế toán CHƯA phát hành (vẫn nháp).
+ *   mode="ISSUED"  → kế toán ĐÃ phát hành → bản thể hiện hóa đơn chính thức.
+ *   mode="NONE"    → chưa từng đẩy nháp nào.
+ *   mode="ERROR"   → lỗi gọi VinVoice.
  */
-export default function DraftInvoiceModal({ open, onClose, loading, mode, pdfBase64, error, onCreatePending, creating, fileName }) {
+export default function DraftInvoiceModal({
+  open, onClose, loading, mode, pdfBase64, error, pdfError,
+  invoiceNo, issueDate, onCreatePending, creating, fileName,
+}) {
   const pdfUrl = useMemo(() => {
-    if (mode !== 'PDF' || !pdfBase64) return null
+    if (!pdfBase64) return null
     try {
       const bin = atob(pdfBase64)
       const bytes = new Uint8Array(bin.length)
       for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
       return URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
     } catch { return null }
-  }, [mode, pdfBase64])
+  }, [pdfBase64])
 
   useEffect(() => () => { if (pdfUrl) URL.revokeObjectURL(pdfUrl) }, [pdfUrl])
 
@@ -35,30 +37,31 @@ export default function DraftInvoiceModal({ open, onClose, loading, mode, pdfBas
 
   if (!open) return null
 
+  const issued = mode === 'ISSUED'
+  const pending = mode === 'PENDING'
+
+  const title = issued ? '✅ Hóa đơn đã phát hành'
+    : pending ? '🧾 Hóa đơn chưa phát hành'
+    : '🧾 Hóa đơn nháp'
+
+  const issueDateText = issueDate ? new Date(issueDate).toLocaleDateString('vi-VN') : null
+
   return createPortal(
     <div className="fixed inset-0 z-[100] flex justify-end" onMouseDown={onClose}>
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" aria-hidden />
       <div onMouseDown={(e) => e.stopPropagation()}
         className="relative h-full w-full sm:w-[50dvw] max-w-full bg-white shadow-2xl flex flex-col">
         <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-gray-100 shrink-0">
-          <h2 className="text-sm sm:text-base font-semibold text-gray-900">🧾 Hóa đơn nháp</h2>
+          <h2 className="text-sm sm:text-base font-semibold text-gray-900">{title}</h2>
           <div className="flex items-center gap-2">
-            {/* Tải xuống PDF với tên file từ item (Draft-Invoice-<id1>-<id2>...pdf)
-                thay cho tên UUID mặc định của blob mà PDF viewer tự dùng. */}
-            {mode === 'PDF' && pdfUrl && (
-              <a href={pdfUrl} download={fileName || 'Draft-Invoice.pdf'}
+            {pdfUrl && (
+              <a href={pdfUrl} download={fileName || 'Invoice.pdf'}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold
                   text-gray-700 bg-gray-100 hover:bg-gray-200 border border-gray-200"
-                title={fileName || 'Draft-Invoice.pdf'}>
+                title={fileName || 'Invoice.pdf'}>
                 <span>⬇</span> Tải PDF
               </a>
             )}
-            {/*
-              2026-11-22: Đổi từ "Phát hành hóa đơn" → "Tạo hóa đơn chưa phát hành".
-              Hành động giờ chỉ đẩy hóa đơn lên tab "Hóa đơn chưa phát hành" trên
-              vinvoice.viettel.vn — KHÔNG ký USB token, KHÔNG có hiệu lực pháp lý.
-              Kế toán vào web vinvoice để ký + phát hành thủ công hoặc xóa.
-            */}
             {mode === 'PDF' && onCreatePending && (
               <button type="button" onClick={onCreatePending} disabled={creating}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-semibold
@@ -76,19 +79,33 @@ export default function DraftInvoiceModal({ open, onClose, loading, mode, pdfBas
           </div>
         </div>
 
+        {issued && (
+          <div className="shrink-0 px-4 py-2.5 bg-emerald-50 border-b border-emerald-100 flex flex-wrap items-center gap-x-4 gap-y-1 text-[13px]">
+            <span className="font-semibold text-emerald-800">Đã phát hành</span>
+            {invoiceNo && <span className="text-emerald-700">Số HĐ: <b>{invoiceNo}</b></span>}
+            {issueDateText && <span className="text-emerald-700">Ngày: {issueDateText}</span>}
+          </div>
+        )}
+        {pending && (
+          <div className="shrink-0 px-4 py-2.5 bg-amber-50 border-b border-amber-100 text-[13px] text-amber-800">
+            <b>Chưa phát hành.</b> Kế toán chưa ký phát hành hóa đơn này trên VinVoice — đang hiển thị bản nháp.
+          </div>
+        )}
+
         <div className="flex-1 min-h-0">
           {loading ? (
-            <div className="py-20 text-center text-sm text-gray-400">Đang lấy hóa đơn nháp từ VinVoice…</div>
-          ) : mode === 'PDF' && pdfUrl ? (
-            <iframe title="Hóa đơn nháp VinVoice" src={`${pdfUrl}#zoom=70`} className="w-full h-full border-0" />
+            <div className="py-20 text-center text-sm text-gray-400">Đang kiểm tra trên VinVoice…</div>
+          ) : pdfUrl ? (
+            <iframe title="Hóa đơn VinVoice" src={`${pdfUrl}#zoom=70`} className="w-full h-full border-0" />
           ) : (
             <div className="h-full overflow-auto p-4 sm:p-6">
-              <div className="rounded-xl border border-rose-200 bg-rose-50 p-4 sm:p-5">
-                <div className="flex items-center gap-2 text-rose-700 font-semibold text-sm mb-2">
-                  <span>⚠</span> Không lấy được hóa đơn nháp
+              <div className={`rounded-xl border p-4 sm:p-5 ${mode === 'NONE' ? 'border-sky-200 bg-sky-50' : 'border-rose-200 bg-rose-50'}`}>
+                <div className={`flex items-center gap-2 font-semibold text-sm mb-2 ${mode === 'NONE' ? 'text-sky-700' : 'text-rose-700'}`}>
+                  <span>{mode === 'NONE' ? 'ℹ' : '⚠'}</span>
+                  {mode === 'NONE' ? 'Chưa có hóa đơn nháp' : 'Không lấy được hóa đơn'}
                 </div>
-                <div className="text-[13px] text-rose-800 whitespace-pre-wrap break-words leading-relaxed">
-                  {error || 'Đã xảy ra lỗi khi gọi VinVoice.'}
+                <div className={`text-[13px] whitespace-pre-wrap break-words leading-relaxed ${mode === 'NONE' ? 'text-sky-800' : 'text-rose-800'}`}>
+                  {error || pdfError || 'Đã xảy ra lỗi khi gọi VinVoice.'}
                 </div>
               </div>
             </div>

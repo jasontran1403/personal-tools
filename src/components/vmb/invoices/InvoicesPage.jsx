@@ -3,7 +3,7 @@ import toast from 'react-hot-toast'
 import DateRangePicker from '../../common/DateRangePicker'
 import VmbFilePreviewModal from '../VmbFilePreviewModal'
 import DraftInvoiceModal from './DraftInvoiceModal'
-import { listInvoices, getInvoiceDraft, getInvoiceDetail, createPendingInvoice } from '../../../services/vmbApi'
+import { listInvoices, getInvoiceDraft, getInvoiceDetail, createPendingInvoice, checkPendingInvoice } from '../../../services/vmbApi'
 
 /**
  * Trang "Quản lý hóa đơn" — list theo đơn vị hóa đơn (group vé), responsive.
@@ -104,6 +104,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
   const [preview, setPreview] = useState(null)
   const [draft, setDraft] = useState(null)
   const [creatingPending, setCreatingPending] = useState(false)
+  const [checkingKey, setCheckingKey] = useState(null)
 
   // ── Expand state: { [rowKey]: { loading, data, error } } ──
   const [expanded, setExpanded] = useState({})
@@ -225,6 +226,44 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
       toast.error(e?.response?.data?.message || e.message || 'Không đẩy được hóa đơn')
     } finally {
       setCreatingPending(false)
+    }
+  }
+
+  const onCheckPending = async (row) => {
+    if (!row?.bookingId) return
+    const key = `${row.kind}-${row.bookingId}`
+    setCheckingKey(key)
+    setDraft({ open: true, loading: true, mode: null, pdfBase64: null, error: null, row, fileName: null })
+    try {
+      const res = await checkPendingInvoice(row.bookingId, row.kind || 'BOOKING')
+      const env = res?.data
+      if (env && typeof env.code === 'number' && !(env.code >= 900 && env.code < 1000)) {
+        throw new Error(env.message || 'Không kiểm tra được hóa đơn')
+      }
+      const d = env?.data || {}
+      const fileName = d.mode === 'ISSUED'
+        ? `Invoice-${d.invoiceNo || ''}.pdf`
+        : 'Draft-Invoice.pdf'
+      setDraft({
+        open: true, loading: false,
+        mode: d.mode || 'ERROR',
+        pdfBase64: d.pdfBase64 || null,
+        error: d.error || null,
+        pdfError: d.pdfError || null,
+        invoiceNo: d.invoiceNo || null,
+        issueDate: d.issueDate || null,
+        fileName,
+        row,
+      })
+      if (d.mode === 'ISSUED') {
+        toast.success(`Đã phát hành — số HĐ ${d.invoiceNo || ''}`, { icon: '✅', duration: 5000 })
+      } else if (d.mode === 'PENDING') {
+        toast('Hóa đơn vẫn chưa được phát hành.', { icon: '⏳' })
+      }
+    } catch (e) {
+      setDraft({ open: true, loading: false, mode: 'ERROR', pdfBase64: null, error: e?.response?.data?.message || e.message || 'Không kiểm tra được hóa đơn', row, fileName: null })
+    } finally {
+      setCheckingKey(null)
     }
   }
 
@@ -385,10 +424,16 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
                           <span>📄</span> Xem hóa đơn
                         </button>
                       ) : (
-                        <button type="button" onClick={() => openView(row)}
-                          className={`${btnBase} border border-gray-300 bg-white text-gray-700 hover:bg-gray-50`}>
-                          <span>🧾</span> HĐ Nháp
-                        </button>
+                        <>
+                          <button type="button" onClick={() => openView(row)}
+                            className={`${btnBase} border border-gray-300 bg-white text-gray-700 hover:bg-gray-50`}>
+                            <span>🧾</span> HĐ Nháp
+                          </button>
+                          <button type="button" onClick={() => onCheckPending(row)} disabled={checkingKey === key}
+                            className={`${btnBase} border border-indigo-300 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:opacity-60 disabled:cursor-not-allowed`}>
+                            <span>🔎</span> {checkingKey === key ? 'Đang kiểm tra...' : 'Kiểm tra'}
+                          </button>
+                        </>
                       )}
                     </div>
                   </div>
@@ -419,7 +464,8 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
       <VmbFilePreviewModal open={!!preview} onClose={() => setPreview(null)}
         filePath={preview?.filePath} fileName={preview?.fileName} title={preview?.title} />
       <DraftInvoiceModal open={!!draft?.open} onClose={() => setDraft(null)}
-        mode={draft?.mode} pdfBase64={draft?.pdfBase64} error={draft?.error} loading={!!draft?.loading}
+        mode={draft?.mode} pdfBase64={draft?.pdfBase64} error={draft?.error} pdfError={draft?.pdfError}
+        invoiceNo={draft?.invoiceNo} issueDate={draft?.issueDate} loading={!!draft?.loading}
         fileName={draft?.fileName}
         creating={creatingPending}
         onCreatePending={() => onCreatePending(draft?.row)} />
