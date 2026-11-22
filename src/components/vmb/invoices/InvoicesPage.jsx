@@ -255,6 +255,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
       })
       if (d.mode === 'ISSUED') {
         toast.success(`Đã phát hành — số HĐ ${d.invoiceNo || ''}`, { icon: '✅', duration: 5000 })
+        load()
       } else if (d.mode === 'PENDING') {
         toast('Hóa đơn vẫn chưa được phát hành.', { icon: '⏳' })
       }
