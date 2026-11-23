@@ -50,7 +50,7 @@
 
 import { parseAmount, formatMoney, sumTicketFees } from '../lib/money'
 import { listBookings, getReportDraftInvoices } from '../services/vmbApi'
-import { unpaidTicketsOf, invoicesOfTicket } from './ticketDebt'
+import { unpaidTicketsOf, invoicesOfTicket, isRefundBooking, bookingRefundDiffVnd, enrichRefundOrigPrices } from './ticketDebt'
 
 const KIND_LABEL = {
   NEW: 'Vé mới',
@@ -930,9 +930,11 @@ function reportDraftFilename(u) {
   const codes = ((u.bookingCodes && u.bookingCodes.length ? u.bookingCodes : [u.bookingCode]) || [])
     .filter(Boolean)
   const pax = u.paxCount || 0
-  const base = codes.length > 1
+  let base = codes.length > 1
     ? `Draft-Invoice-${codes.join('-')}-${pax}pax`
     : `Draft-Invoice-${codes[0] || u.bookingId}`
+  // 2026-11-24: Hóa đơn tách theo vé (anchorTicketId) → thêm tên khách để phân biệt.
+  if (u.anchorTicketId != null && u.buyerName) base += `-${u.buyerName}`
   return sanitizeFilename(base) + '.pdf'
 }
 
@@ -1147,12 +1149,11 @@ export function getTodayRangeMs() {
 export async function fetchUnpaidBookingsByCompany(idOrIds, onProgress) {
   const ids = Array.isArray(idOrIds) ? idOrIds : [idOrIds]
   const idSet = new Set(ids)
-  const base = { paymentStatus: 'UNPAID' }
   const all = []
   let page = 0
-  const MAX_PAGES = 50
+  const MAX_PAGES = 80
   while (page < MAX_PAGES) {
-    const res = await listBookings({ ...base, page, size: 200 })
+    const res = await listBookings({ page, size: 200 })
     const d = res.data?.data
     const content = d?.content || []
     all.push(...content)
@@ -1160,9 +1161,15 @@ export async function fetchUnpaidBookingsByCompany(idOrIds, onProgress) {
     if (page + 1 >= (d?.totalPages || 1)) break
     page++
   }
-  // 2026-11-11: chỉ giữ booking còn ít nhất 1 VÉ CHƯA THU thuộc các công ty
-  //   này (công nợ tính theo từng vé / hoá đơn tách, không theo cả booking).
-  return all.filter(b => unpaidTicketsOf(b, t => idSet.has(t.companyId)).length > 0)
+  enrichRefundOrigPrices(all)
+  return all.filter(b => {
+    const inCo = (b.tickets || []).some(t => idSet.has(t.companyId))
+    if (!inCo) return false
+    if (isRefundBooking(b)) {
+      return !b.refundedPaid && Math.abs(bookingRefundDiffVnd(b)) > 0.5
+    }
+    return unpaidTicketsOf(b, t => idSet.has(t.companyId)).length > 0
+  })
 }
 
 /**
@@ -1307,6 +1314,7 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
     const items = []        // các node pdfmake của section
     let sumSellVnd = 0      // tổng giá vé (không tính phí) đã quy đổi VNĐ
     let sumFeeVnd  = 0      // tổng phí quy đổi VNĐ
+    let sumRefundVnd = 0    // tổng chênh lệch hoàn (trừ vào công nợ)
 
     // Bảng chứa HEADER ROW — 1 lần đầu section.
     items.push({
@@ -1317,6 +1325,34 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
     for (const b of section.bookings) {
       const tickets = b.tickets || []
       if (tickets.length === 0) continue
+
+      if (isRefundBooking(b)) {
+        if (b.refundedPaid) continue
+        const diff = bookingRefundDiffVnd(b)
+        if (Math.abs(diff) < 0.5) continue
+        sumRefundVnd += diff
+        const rRoute = buildRouteStr(b.segments)
+        const rNames = tickets.map(t => (t.passengerName || '—').toUpperCase()).join(', ')
+        const refundBody = [[
+          { stack: [
+            { text: b.saleDate ? fmtDateShort(b.saleDate) : '—', fontSize: 8 },
+            { text: 'Hoàn', fontSize: 7, bold: true, color: '#047857' },
+          ], alignment: 'left' },
+          { stack: [{ text: b.airlineCode || '—', fontSize: 8 }], alignment: 'left' },
+          { stack: [{ text: b.bookingCode || '—', fontSize: 8, bold: true }], alignment: 'left' },
+          { stack: [{ text: rRoute, fontSize: 8, bold: true, color: '#047857' }], alignment: 'left' },
+          { stack: [{ text: rNames || '—', fontSize: 8 }], alignment: 'left' },
+          { stack: [{ text: 'Hoàn tiền khách', fontSize: 7.5, italics: true, color: '#047857' }], alignment: 'left' },
+          { stack: [{ text: `${formatMoney(-diff, 'VND', { withUnit: false })} VNĐ`, fontSize: 8, bold: true, color: '#047857' }], alignment: 'right' },
+          { stack: [{ text: '—', fontSize: 8, color: '#aaa' }], alignment: 'left' },
+          { stack: [{ text: '—', fontSize: 8, color: '#aaa' }], alignment: 'right' },
+        ]]
+        items.push({
+          stack: [{ table: { widths, body: refundBody, dontBreakRows: true }, layout: bookingLayout }],
+          unbreakable: true,
+        })
+        continue
+      }
 
       // ── 2026-11-20 (fix): Gom vé theo HOÁ ĐƠN. Vé cùng chung 1 hoá đơn
       //   nằm liền nhau; cột "Ngày PH HĐ" và "Số hoá đơn" rowSpan trong PHẠM VI
@@ -1488,7 +1524,7 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
     }
 
     // Subtotal row (nền indigo nhạt) — bảng riêng cuối section.
-    const grand = sumSellVnd + sumFeeVnd
+    const grand = sumSellVnd + sumFeeVnd - sumRefundVnd
     const subRow = new Array(colCount).fill(null).map(() => ({ text: '', fillColor: '#eef2ff' }))
     subRow[0] = { text: 'Cộng', bold: true, fontSize: 8, fillColor: '#eef2ff', colSpan: 6, alignment: 'right' }
     for (let i = 1; i < 6; i++) subRow[i] = { text: '', fillColor: '#eef2ff' }
@@ -1503,7 +1539,7 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
 
     return {
       items,
-      sumSellVnd, sumFeeVnd, grand,
+      sumSellVnd, sumFeeVnd, sumRefundVnd, grand,
       invNumCount: (() => {
         const set = new Set()
         for (const b of section.bookings) {
@@ -1518,11 +1554,13 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
   const content = []
   let grandSell = 0
   let grandFee  = 0
+  let grandRefund = 0
   let grandInv  = 0
   sections.forEach((s, idx) => {
     const built = buildSectionContent(s)
     grandSell += built.sumSellVnd
     grandFee  += built.sumFeeVnd
+    grandRefund += built.sumRefundVnd
     grandInv  += built.invNumCount
     content.push({
       text: s.companyName,
@@ -1541,7 +1579,7 @@ export async function exportDebtReport({ rootName, rootCode, sections }) {
 
   // Grand total nếu > 1 section — khớp 9 cột, canh phải.
   if (sections.length > 1) {
-    const grandAll = grandSell + grandFee
+    const grandAll = grandSell + grandFee - grandRefund
     const totalRow = new Array(widths.length).fill(null).map(() =>
       ({ text: '', fillColor: '#1e293b' }))
     totalRow[0] = { text: 'TỔNG CỘNG TẤT CẢ', bold: true, fontSize: 10,

@@ -183,7 +183,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
     }
     setDraft({ open: true, loading: true, mode: null, pdfBase64: null, error: null, row, fileName: null })
     try {
-      const res = await getInvoiceDraft(row.bookingId, row.kind)
+      const res = await getInvoiceDraft(row.bookingId, row.kind, row.anchorTicketId ?? null)
       const d = res.data?.data || {}
       setDraft({
         open: true, loading: false,
@@ -208,7 +208,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
     if (!row?.bookingId) return
     setCreatingPending(true)
     try {
-      const res = await createPendingInvoice(row.bookingId, row.kind || 'BOOKING')
+      const res = await createPendingInvoice(row.bookingId, row.kind || 'BOOKING', row.anchorTicketId ?? null)
       const env = res?.data
       if (env && typeof env.code === 'number' && !(env.code >= 900 && env.code < 1000)) {
         throw new Error(env.message || 'Không đẩy được hóa đơn')
@@ -233,7 +233,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
     if (!row?.bookingId) return
     setDraft({ open: true, loading: true, mode: null, pdfBase64: null, error: null, row, fileName: null })
     try {
-      const res = await checkPendingInvoice(row.bookingId, row.kind || 'BOOKING')
+      const res = await checkPendingInvoice(row.bookingId, row.kind || 'BOOKING', row.anchorTicketId ?? null)
       const env = res?.data
       if (env && typeof env.code === 'number' && !(env.code >= 900 && env.code < 1000)) {
         throw new Error(env.message || 'Không kiểm tra được hóa đơn')
@@ -266,7 +266,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
 
   // ── Expand / collapse 1 row ──
   const toggleExpand = async (row) => {
-    const key = `${row.kind}-${row.bookingId}`
+    const key = `${row.kind}-${row.bookingId}-${row.anchorTicketId ?? ''}`
     const cur = expanded[key]
     if (cur) {
       setExpanded(prev => { const n = { ...prev }; delete n[key]; return n })
@@ -274,7 +274,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
     }
     setExpanded(prev => ({ ...prev, [key]: { loading: true } }))
     try {
-      const res = await getInvoiceDetail(row.bookingId, row.kind)
+      const res = await getInvoiceDetail(row.bookingId, row.kind, row.anchorTicketId ?? null)
       const data = res.data?.data || null
       setExpanded(prev => ({ ...prev, [key]: { loading: false, data } }))
     } catch (e) {
@@ -345,7 +345,7 @@ export default function InvoicesPage({ onBack, refreshSignal }) {
         ) : (
           <div>
             {shown.map(row => {
-              const key = `${row.kind}-${row.bookingId}`
+              const key = `${row.kind}-${row.bookingId}-${row.anchorTicketId ?? ''}`
               const st = rowState(row)
               const S = STATE_STYLES[st]
               const issued = st === 'ISSUED_PAID' || st === 'ISSUED_UNPAID'

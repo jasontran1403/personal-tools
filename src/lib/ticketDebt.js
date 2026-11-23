@@ -87,3 +87,65 @@ export function invoiceNumbersOf(invoices) {
     return a.localeCompare(c)
   })
 }
+export function ticketSellVnd(t, b) {
+  const base = parseAmount(t.basePrice) || 0
+  const coll = parseAmount(t.collectionFee) || 0
+  const iss = parseAmount(t.issuanceFee) || 0
+  const hnh = parseAmount(t.hnhFee) || 0
+  const feesSum = sumTicketFees(t.fees, b?.currency || 'VND', b?.exchangeRate)
+  const rate = parseAmount(b?.exchangeRate) || 0
+  const toVnd = (n) => (b?.currency || 'VND') === 'USD' ? Math.round(n * rate) : n
+  return toVnd(base + coll + feesSum) + hnh + toVnd(iss)
+}
+
+export function isRefundBooking(b) {
+  return (b?.kind || '') === 'REFUND'
+}
+
+export function buildNewByCode(bookings) {
+  const m = new Map()
+  for (const b of (bookings || [])) {
+    if (isRefundBooking(b)) continue
+    const code = (b.bookingCode || '').trim().toUpperCase()
+    if (!code) continue
+    if (!m.has(code)) m.set(code, [])
+    m.get(code).push(b)
+  }
+  return m
+}
+
+export function enrichRefundOrigPrices(bookings) {
+  const newByCode = buildNewByCode(bookings)
+  for (const b of (bookings || [])) {
+    if (!isRefundBooking(b)) continue
+    const code = (b.bookingCode || '').trim().toUpperCase()
+    const origByPax = new Map()
+    for (const ob of (newByCode.get(code) || [])) {
+      for (const ot of (ob.tickets || [])) {
+        const pax = (ot.passengerName || '').trim().toUpperCase()
+        if (!pax) continue
+        origByPax.set(pax, (origByPax.get(pax) || 0) + ticketSellVnd(ot, ob))
+      }
+    }
+    for (const t of (b.tickets || [])) {
+      const pax = (t.passengerName || '').trim().toUpperCase()
+      t._origPriceVnd = origByPax.get(pax) || 0
+    }
+  }
+  return bookings
+}
+
+export function refundTicketDiffVnd(t, b) {
+  const orig = t._origPriceVnd || 0
+  return orig - ticketSellVnd(t, b)
+}
+
+export function bookingRefundDiffVnd(b) {
+  let sum = 0
+  for (const t of (b?.tickets || [])) sum += refundTicketDiffVnd(t, b)
+  return sum
+}
+
+export function isRefundSettled(b) {
+  return isRefundBooking(b) && !!b.refundedPaid
+}

@@ -27,7 +27,7 @@ import { useEffect, useMemo, useState } from 'react'
 import toast from 'react-hot-toast'
 import { listBookings, listCompanies, listPassengers, updatePassengerReferrer } from '../../services/vmbApi'
 import { parseAmount, formatMoney, sumTicketFees } from '../../lib/money'
-import { isTicketUnpaid, narrowBooking } from '../../lib/ticketDebt'
+import { isTicketUnpaid, narrowBooking, isRefundBooking, enrichRefundOrigPrices, refundTicketDiffVnd, bookingRefundDiffVnd } from '../../lib/ticketDebt'
 import DateRangePicker, { presetRange } from '../common/DateRangePicker'
 import Modal from '../common/Modal'
 import MobileFabCluster, { Fab } from '../common/MobileFabCluster'
@@ -437,6 +437,7 @@ export default function CustomersTab() {
   //   fallback uppercase name. Ticket không match passenger nào → bỏ qua (dữ liệu
   //   cũ chưa gán passengerId).
   const rows = useMemo(() => {
+    enrichRefundOrigPrices(bookings)
     const map = new Map()
     const getCompany = (id) => companies.find(c => c.id === id)
 
@@ -529,7 +530,13 @@ export default function CustomersTab() {
         //   vé đó chưa thu đủ. Trước đây dựa vào booking.paymentStatus nên công
         //   ty đã trả hoá đơn của mình vẫn bị tính nợ khi công ty khác trong
         //   cùng booking chưa trả.
-        if (isTicketUnpaid(b, t)) {
+        if (isRefundBooking(b)) {
+          if (!b.refundedPaid) {
+            r.debt -= refundTicketDiffVnd(t, b)
+            if (!unpaidByKey.has(key)) unpaidByKey.set(key, [])
+            unpaidByKey.get(key).push(t)
+          }
+        } else if (isTicketUnpaid(b, t)) {
           r.debt += sellPrice
           if (!unpaidByKey.has(key)) unpaidByKey.set(key, [])
           unpaidByKey.get(key).push(t)
@@ -668,8 +675,8 @@ export default function CustomersTab() {
       // 2026-11-20: Báo cáo công nợ → chỉ giữ khách có r.debt > 0.
       //   Báo cáo doanh thu (3 option đầu) → giữ khách có mua vé hoặc có công nợ.
       const keepFilter = debtOnly
-        ? (r) => r.debt > 0.5
-        : (r) => r.ticketCount > 0 || r.revenue > 0.5 || r.debt > 0.5
+        ? (r) => Math.abs(r.debt) > 0.5
+        : (r) => r.ticketCount > 0 || r.revenue > 0.5 || Math.abs(r.debt) > 0.5
       // Với báo cáo công nợ, sort theo `debt` DESC xuyên qua cả 2 nhóm (ko tách nhóm).
       const sortKey = debtOnly ? 'debt' : sortOpt.key
       const rowsOut = rows
@@ -790,7 +797,7 @@ export default function CustomersTab() {
           sub={`${totals.ticketCount} vé`} tone="slate" align="right" />
         <StatTile label="Tổng doanh thu" value={totals.revenue} tone="emerald" />
         <StatTile label="Công nợ hiện tại" value={totals.debt}
-          tone={totals.debt > 0.5 ? 'rose' : 'slate'} align="right" />
+          tone={totals.debt > 0.5 ? 'rose' : totals.debt < -0.5 ? 'emerald' : 'slate'} align="right" />
       </div>
 
       {/* 2026-11-12: Toolbar — chỉ desktop. Mobile: tìm kiếm + ngày vào modal,
@@ -915,16 +922,16 @@ export default function CustomersTab() {
                   </button>
                 </td>
                 <td className="px-3 py-3.5 text-right font-mono tabular-nums font-bold">
-                  {r.debt > 0 ? (
+                  {Math.abs(r.debt) > 0.5 ? (
                     <>
                       <button type="button"
                         onClick={() => setDebtFor(r)}
                         title="Click để xem chi tiết hóa đơn / booking chưa thanh toán"
-                        className="text-rose-700 hover:bg-rose-50 rounded px-1 -mx-1 cursor-pointer underline decoration-dotted decoration-rose-300">
+                        className={`${r.debt < 0
+                          ? 'text-emerald-700 hover:bg-emerald-50 decoration-emerald-300'
+                          : 'text-rose-700 hover:bg-rose-50 decoration-rose-300'} rounded px-1 -mx-1 cursor-pointer underline decoration-dotted`}>
                         {formatMoney(r.debt, 'VND', { withUnit: false })}
                       </button>
-                      {/* 2026-11-08 (rev3): Wrapper min-width 280 để table layout
-                          dành chỗ cho 3 badges/dòng, khoảng cách badges đều. */}
                       <DebtDatesBadges bookings={r.unpaidBookings} />
                     </>
                   ) : <span className="text-gray-400">—</span>}
@@ -1147,16 +1154,16 @@ function MobileCustomerCard({ r, onMeta, onRevenue, onDebt }) {
         </div>
         <div className="text-right">
           <div className="text-[10px] uppercase tracking-wide text-gray-400">Công nợ hiện tại</div>
-          {r.debt > 0 ? (
+          {Math.abs(r.debt) > 0.5 ? (
             <button type="button" onClick={onDebt}
-              className="font-mono tabular-nums font-bold text-rose-700 text-sm underline decoration-dotted decoration-rose-300">
+              className={`font-mono tabular-nums font-bold text-sm underline decoration-dotted ${r.debt < 0 ? 'text-emerald-700 decoration-emerald-300' : 'text-rose-700 decoration-rose-300'}`}>
               {formatMoney(r.debt, 'VND', { withUnit: false })}
             </button>
           ) : <div className="text-gray-400">—</div>}
         </div>
       </div>
 
-      {r.debt > 0 && <div className="mt-2"><DebtDatesBadges bookings={r.unpaidBookings} fluid /></div>}
+      {Math.abs(r.debt) > 0.5 && <div className="mt-2"><DebtDatesBadges bookings={r.unpaidBookings} fluid /></div>}
 
       {r.upcoming && r.upcoming.length > 0 && (
         <div className="mt-3 pt-2 border-t border-dashed border-gray-200">
@@ -1698,7 +1705,7 @@ function DebtDetailModal({ row, onClose }) {
                         </div>
                       ) : <span className="text-gray-400">—</span>}
                     </td>
-                    <td className="px-3 py-2 text-right font-mono tabular-nums font-bold text-rose-700 whitespace-nowrap">
+                    <td className={`px-3 py-2 text-right font-mono tabular-nums font-bold whitespace-nowrap ${it.amount < 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
                       {formatMoney(it.amount, 'VND', { withUnit: false })} <span className="text-[10px] text-gray-500">VND</span>
                     </td>
                     {/* 2026-11-08: Số ngày công nợ. Tính từ ngày phát hành (nếu
@@ -1794,6 +1801,20 @@ function buildDebtItems(bookings) {
     const route = buildBookingRoute(b.segments)
     const airlineCode = b.airlineCode || null
     const saleDate = b.saleDate ?? b.createdAt ?? null
+    if (isRefundBooking(b)) {
+      if (!b.refundedPaid) {
+        const diff = bookingRefundDiffVnd(b)
+        if (Math.abs(diff) > 0.5) {
+          out.push({
+            type: 'refund', code: b.bookingCode || '—',
+            bookingCode: b.bookingCode, airlineCode, saleDate, issueDate: null,
+            amount: -diff,
+            route, passengers: (b.tickets || []).map(t => buildPassenger(t, b)),
+          })
+        }
+      }
+      continue
+    }
     const bookingTicketMap = new Map()
     for (const t of (b.tickets || [])) bookingTicketMap.set(t.id, t)
     const invs = (b.invoices || []).filter(i => (i.invoiceNumbers || '').trim())

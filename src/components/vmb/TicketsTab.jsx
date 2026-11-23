@@ -12,14 +12,14 @@ import TicketNoteModal from './TicketNoteModal'
 import BookingTotalsCard from './BookingTotalsCard'
 import PaymentModal from './PaymentModal'
 import InvoicePickerModal from './InvoicePickerModal'
-import { unpaidTicketsOf, narrowBooking, invoicesOfTicket, invoiceNumbersOf } from '../../lib/ticketDebt'
+import { unpaidTicketsOf, narrowBooking, invoicesOfTicket, invoiceNumbersOf, isRefundBooking } from '../../lib/ticketDebt'
 import BatchPaymentModal from './BatchPaymentModal'
 import DateRangePicker from '../common/DateRangePicker'
 import MobileFabCluster, { Fab } from '../common/MobileFabCluster'
 import CompanySearchSelect, { companyOptions } from '../common/CompanySearchSelect'
 import {
   listBookings, deleteBooking, totalsBookings, listCompanies,
-  listInvoicePayments, deletePayment, ensureBookingInvoice
+  listInvoicePayments, deletePayment, ensureBookingInvoice, setRefundedPaid
 } from '../../services/vmbApi'
 // 2026-11-07: dùng cho PaidReceiptsModal (xem/xoá biên nhận khi đã thanh toán)
 import ZoomablePreview from './ZoomablePreview'
@@ -285,6 +285,22 @@ export default function TicketsTab({ onOpenInvoices, fabHidden, refreshSignal } 
     return out
   }, [rows, companyId, paymentStatus, sortMode, nowTick])
 
+  // ── 2026-11-24: Index vé toàn cục (ticketId → {hành khách, số vé, mã}) ──────
+  //   Dùng để hiển thị LINK CẤP VÉ (vé này ké hóa đơn với vé nào của booking chủ).
+  const ticketIndex = useMemo(() => {
+    const m = new Map()
+    for (const b of rows) {
+      for (const t of (b.tickets || [])) {
+        if (t.id != null) m.set(t.id, {
+          passengerName: t.passengerName || '',
+          ticketNumber: t.ticketNumber || '',
+          bookingCode: b.bookingCode || '',
+        })
+      }
+    }
+    return m
+  }, [rows])
+
   // ── 2026-11-20: Auto-fill khi lọc client-side (vd lọc CÔNG TY) ────────────
   //   Filter công ty chạy ở FE (lọc `rows` đã tải), BE vẫn phân trang theo TOÀN
   //   hệ thống. Nếu trang đã tải chỉ có vài booking khớp công ty → bảng quá ngắn,
@@ -476,6 +492,18 @@ export default function TicketsTab({ onOpenInvoices, fabHidden, refreshSignal } 
   const openBookingFace = (b) => setPresentation(b)
   const openTicketFace = (b, ticketId) => setFace({ booking: b, ticketId })
   const openUpload = (b) => setUploadFor(b)
+
+  const toggleRefunded = async (b) => {
+    const next = !b.refundedPaid
+    const tid = toast.loading(next ? 'Đang đánh dấu đã hoàn tiền…' : 'Đang bỏ đánh dấu…')
+    try {
+      await setRefundedPaid(b.id, next)
+      toast.success(next ? 'Đã đánh dấu đã hoàn tiền' : 'Đã bỏ đánh dấu đã hoàn tiền', { id: tid })
+      load()
+    } catch (e) {
+      toast.error(e?.response?.data?.message || 'Cập nhật thất bại', { id: tid })
+    }
+  }
 
   /**
    * 2026-10-12: Thu tiền giờ ở cấp HÓA ĐƠN.
@@ -745,6 +773,8 @@ export default function TicketsTab({ onOpenInvoices, fabHidden, refreshSignal } 
                   onPay: openPay,
                   onEdit: () => setForm({ mode: 'edit', bookingId: b.id }),
                   onDelete: () => setConfirmDel(b),
+                  onToggleRefunded: () => toggleRefunded(b),
+                  ticketIndex,
                 }))
               )}
             </tbody>
@@ -779,7 +809,9 @@ export default function TicketsTab({ onOpenInvoices, fabHidden, refreshSignal } 
               onNote={setNoteView}
               onPay={openPay}
               onEdit={() => setForm({ mode: 'edit', bookingId: b.id })}
-              onDelete={() => setConfirmDel(b)} />
+              onDelete={() => setConfirmDel(b)}
+              onToggleRefunded={() => toggleRefunded(b)}
+              ticketIndex={ticketIndex} />
           ))
         )}
         <LoadMoreBar
@@ -1157,7 +1189,8 @@ function sumFeesCrossAsVnd(fees, bookingCurrency, exchangeRate) {
 
 function renderBookingRows(b, bIdx, {
   page, nowTick, isSelected, onToggleSelect,
-  onOpenBookingFace, onOpenTicketFace, onPresent, onUpload, onInvoice, onNote, onPay, onEdit, onDelete,
+  onOpenBookingFace, onOpenTicketFace, onPresent, onUpload, onInvoice, onNote, onPay, onEdit, onDelete, onToggleRefunded,
+  ticketIndex,
 }) {
   // 2026-11-20: Thành tiền / Giá bán / Tổng booking CHỈ gộp phí CÙNG currency
   //   với booking. Phí khác currency (vd booking USD + phí VNĐ) KHÔNG bị quy
@@ -1193,6 +1226,22 @@ function renderBookingRows(b, bIdx, {
     if (t.linkedBookingId && t.linkedBookingCode) {
       ticketLinkMap.set(t.id, t.linkedBookingCode)
     }
+  }
+  // ── 2026-11-24: Link CẤP VÉ → vé chủ cụ thể (hóa đơn tách theo từng khách). ──
+  //   t.linkedTicketIds = [id vé chủ dùng chung hóa đơn]. Trả nhãn gọn
+  //   "KHÁCH (…số vé)" để hiển thị rõ vé này ké hóa đơn với vé/khách nào.
+  const ticketShareLabel = (t) => {
+    const ids = Array.isArray(t.linkedTicketIds) ? t.linkedTicketIds : []
+    if (!ids.length) return null
+    const names = ids.map(id => {
+      const info = ticketIndex && ticketIndex.get(id)
+      if (!info) return `#${id}`
+      const tail = info.ticketNumber ? info.ticketNumber.slice(-4) : ''
+      return info.passengerName
+        ? `${info.passengerName}${tail ? ` (…${tail})` : ''}`
+        : (tail ? `…${tail}` : `#${id}`)
+    })
+    return names.join(', ')
   }
   // "Toàn booking link" = mọi vé đều link, cùng 1 chủ.
   const allLinked = (b.tickets || []).length > 0
@@ -1252,6 +1301,15 @@ function renderBookingRows(b, bIdx, {
             <div className="text-[10px] text-gray-500 tabular-nums mt-0.5">
               {formatDateTimeShort(b.saleDate)}
             </div>
+            {b.kind === 'REFUND' && (
+              <button type="button" onClick={onToggleRefunded}
+                title={b.refundedPaid ? 'Bấm để bỏ đánh dấu' : 'Bấm để đánh dấu đã hoàn tiền cho khách'}
+                className={`mt-1 inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${b.refundedPaid
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                  : 'bg-amber-50 text-amber-700 border-amber-200 hover:bg-amber-100'}`}>
+                {b.refundedPaid ? '✓ Đã hoàn tiền' : '○ Chưa hoàn tiền'}
+              </button>
+            )}
           </td>
         )}
 
@@ -1295,6 +1353,13 @@ function renderBookingRows(b, bIdx, {
               </span>
             )}
           </button>
+          {/* 2026-11-24: Link cấp vé — hiện vé này ké chung hóa đơn với vé/khách nào của booking chủ. */}
+          {ticketLinkMap.has(t.id) && ticketShareLabel(t) && (
+            <div className="font-mono text-[10px] text-indigo-500 italic leading-tight mt-0.5 truncate"
+              title={`Vé này chung 1 hóa đơn với: ${ticketShareLabel(t)}`}>
+              ↳ chung HĐ: {ticketShareLabel(t)}
+            </div>
+          )}
         </td>
 
         {/* Booking — 2026-10-10 click copy "{route} - {bookingCode}{kindSuffix}" */}
@@ -1882,7 +1947,18 @@ function MobileInvoiceLine({ booking, inv, index, onPay }) {
 function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
   onOpenBookingFace, onOpenTicketFace,
   onPresent, onUpload,
-  onInvoice, onNote, onPay, onEdit, onDelete }) {
+  onInvoice, onNote, onPay, onEdit, onDelete, onToggleRefunded, ticketIndex }) {
+  // 2026-11-24: Link cấp vé (mobile) — nhãn vé chủ dùng chung hóa đơn.
+  const ticketShareLabel = (t) => {
+    const ids = Array.isArray(t.linkedTicketIds) ? t.linkedTicketIds : []
+    if (!ids.length) return null
+    return ids.map(id => {
+      const info = ticketIndex && ticketIndex.get(id)
+      if (!info) return `#${id}`
+      const tail = info.ticketNumber ? info.ticketNumber.slice(-4) : ''
+      return info.passengerName ? `${info.passengerName}${tail ? ` (…${tail})` : ''}` : (tail ? `…${tail}` : `#${id}`)
+    }).join(', ')
+  }
   // 2026-11-20: Mobile cũng áp dụng rule "chỉ gộp phí cùng currency" như desktop.
   const bookingTotal = sumAmounts(...(b.tickets || []).map(t =>
     sumAmounts(t.basePrice, t.collectionFee,
@@ -1940,6 +2016,14 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700 font-bold">
             {kindLabel(b.kind)} · {b.airlineCode || '?'}
           </span>
+          {b.kind === 'REFUND' && (
+            <button type="button" onClick={onToggleRefunded}
+              className={`text-[10px] px-1.5 py-0.5 rounded font-bold border ${b.refundedPaid
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                : 'bg-amber-50 text-amber-700 border-amber-200'}`}>
+              {b.refundedPaid ? '✓ Đã hoàn tiền' : '○ Chưa hoàn tiền'}
+            </button>
+          )}
           <button type="button"
             onClick={() => {
               if (!b.bookingCode) return
@@ -2003,6 +2087,11 @@ function MobileBookingCard({ booking: b, nowTick, isSelected, onToggleSelect,
                     {t.ticketNumber || '—'}
                     {hasFace && <span className="ml-1 text-emerald-600">📎</span>}
                   </div>
+                  {t.linkedBookingId && ticketShareLabel(t) && (
+                    <div className="font-mono text-[10px] text-indigo-500 italic break-all mt-0.5">
+                      ↳ chung HĐ: {ticketShareLabel(t)}
+                    </div>
+                  )}
                 </div>
                 <div className="font-mono tabular-nums text-sm font-bold text-gray-900 shrink-0">
                   {formatMoney(
@@ -2386,6 +2475,12 @@ function DebtReportModal({ companies, onClose }) {
     for (const c of orderedCompanies) {
       const bs = []
       for (const b of bookings) {
+        if (isRefundBooking(b)) {
+          if (b.refundedPaid) continue
+          const mineR = (b.tickets || []).filter(t => t.companyId === c.id)
+          if (mineR.length) bs.push(narrowBooking(b, mineR))
+          continue
+        }
         const mine = unpaidTicketsOf(b, t => t.companyId === c.id)
         if (mine.length) bs.push(narrowBooking(b, mine))
       }

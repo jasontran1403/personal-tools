@@ -40,6 +40,9 @@ export const updateBooking = (id, body) =>
 export const deleteBooking = (id) =>
   api.delete(`/api/tools/vmb/bookings/${id}`)
 
+export const setRefundedPaid = (id, refundedPaid) =>
+  api.patch(`/api/tools/vmb/bookings/${id}/refunded-paid`, { refundedPaid })
+
 // ── MẶT VÉ (Ticket face — 2 scope) ─────────────────────────
 
 export const uploadBookingFace = (bookingId, file) => {
@@ -156,22 +159,22 @@ export const listInvoices = (params = {}) =>
 
 // 2026-11-15: Bản thể hiện hóa đơn NHÁP (xem tạm) của 1 đơn vị hóa đơn.
 //   kind = 'GROUP' (hóa đơn group) | 'BOOKING' (vé chưa link của booking)
-export const getInvoiceDraft = (bookingId, kind = 'BOOKING') =>
-  api.get('/api/tools/vmb/invoices/draft', { params: { bookingId, kind } })
+export const getInvoiceDraft = (bookingId, kind = 'BOOKING', anchorTicketId = null) =>
+  api.get('/api/tools/vmb/invoices/draft', { params: { bookingId, kind, anchorTicketId } })
 
 // Đẩy hóa đơn lên tab "Hóa đơn chưa phát hành" trên vinvoice.viettel.vn.
 // KHÔNG cần USB token — kế toán ký + phát hành thủ công hoặc xóa trên web vinvoice.
-export const createPendingInvoice = (bookingId, kind = 'BOOKING') =>
-  api.post('/api/tools/vmb/invoices/create-pending', null, { params: { bookingId, kind } })
+export const createPendingInvoice = (bookingId, kind = 'BOOKING', anchorTicketId = null) =>
+  api.post('/api/tools/vmb/invoices/create-pending', null, { params: { bookingId, kind, anchorTicketId } })
 
-export const checkPendingInvoice = (bookingId, kind = 'BOOKING') =>
-  api.post('/api/tools/vmb/invoices/check-pending', null, { params: { bookingId, kind } })
+export const checkPendingInvoice = (bookingId, kind = 'BOOKING', anchorTicketId = null) =>
+  api.post('/api/tools/vmb/invoices/check-pending', null, { params: { bookingId, kind, anchorTicketId } })
 
 export const getReportDraftInvoices = (bookingIds) =>
   api.post('/api/tools/vmb/invoices/report-drafts', { bookingIds })
 
-export const getInvoiceDetail = (bookingId, kind) =>
-  api.get('/api/tools/vmb/invoices/detail', { params: { bookingId, kind } })
+export const getInvoiceDetail = (bookingId, kind, anchorTicketId = null) =>
+  api.get('/api/tools/vmb/invoices/detail', { params: { bookingId, kind, anchorTicketId } })
 
 // ── COMPANIES & PASSENGERS & MEMBERSHIP ──────────────────────
 
