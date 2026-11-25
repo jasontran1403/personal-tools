@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import './index.css'
 import './theme/darkmode.css'
-import { Toaster } from 'react-hot-toast'
+import AppToaster from './components/common/AppToaster'
 import { ThemeProvider, applyThemeFromStorage } from './theme/ThemeProvider'
 
 // Áp dark class NGAY trước khi React mount để tránh "flash sáng" khi user
@@ -43,14 +43,6 @@ window.addEventListener('vite:preloadError', () => {
 ReactDOM.createRoot(document.getElementById('root')).render(
   <ThemeProvider>
     <App />
-    <Toaster
-      position="top-right"
-      toastOptions={{
-        duration: 3000,
-        // Toast tự theo dark class qua CSS trong darkmode.css nhưng
-        // react-hot-toast dùng inline style — ép màu cơ bản ở đây.
-        className: 'tools-toast',
-      }}
-    />
+    <AppToaster position="top-right" />
   </ThemeProvider>
 )
