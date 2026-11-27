@@ -1809,104 +1809,108 @@ function DebtDetailModal({ row, onClose }) {
                   <th className="px-3 py-2.5 text-left text-[11px] font-bold text-gray-600 uppercase tracking-wide">Hành trình</th>
                   <th className="px-3 py-2.5 text-left text-[11px] font-bold text-gray-600 uppercase tracking-wide">Tên hành khách</th>
                   <th className="px-3 py-2.5 text-right text-[11px] font-bold text-gray-600 uppercase tracking-wide">Số tiền</th>
+                  <th className="px-3 py-2.5 text-right text-[11px] font-bold text-gray-600 uppercase tracking-wide w-36">Tổng tiền hoá đơn</th>
                   {/* 2026-11-08: Số ngày công nợ — từ ngày phát hành (nếu có)
                       hoặc ngày xuất vé đến ngày hiện tại. */}
                   <th className="px-3 py-2.5 text-right text-[11px] font-bold text-gray-600 uppercase tracking-wide w-28">Số ngày CN</th>
                 </tr>
               </thead>
               <tbody>
-                {items.map((it, i) => (
-                  <tr key={i} className="border-b border-gray-100 hover:bg-rose-50/30 align-top">
-                    <td className="px-3 py-2 text-xs text-gray-700">
-                      {fmtDMY(it.saleDate)}
-                    </td>
-                    <td className="px-3 py-2 text-xs text-gray-700">
-                      {it.type === 'invoice' ? fmtDMY(it.issueDate) : <span className="text-gray-400">—</span>}
-                    </td>
-                    <td className="px-3 py-2">
-                      {it.type === 'invoice' ? (
-                        <span className="inline-block px-2 py-1 rounded font-mono font-bold text-[11px] bg-indigo-100 text-indigo-800 whitespace-nowrap">
-                          {it.code}
-                        </span>
-                      ) : (
-                        <span className="text-gray-400">—</span>
+                {items.map((it, gi) => it.lines.map((ln, li) => {
+                  const first = li === 0
+                  const last = li === it.lines.length - 1
+                  const span = it.lines.length
+                  const mergeCls = `px-3 py-2 align-top border-l border-gray-100
+                    ${span > 1 ? 'bg-slate-50/60' : ''}`
+                  return (
+                    <tr key={`${gi}-${ln.ticketId ?? li}`}
+                      className={`hover:bg-rose-50/30 align-top ${last ? 'border-b border-gray-200' : ''}`}>
+                      <td className="px-3 py-2 text-xs text-gray-700">
+                        {fmtDMY(ln.saleDate)}
+                      </td>
+                      {first && (
+                        <td rowSpan={span} className={`${mergeCls} text-xs text-gray-700`}>
+                          {it.type === 'invoice' ? fmtDMY(it.issueDate) : <span className="text-gray-400">—</span>}
+                        </td>
                       )}
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="flex flex-col gap-2 items-start">
-                        {(it.bookings || [{ bookingCode: it.bookingCode, airlineCode: it.airlineCode }]).map((bk, j) => (
-                          <div key={j} className="flex flex-col gap-1 items-start">
-                            <span className="inline-block px-2 py-0.5 rounded font-mono font-bold text-[11px] bg-gray-900 text-white whitespace-nowrap">
-                              {bk.bookingCode || '—'}
+                      {first && (
+                        <td rowSpan={span} className={mergeCls}>
+                          {it.type === 'invoice' && it.codes.length > 0 ? (
+                            <div className="flex flex-col gap-1 items-start">
+                              {it.codes.map((c, k) => (
+                                <span key={k}
+                                  className="inline-block px-2 py-1 rounded font-mono font-bold text-[11px] bg-indigo-100 text-indigo-800 whitespace-nowrap">
+                                  {c}
+                                </span>
+                              ))}
+                            </div>
+                          ) : <span className="text-gray-400">—</span>}
+                        </td>
+                      )}
+                      <td className="px-3 py-2">
+                        <div className="flex flex-col gap-1 items-start">
+                          <span className="inline-block px-2 py-0.5 rounded font-mono font-bold text-[11px] bg-gray-900 text-white whitespace-nowrap">
+                            {ln.bookingCode || '—'}
+                          </span>
+                          {ln.airlineCode && (
+                            <span className="inline-block px-2 py-0.5 rounded font-mono font-bold text-[10px] whitespace-nowrap"
+                              style={{ background: airlineColor(ln.airlineCode), color: textOn(airlineColor(ln.airlineCode)) }}>
+                              {ln.airlineCode}
                             </span>
-                            {bk.airlineCode && (
-                              <span className="inline-block px-2 py-0.5 rounded font-mono font-bold text-[10px] whitespace-nowrap"
-                                style={{ background: airlineColor(bk.airlineCode), color: textOn(airlineColor(bk.airlineCode)) }}>
-                                {bk.airlineCode}
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 font-mono text-blue-700 font-semibold text-xs">
-                      <div className="flex flex-col gap-2">
-                        {(it.bookings || [{ route: it.route }]).map((bk, j) => (
-                          <div key={j}>{bk.route || '—'}</div>
-                        ))}
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 text-xs">
-                      {it.passengers && it.passengers.length > 0 ? (
-                        <div className="flex flex-col gap-1.5">
-                          {it.passengers.map((p, j) => (
-                            <div key={j}>
-                              <div>
-                                <span className="font-semibold text-gray-800">{p.name || '—'}</span>
-                                {p.ticketNumber && (
-                                  <span className="ml-1 font-mono text-[10px] text-gray-500">#{p.ticketNumber}</span>
-                                )}
-                                {p.bookingCode && (it.bookings || []).length > 1 && (
-                                  <span className="ml-1 font-mono text-[10px] text-gray-400">({p.bookingCode})</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 font-mono text-blue-700 font-semibold text-xs">
+                        {ln.route || '—'}
+                      </td>
+                      <td className="px-3 py-2 text-xs">
+                        <div>
+                          <span className="font-semibold text-gray-800">{ln.name || '—'}</span>
+                          {ln.ticketNumber && (
+                            <span className="ml-1 font-mono text-[10px] text-gray-500">#{ln.ticketNumber}</span>
+                          )}
+                        </div>
+                        {ln.fees && ln.fees.length > 0 && (
+                          <div className="pl-3 mt-0.5 flex flex-col gap-0.5">
+                            {ln.fees.map((f, k) => (
+                              <div key={k} className="text-[10px] text-gray-600">
+                                <span className="text-indigo-700">{f.label}</span>
+                                <span className="text-gray-400"> — </span>
+                                <span className="font-mono tabular-nums">
+                                  {formatMoney(f.amountVnd, 'VND', { withUnit: false })} VNĐ
+                                </span>
+                                {f.ticketNumber && (
+                                  <span className="ml-1 font-mono text-gray-400">#{f.ticketNumber}</span>
                                 )}
                               </div>
-                              {p.fees && p.fees.length > 0 && (
-                                <div className="pl-3 mt-0.5 flex flex-col gap-0.5">
-                                  {p.fees.map((f, k) => (
-                                    <div key={k} className="text-[10px] text-gray-600">
-                                      <span className="text-indigo-700">{f.label}</span>
-                                      <span className="text-gray-400"> — </span>
-                                      <span className="font-mono tabular-nums">
-                                        {formatMoney(f.amountVnd, 'VND', { withUnit: false })} VNĐ
-                                      </span>
-                                      {f.ticketNumber && (
-                                        <span className="ml-1 font-mono text-gray-400">#{f.ticketNumber}</span>
-                                      )}
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      ) : <span className="text-gray-400">—</span>}
-                    </td>
-                    <td className={`px-3 py-2 text-right font-mono tabular-nums font-bold whitespace-nowrap ${it.amount < 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                      {formatMoney(it.amount, 'VND', { withUnit: false })} <span className="text-[10px] text-gray-500">VND</span>
-                    </td>
-                    {/* 2026-11-08: Số ngày công nợ. Tính từ ngày phát hành (nếu
-                        hóa đơn đã issued), ngược lại từ ngày xuất vé. Badge màu
-                        đổi theo mức độ (càng lâu càng đậm). */}
-                    <td className="px-3 py-2 text-right whitespace-nowrap">
-                      <DebtAgeBadge
-                        fromMs={it.type === 'invoice' && it.issueDate ? it.issueDate : it.saleDate} />
-                    </td>
-                  </tr>
-                ))}
+                            ))}
+                          </div>
+                        )}
+                      </td>
+                      <td className={`px-3 py-2 text-right font-mono tabular-nums whitespace-nowrap ${ln.amount < 0 ? 'text-emerald-700' : 'text-gray-700'}`}>
+                        {formatMoney(ln.amount, 'VND', { withUnit: false })} <span className="text-[10px] text-gray-400">VND</span>
+                      </td>
+                      {first && (
+                        <td rowSpan={span}
+                          className={`${mergeCls} text-right font-mono tabular-nums font-bold whitespace-nowrap ${it.amount < 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                          {formatMoney(it.amount, 'VND', { withUnit: false })} <span className="text-[10px] text-gray-500">VND</span>
+                          {span > 1 && (
+                            <div className="text-[10px] font-sans font-semibold text-gray-400">{span} vé</div>
+                          )}
+                        </td>
+                      )}
+                      {first && (
+                        <td rowSpan={span} className={`${mergeCls} text-right whitespace-nowrap`}>
+                          <DebtAgeBadge
+                            fromMs={it.type === 'invoice' && it.issueDate ? it.issueDate : it.saleDate} />
+                        </td>
+                      )}
+                    </tr>
+                  )
+                }))}
                 {/* TỔNG CÔNG NỢ — label sát số tiền (~30px). */}
                 <tr className="bg-rose-50 border-t-2 border-rose-200">
-                  <td colSpan={5} className="px-3 py-2.5"></td>
-                  <td className="py-2.5 text-right font-bold text-rose-800 text-sm" style={{ paddingRight: 30 }}>
+                  <td colSpan={7} className="py-2.5 text-right font-bold text-rose-800 text-sm" style={{ paddingRight: 30 }}>
                     TỔNG CÔNG NỢ
                   </td>
                   <td className="px-3 py-2.5 text-right font-mono tabular-nums font-black text-rose-800 text-sm whitespace-nowrap">
@@ -1921,7 +1925,7 @@ function DebtDetailModal({ row, onClose }) {
 
         <div className="shrink-0 px-6 py-3 border-t flex items-center gap-2">
           <div className="text-[11px] text-gray-500">
-            {items.length} dòng
+            {items.length} hoá đơn / booking · {items.reduce((n, it) => n + it.lines.length, 0)} vé
           </div>
           <div className="flex-1" />
           <button onClick={onClose}
@@ -1984,6 +1988,22 @@ function buildDebtItems(bookings) {
     for (const t of (b.tickets || [])) ticketCtx.set(t.id, { t, b })
   }
 
+  const lineOf = (t, b, amount) => ({
+    ticketId: t.id,
+    saleDate: b.saleDate ?? b.createdAt ?? null,
+    bookingCode: b.bookingCode || '—',
+    airlineCode: b.airlineCode || null,
+    route: buildBookingRoute(b.segments),
+    ...buildPassenger(t, b),
+    amount,
+  })
+  const sellLine = (ctx) => {
+    const s = ticketSums(ctx.t, ctx.b)
+    return lineOf(ctx.t, ctx.b, s.ticketPrice + s.issuanceFee)
+  }
+  const oldestSale = (lines) => lines.reduce(
+    (acc, l) => (l.saleDate != null && (acc == null || l.saleDate < acc)) ? l.saleDate : acc, null)
+
   const invGroups = new Map()
   const covered = new Set()
   bookings.forEach((b, bIdx) => {
@@ -2012,86 +2032,54 @@ function buildDebtItems(bookings) {
   const emitInvoiceGroups = (bIdx) => {
     for (const g of invGroups.values()) {
       if (g.firstBookingIdx !== bIdx) continue
-      const ids = [...g.ticketIds].sort((x, y) => x - y)
-      let amount = 0
-      const paxs = []
-      const bks = []
-      const seenBooking = new Set()
-      let saleDate = null
-      for (const id of ids) {
+      const lines = []
+      for (const id of [...g.ticketIds].sort((x, y) => x - y)) {
         const ctx = ticketCtx.get(id)
-        if (!ctx) continue
-        const s = ticketSums(ctx.t, ctx.b)
-        amount += s.ticketPrice + s.issuanceFee
-        paxs.push({ ...buildPassenger(ctx.t, ctx.b), bookingCode: ctx.b.bookingCode || null })
-        const bk = ctx.b.id ?? ctx.b.bookingCode
-        if (!seenBooking.has(bk)) {
-          seenBooking.add(bk)
-          bks.push({
-            bookingCode: ctx.b.bookingCode || '—',
-            airlineCode: ctx.b.airlineCode || null,
-            route: buildBookingRoute(ctx.b.segments),
-          })
-        }
-        const sd = ctx.b.saleDate ?? ctx.b.createdAt ?? null
-        if (sd != null && (saleDate == null || sd < saleDate)) saleDate = sd
+        if (ctx) lines.push(sellLine(ctx))
       }
+      const amount = lines.reduce((acc, l) => acc + l.amount, 0)
       if (amount <= 0.5) continue
-      const nums = g.numbers.split(',').map(x => x.trim()).filter(Boolean)
-      const n = nums.length || 1
-      const per = Math.floor(amount / n)
-      const first = bks[0] || {}
-      nums.forEach((num, idx) => {
-        out.push({
-          type: 'invoice', code: `#C26MCB${num}`,
-          bookings: bks,
-          bookingCode: first.bookingCode || '—',
-          airlineCode: first.airlineCode || null,
-          route: first.route || '',
-          saleDate, issueDate: g.issueDate,
-          amount: idx === n - 1 ? amount - per * (n - 1) : per,
-          passengers: paxs,
-        })
+      const codes = g.numbers.split(',').map(x => x.trim()).filter(Boolean)
+        .map(n => `#C26MCB${n}`)
+      out.push({
+        type: 'invoice',
+        code: codes[0] || '—',
+        codes,
+        saleDate: oldestSale(lines),
+        issueDate: g.issueDate,
+        amount,
+        lines,
       })
     }
   }
 
   bookings.forEach((b, bIdx) => {
-    const route = buildBookingRoute(b.segments)
-    const airlineCode = b.airlineCode || null
     const saleDate = b.saleDate ?? b.createdAt ?? null
-    const oneBooking = [{ bookingCode: b.bookingCode || '—', airlineCode, route }]
 
     if (isRefundBooking(b)) {
       if (!b.refundedPaid) {
         const diff = bookingRefundDiffVnd(b)
-        if (Math.abs(diff) > 0.5) {
+        const lines = (b.tickets || []).map(t => lineOf(t, b, -refundTicketDiffVnd(t, b)))
+        if (Math.abs(diff) > 0.5 && lines.length) {
           out.push({
-            type: 'refund', code: b.bookingCode || '—',
-            bookings: oneBooking,
-            bookingCode: b.bookingCode, airlineCode, saleDate, issueDate: null,
-            amount: -diff, route,
-            passengers: (b.tickets || []).map(t => buildPassenger(t, b)),
+            type: 'refund', code: b.bookingCode || '—', codes: [],
+            saleDate, issueDate: null, amount: -diff, lines,
           })
         }
       }
       return
     }
 
-    let total = 0
-    const paxs = []
+    const lines = []
     for (const t of (b.tickets || [])) {
       if (covered.has(t.id)) continue
-      const s = ticketSums(t, b)
-      total += s.ticketPrice + s.issuanceFee
-      paxs.push(buildPassenger(t, b))
+      lines.push(sellLine({ t, b }))
     }
+    const total = lines.reduce((acc, l) => acc + l.amount, 0)
     if (total > 0.5) {
       out.push({
-        type: 'booking', code: b.bookingCode || '—',
-        bookings: oneBooking,
-        bookingCode: b.bookingCode, airlineCode, saleDate, issueDate: null,
-        amount: total, route, passengers: paxs,
+        type: 'booking', code: b.bookingCode || '—', codes: [],
+        saleDate, issueDate: null, amount: total, lines,
       })
     }
 
