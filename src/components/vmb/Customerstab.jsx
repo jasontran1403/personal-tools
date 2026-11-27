@@ -232,6 +232,193 @@ function ticketSums(t, b) {
   }
 }
 
+function mergeUnpaidBookingsOf(members) {
+  const byId = new Map()
+  for (const m of members) {
+    for (const b of (m.unpaidBookings || [])) {
+      const bid = b.id ?? b.bookingCode
+      const cur = byId.get(bid)
+      if (!cur) {
+        byId.set(bid, {
+          ...b,
+          tickets: [...(b.tickets || [])],
+          invoices: (b.invoices || []).map(i => ({ ...i, ticketIds: [...(i.ticketIds || [])] })),
+        })
+        continue
+      }
+      const seenT = new Set(cur.tickets.map(t => t.id))
+      for (const t of (b.tickets || [])) {
+        if (seenT.has(t.id)) continue
+        seenT.add(t.id)
+        cur.tickets.push(t)
+      }
+      const invKey = (i) => i.id ?? `n:${i.invoiceNumbers || ''}`
+      for (const inv of (b.invoices || [])) {
+        const ex = cur.invoices.find(i => invKey(i) === invKey(inv))
+        if (!ex) cur.invoices.push({ ...inv, ticketIds: [...(inv.ticketIds || [])] })
+        else ex.ticketIds = [...new Set([...(ex.ticketIds || []), ...(inv.ticketIds || [])])]
+      }
+    }
+  }
+  return [...byId.values()]
+}
+
+function mergeLatestFeeOf(members, field) {
+  let best = null
+  for (const m of members) {
+    const c = m[field]
+    if (!c) continue
+    if (!best || c.saleDate > best.saleDate) {
+      best = { ...c, tickets: [...(c.tickets || [])] }
+    } else if (best.bookingId === c.bookingId) {
+      const seen = new Set(best.tickets.map(t => `${t.name}|${t.iss}`))
+      for (const t of (c.tickets || [])) {
+        const k = `${t.name}|${t.iss}`
+        if (seen.has(k)) continue
+        seen.add(k)
+        best.tickets.push(t)
+      }
+    }
+  }
+  return best
+}
+
+function buildWalkInGroupRow(members) {
+  const ms = [...members].sort((a, b) => a.name.localeCompare(b.name, 'vi'))
+  const sum = (f) => ms.reduce((acc, m) => acc + (m[f] || 0), 0)
+  const paxNames = new Set()
+  for (const m of ms) for (const n of (m.paxNames || [])) paxNames.add(n)
+  const upcoming = ms.flatMap(m => m.upcoming || [])
+    .sort((a, b) => a._date.getTime() - b._date.getTime())
+  return {
+    key: `g:${ms.map(m => m.key).join('|')}`,
+    isWalkIn: true,
+    isGroup: true,
+    members: ms,
+    companyId: null,
+    passengerId: null,
+    name: `${ms[0].name} +${ms.length - 1}`,
+    searchText: ms.map(m => m.name).join(' ').toLowerCase(),
+    ticketCount: sum('ticketCount'),
+    ticket: sum('ticket'),
+    iss: sum('iss'),
+    revenue: sum('revenue'),
+    debt: sum('debt'),
+    unpaidBookings: mergeUnpaidBookingsOf(ms),
+    paxNames,
+    paxCount: paxNames.size,
+    latestDomestic: mergeLatestFeeOf(ms, 'latestDomestic'),
+    latestInternational: mergeLatestFeeOf(ms, 'latestInternational'),
+    referrerName: ms.find(m => m.referrerName)?.referrerName || null,
+    upcoming,
+    noteCount: sum('noteCount'),
+    nearestDays: upcoming.length ? daysUntil(upcoming[0]._date) : Infinity,
+  }
+}
+
+function groupWalkInRows(list, bookings, walkInKeyOfTicket, bookingWalkInKeys) {
+  const parent = new Map()
+  const find = (x) => {
+    let root = x
+    while (parent.get(root) !== root) root = parent.get(root)
+    while (parent.get(x) !== root) { const nx = parent.get(x); parent.set(x, root); x = nx }
+    return root
+  }
+  const add = (k) => { if (!parent.has(k)) parent.set(k, k) }
+  const union = (a, b) => {
+    add(a); add(b)
+    const ra = find(a), rb = find(b)
+    if (ra !== rb) parent.set(ra, rb)
+  }
+  const unionAll = (keys) => {
+    const ks = [...new Set(keys.filter(Boolean))]
+    for (let i = 1; i < ks.length; i++) union(ks[0], ks[i])
+  }
+
+  for (const b of bookings) {
+    if (b.id == null) continue
+    unionAll([...(bookingWalkInKeys.get(b.id) || [])])
+    for (const inv of (b.invoices || [])) {
+      const ids = (inv.ticketIds && inv.ticketIds.length > 0)
+        ? inv.ticketIds
+        : (b.tickets || []).map(t => t.id)
+      unionAll(ids.map(id => walkInKeyOfTicket.get(id)))
+    }
+    for (const t of (b.tickets || [])) {
+      const k = walkInKeyOfTicket.get(t.id)
+      if (!k || t.linkedBookingId == null) continue
+      for (const ok of (bookingWalkInKeys.get(t.linkedBookingId) || [])) union(k, ok)
+    }
+  }
+
+  const bucket = new Map()
+  for (const r of list) {
+    if (!r.isWalkIn || !parent.has(r.key)) continue
+    const root = find(r.key)
+    if (!bucket.has(root)) bucket.set(root, [])
+    bucket.get(root).push(r)
+  }
+
+  const out = []
+  const emitted = new Set()
+  for (const r of list) {
+    if (!r.isWalkIn || !parent.has(r.key)) { out.push(r); continue }
+    const root = find(r.key)
+    const members = bucket.get(root) || []
+    if (members.length < 2) { out.push(r); continue }
+    if (emitted.has(root)) continue
+    emitted.add(root)
+    out.push(buildWalkInGroupRow(members))
+  }
+  return out
+}
+
+function CustomerNameBlock({ r, onMeta }) {
+  if (r.isGroup) {
+    return (
+      <div>
+        <span className="text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded font-bold bg-violet-100 text-violet-800 whitespace-nowrap">
+          Đoàn · {r.members.length} khách
+        </span>
+        <div className="mt-1.5 flex flex-wrap gap-x-1.5 gap-y-1">
+          {r.members.map((m, i) => (
+            <button key={m.key} type="button" onClick={() => onMeta(m)}
+              title="Click để quản lý ngày quan trọng & ghi chú"
+              className="text-xs font-semibold text-gray-800 text-left hover:underline
+                decoration-dotted decoration-amber-400 cursor-pointer">
+              {m.name}{i < r.members.length - 1 ? ',' : ''}
+              {m.noteCount > 0 && (
+                <span className="ml-1 text-[10px] font-semibold text-indigo-700 bg-indigo-100 px-1 py-0.5 rounded">
+                  {m.noteCount} 📝
+                </span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div>
+      <span className={`mr-2 text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded font-bold ${
+        r.isWalkIn ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
+        {r.isWalkIn ? 'Khách lẻ' : 'Công ty'}
+      </span>
+      <button type="button" onClick={() => onMeta(r)}
+        title="Click để quản lý ngày quan trọng & ghi chú"
+        className={`font-semibold text-gray-900 text-left hover:underline decoration-dotted cursor-pointer
+          ${r.isWalkIn ? 'decoration-amber-400' : 'decoration-blue-400'}`}>
+        {r.name}
+        {r.noteCount > 0 && (
+          <span className="ml-1.5 text-[10px] font-semibold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">
+            {r.noteCount} 📝
+          </span>
+        )}
+      </button>
+    </div>
+  )
+}
+
 // ═══════════════════════════════════════════════════════════
 // 2026-11-08: DebtAgeBadge — số ngày công nợ, màu scale theo mức độ.
 //   Tính từ fromMs (ngày phát hành hoặc ngày xuất vé) → hôm nay.
@@ -482,6 +669,9 @@ export default function CustomersTab() {
     //      2) companyId != null và KHÔNG phải sentinel → company row
     //      3) passengerName match tên walk-in đã tạo → walk-in row
     //      4) Không match gì → skip (ko tạo row ảo)
+    const walkInKeyOfTicket = new Map()
+    const bookingWalkInKeys = new Map()
+
     for (const b of bookings) {
       // 2026-11-11: Booking có nằm trong khoảng ngày đang chọn không (theo ngày
       //   bán, fallback ngày tạo). Ngoài khoảng → không cộng doanh thu / số vé
@@ -511,6 +701,11 @@ export default function CustomersTab() {
           key = walkInByName.get(paxName)
         } else {
           continue    // Khách lẻ chưa tạo record / company là sentinel → skip.
+        }
+        if (key.startsWith('p:') && b.id != null) {
+          walkInKeyOfTicket.set(t.id, key)
+          if (!bookingWalkInKeys.has(b.id)) bookingWalkInKeys.set(b.id, new Set())
+          bookingWalkInKeys.get(b.id).add(key)
         }
         const sums = ticketSums(t, b)
         const r = map.get(key)
@@ -594,7 +789,7 @@ export default function CustomersTab() {
       r.nearestDays = upcoming.length ? daysUntil(upcoming[0]._date, nowMs) : Infinity
       r.paxCount = r.paxNames.size
     }
-    return list
+    return groupWalkInRows(list, bookings, walkInKeyOfTicket, bookingWalkInKeys)
   }, [bookings, companies, walkInPassengers, meta, fromMs, toMs])
 
   // Filter + sort.
@@ -608,7 +803,7 @@ export default function CustomersTab() {
       return true
     })
     const qq = q.trim().toLowerCase()
-    if (qq) out = out.filter(r => r.name.toLowerCase().includes(qq))
+    if (qq) out = out.filter(r => (r.searchText || r.name.toLowerCase()).includes(qq))
     const dir = sortDir === 'asc' ? 1 : -1
     out.sort((a, b) => {
       let va, vb
@@ -733,7 +928,8 @@ export default function CustomersTab() {
           debt: r.debt,
           debtDays: oldest == null ? null
             : Math.max(0, Math.floor((now.getTime() - oldest) / 86400000)),
-          note: r.isWalkIn ? '' : `${r.paxCount} hành khách`,
+          note: r.isGroup ? `Đoàn ${r.members.length} khách`
+            : r.isWalkIn ? '' : `${r.paxCount} hành khách`,
         }
         if (debtOnly) {
           const st = unpaidTicketsStats(r.unpaidBookings)
@@ -769,7 +965,9 @@ export default function CustomersTab() {
     revenue: a.revenue + r.revenue,
     debt: a.debt + r.debt,
     ticketCount: a.ticketCount + r.ticketCount,
-  }), { ticket: 0, iss: 0, revenue: 0, debt: 0, ticketCount: 0 }), [filtered])
+    customerCount: a.customerCount + (r.isGroup ? r.members.length : 1),
+    groupCount: a.groupCount + (r.isGroup ? 1 : 0),
+  }), { ticket: 0, iss: 0, revenue: 0, debt: 0, ticketCount: 0, customerCount: 0, groupCount: 0 }), [filtered])
 
   const SortH = ({ k, children, align = 'left', style }) => {
     const active = sortKey === k
@@ -792,7 +990,7 @@ export default function CustomersTab() {
       {/* ── 2026-11-11: Dòng thông số tổng của danh sách đang hiển thị ── */}
       <div className="shrink-0 grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2 px-1">
         <StatTile label="Tổng tiền vé" value={totals.ticket}
-          sub={`${filtered.length} khách hàng`} tone="slate" />
+          sub={`${totals.customerCount} khách hàng${totals.groupCount ? ` · ${totals.groupCount} đoàn` : ''}`} tone="slate" />
         <StatTile label="Tổng phí xuất vé" value={totals.iss}
           sub={`${totals.ticketCount} vé`} tone="slate" align="right" />
         <StatTile label="Tổng doanh thu" value={totals.revenue} tone="emerald" />
@@ -882,28 +1080,10 @@ export default function CustomersTab() {
             ) : filtered.map(r => (
               <tr key={r.key} className={`border-t border-gray-100 hover:bg-blue-50/30`}>
                 <td className="px-3 py-3 font-semibold text-gray-900 whitespace-normal break-words">
-                  <span className={`mr-2 text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded font-bold ${
-                    r.isWalkIn
-                      ? 'bg-amber-100 text-amber-800'
-                      : 'bg-blue-100 text-blue-800'
-                  }`}>
-                    {r.isWalkIn ? 'Khách lẻ' : 'Công ty'}
-                  </span>
                   {/* 2026-11-08 (rev4): Click vào TÊN (cả khách lẻ + công ty)
                       → mở modal Ngày quan trọng & ghi chú. Khách lẻ có thêm
                       section Người giới thiệu ở trên. Noti nhỏ (N) khi có note. */}
-                  <button type="button"
-                    onClick={() => setEditFor(r)}
-                    title="Click để quản lý ngày quan trọng & ghi chú"
-                    className={`hover:underline decoration-dotted cursor-pointer
-                      ${r.isWalkIn ? 'decoration-amber-400' : 'decoration-blue-400'}`}>
-                    {r.name}
-                    {r.noteCount > 0 && (
-                      <span className="ml-1.5 text-[10px] font-semibold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">
-                        {r.noteCount} 📝
-                      </span>
-                    )}
-                  </button>
+                  <CustomerNameBlock r={r} onMeta={setEditFor} />
                 </td>
                 <td className="px-3 py-3.5 text-right font-mono tabular-nums">{formatMoney(r.ticket, 'VND', { withUnit: false })}</td>
                 <td className="px-3 py-3.5 text-right font-mono tabular-nums whitespace-nowrap">
@@ -971,7 +1151,7 @@ export default function CustomersTab() {
           <div className="text-center text-xs text-gray-400 italic py-10">Không có khách hàng</div>
         ) : filtered.map(r => (
           <MobileCustomerCard key={r.key} r={r}
-            onMeta={() => setEditFor(r)}
+            onMeta={setEditFor}
             onRevenue={() => setDetailFor({ row: r, mode: 'revenue' })}
             onDebt={() => setDebtFor(r)} />
         ))}
@@ -1125,16 +1305,7 @@ function MobileCustomerCard({ r, onMeta, onRevenue, onDebt }) {
   const toneCls = r.debt > 0 ? 'bg-amber-50 border-amber-200' : 'bg-white border-gray-200'
   return (
     <div className={`border rounded-2xl p-3 shadow-sm ${toneCls}`}>
-      <button type="button" onClick={onMeta} className="text-left block w-full">
-        <span className={`mr-1.5 text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded font-bold ${
-          r.isWalkIn ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
-          {r.isWalkIn ? 'Khách lẻ' : 'Công ty'}
-        </span>
-        <span className="font-bold text-gray-900 text-sm underline decoration-dotted decoration-gray-300">{r.name}</span>
-        {r.noteCount > 0 && (
-          <span className="ml-1.5 text-[10px] font-semibold text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">{r.noteCount} 📝</span>
-        )}
-      </button>
+      <CustomerNameBlock r={r} onMeta={onMeta} />
 
       <div className="grid grid-cols-2 gap-x-3 gap-y-2 mt-3 pt-3 border-t border-dashed border-gray-200">
         <div>
@@ -1608,7 +1779,11 @@ function DebtDetailModal({ row, onClose }) {
             <div className="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center text-xl">💰</div>
             <div className="min-w-0">
               <div className="text-base font-bold">Chi tiết công nợ</div>
-              <div className="text-xs text-white/80 truncate">{row.name}</div>
+              <div className="text-xs text-white/80 truncate">
+                {row.isGroup
+                  ? `Đoàn ${row.members.length} khách — ${row.members.map(m => m.name).join(', ')}`
+                  : row.name}
+              </div>
             </div>
           </div>
           <button onClick={onClose}
@@ -1658,20 +1833,28 @@ function DebtDetailModal({ row, onClose }) {
                       )}
                     </td>
                     <td className="px-3 py-2">
-                      <div className="flex flex-col gap-1 items-start">
-                        <span className="inline-block px-2 py-0.5 rounded font-mono font-bold text-[11px] bg-gray-900 text-white whitespace-nowrap">
-                          {it.bookingCode || '—'}
-                        </span>
-                        {it.airlineCode && (
-                          <span className="inline-block px-2 py-0.5 rounded font-mono font-bold text-[10px] whitespace-nowrap"
-                            style={{ background: airlineColor(it.airlineCode), color: textOn(airlineColor(it.airlineCode)) }}>
-                            {it.airlineCode}
-                          </span>
-                        )}
+                      <div className="flex flex-col gap-2 items-start">
+                        {(it.bookings || [{ bookingCode: it.bookingCode, airlineCode: it.airlineCode }]).map((bk, j) => (
+                          <div key={j} className="flex flex-col gap-1 items-start">
+                            <span className="inline-block px-2 py-0.5 rounded font-mono font-bold text-[11px] bg-gray-900 text-white whitespace-nowrap">
+                              {bk.bookingCode || '—'}
+                            </span>
+                            {bk.airlineCode && (
+                              <span className="inline-block px-2 py-0.5 rounded font-mono font-bold text-[10px] whitespace-nowrap"
+                                style={{ background: airlineColor(bk.airlineCode), color: textOn(airlineColor(bk.airlineCode)) }}>
+                                {bk.airlineCode}
+                              </span>
+                            )}
+                          </div>
+                        ))}
                       </div>
                     </td>
                     <td className="px-3 py-2 font-mono text-blue-700 font-semibold text-xs">
-                      {it.route || '—'}
+                      <div className="flex flex-col gap-2">
+                        {(it.bookings || [{ route: it.route }]).map((bk, j) => (
+                          <div key={j}>{bk.route || '—'}</div>
+                        ))}
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-xs">
                       {it.passengers && it.passengers.length > 0 ? (
@@ -1682,6 +1865,9 @@ function DebtDetailModal({ row, onClose }) {
                                 <span className="font-semibold text-gray-800">{p.name || '—'}</span>
                                 {p.ticketNumber && (
                                   <span className="ml-1 font-mono text-[10px] text-gray-500">#{p.ticketNumber}</span>
+                                )}
+                                {p.bookingCode && (it.bookings || []).length > 1 && (
+                                  <span className="ml-1 font-mono text-[10px] text-gray-400">({p.bookingCode})</span>
                                 )}
                               </div>
                               {p.fees && p.fees.length > 0 && (
@@ -1749,16 +1935,6 @@ function DebtDetailModal({ row, onClose }) {
 }
 
 /**
- * Build list items cho DebtDetailModal từ list booking UNPAID.
- * Rule:
- *   - Nếu booking có ≥ 1 invoice có invoiceNumbers → mỗi invoice = 1 dòng
- *     type='invoice', code = "#C26MCB<n>" (join nếu invoice có nhiều số),
- *     amount = tổng sellPrice của các vé mà invoice cover (ticketIds; empty
- *     ticketIds = cover toàn booking). Quy đổi VND nếu USD.
- *   - Nếu booking KHÔNG có invoice nào có số → 1 dòng type='booking',
- *     code = bookingCode, amount = tổng sellPrice toàn booking.
- */
-/**
  * ── 2026-11-07 (rev): build route string + passengers kèm vào mỗi item. ──
  */
 function buildBookingRoute(segments) {
@@ -1795,106 +1971,133 @@ function buildPassenger(t, b) {
   return { name: t.passengerName, ticketNumber: t.ticketNumber, fees }
 }
 
+function invoiceIssuedAt(inv) {
+  return inv?.issuedDate ?? inv?.updatedAt ?? inv?.createdAt ?? null
+}
+
 function buildDebtItems(bookings) {
   const out = []
+
+  const ticketCtx = new Map()
   for (const b of bookings) {
+    if (isRefundBooking(b)) continue
+    for (const t of (b.tickets || [])) ticketCtx.set(t.id, { t, b })
+  }
+
+  const invGroups = new Map()
+  const covered = new Set()
+  bookings.forEach((b, bIdx) => {
+    if (isRefundBooking(b)) return
+    const ownIds = (b.tickets || []).map(t => t.id)
+    for (const inv of (b.invoices || [])) {
+      if (!(inv.invoiceNumbers || '').trim()) continue
+      const raw = (inv.ticketIds && inv.ticketIds.length > 0) ? inv.ticketIds : ownIds
+      const ids = raw.filter(id => ticketCtx.has(id))
+      if (ids.length === 0) continue
+      const key = inv.id != null ? `i${inv.id}` : `n:${(inv.invoiceNumbers || '').trim()}`
+      let g = invGroups.get(key)
+      if (!g) {
+        g = { numbers: (inv.invoiceNumbers || '').trim(), issueDate: invoiceIssuedAt(inv),
+              ticketIds: new Set(), firstBookingIdx: bIdx }
+        invGroups.set(key, g)
+      } else {
+        const d = invoiceIssuedAt(inv)
+        if (d != null && (g.issueDate == null || d < g.issueDate)) g.issueDate = d
+        if (!g.numbers) g.numbers = (inv.invoiceNumbers || '').trim()
+      }
+      ids.forEach(id => { g.ticketIds.add(id); covered.add(id) })
+    }
+  })
+
+  const emitInvoiceGroups = (bIdx) => {
+    for (const g of invGroups.values()) {
+      if (g.firstBookingIdx !== bIdx) continue
+      const ids = [...g.ticketIds].sort((x, y) => x - y)
+      let amount = 0
+      const paxs = []
+      const bks = []
+      const seenBooking = new Set()
+      let saleDate = null
+      for (const id of ids) {
+        const ctx = ticketCtx.get(id)
+        if (!ctx) continue
+        const s = ticketSums(ctx.t, ctx.b)
+        amount += s.ticketPrice + s.issuanceFee
+        paxs.push({ ...buildPassenger(ctx.t, ctx.b), bookingCode: ctx.b.bookingCode || null })
+        const bk = ctx.b.id ?? ctx.b.bookingCode
+        if (!seenBooking.has(bk)) {
+          seenBooking.add(bk)
+          bks.push({
+            bookingCode: ctx.b.bookingCode || '—',
+            airlineCode: ctx.b.airlineCode || null,
+            route: buildBookingRoute(ctx.b.segments),
+          })
+        }
+        const sd = ctx.b.saleDate ?? ctx.b.createdAt ?? null
+        if (sd != null && (saleDate == null || sd < saleDate)) saleDate = sd
+      }
+      if (amount <= 0.5) continue
+      const nums = g.numbers.split(',').map(x => x.trim()).filter(Boolean)
+      const n = nums.length || 1
+      const per = Math.floor(amount / n)
+      const first = bks[0] || {}
+      nums.forEach((num, idx) => {
+        out.push({
+          type: 'invoice', code: `#C26MCB${num}`,
+          bookings: bks,
+          bookingCode: first.bookingCode || '—',
+          airlineCode: first.airlineCode || null,
+          route: first.route || '',
+          saleDate, issueDate: g.issueDate,
+          amount: idx === n - 1 ? amount - per * (n - 1) : per,
+          passengers: paxs,
+        })
+      })
+    }
+  }
+
+  bookings.forEach((b, bIdx) => {
     const route = buildBookingRoute(b.segments)
     const airlineCode = b.airlineCode || null
     const saleDate = b.saleDate ?? b.createdAt ?? null
+    const oneBooking = [{ bookingCode: b.bookingCode || '—', airlineCode, route }]
+
     if (isRefundBooking(b)) {
       if (!b.refundedPaid) {
         const diff = bookingRefundDiffVnd(b)
         if (Math.abs(diff) > 0.5) {
           out.push({
             type: 'refund', code: b.bookingCode || '—',
+            bookings: oneBooking,
             bookingCode: b.bookingCode, airlineCode, saleDate, issueDate: null,
-            amount: -diff,
-            route, passengers: (b.tickets || []).map(t => buildPassenger(t, b)),
+            amount: -diff, route,
+            passengers: (b.tickets || []).map(t => buildPassenger(t, b)),
           })
         }
       }
-      continue
+      return
     }
-    const bookingTicketMap = new Map()
-    for (const t of (b.tickets || [])) bookingTicketMap.set(t.id, t)
-    const invs = (b.invoices || []).filter(i => (i.invoiceNumbers || '').trim())
 
-    if (invs.length === 0) {
-      // ── Chưa phát hành → 1 dòng show booking ──
-      let total = 0
-      const paxs = []
-      for (const t of (b.tickets || [])) {
-        const s = ticketSums(t, b)
-        total += s.ticketPrice + s.issuanceFee
-        paxs.push(buildPassenger(t, b))
-      }
-      if (total > 0.5) {
-        out.push({
-          type: 'booking', code: b.bookingCode || '—',
-          bookingCode: b.bookingCode, airlineCode, saleDate, issueDate: null,
-          amount: total, route, passengers: paxs,
-        })
-      }
-      continue
+    let total = 0
+    const paxs = []
+    for (const t of (b.tickets || [])) {
+      if (covered.has(t.id)) continue
+      const s = ticketSums(t, b)
+      total += s.ticketPrice + s.issuanceFee
+      paxs.push(buildPassenger(t, b))
     }
-    // ── 2026-11-11: Vé còn nợ nhưng KHÔNG thuộc hoá đơn có số nào (hoá đơn
-    //   tách của vé đó còn là nháp / chưa có) → gom 1 dòng theo booking, để
-    //   tổng các dòng luôn khớp số công nợ.
-    const covered = new Set()
-    for (const inv of invs) {
-      const ids = (inv.ticketIds && inv.ticketIds.length > 0)
-        ? inv.ticketIds : [...bookingTicketMap.keys()]
-      ids.forEach(id => covered.add(id))
-    }
-    {
-      let total = 0
-      const paxs = []
-      for (const t of (b.tickets || [])) {
-        if (covered.has(t.id)) continue
-        const s = ticketSums(t, b)
-        total += s.ticketPrice + s.issuanceFee
-        paxs.push(buildPassenger(t, b))
-      }
-      if (total > 0.5) {
-        out.push({
-          type: 'booking', code: b.bookingCode || '—',
-          bookingCode: b.bookingCode, airlineCode, saleDate, issueDate: null,
-          amount: total, route, passengers: paxs,
-        })
-      }
-    }
-    // ── Đã phát hành → MỖI SỐ HOÁ ĐƠN = 1 DÒNG RIÊNG ──
-    //   Nếu 1 invoice có N số (CSV) → chia amount đều cho N để tổng không đổi.
-    for (const inv of invs) {
-      const ids = (inv.ticketIds && inv.ticketIds.length > 0)
-        ? inv.ticketIds
-        : [...bookingTicketMap.keys()]
-      let amount = 0
-      const paxs = []
-      for (const id of ids) {
-        const t = bookingTicketMap.get(id)
-        if (!t) continue
-        const s = ticketSums(t, b)
-        amount += s.ticketPrice + s.issuanceFee
-        paxs.push(buildPassenger(t, b))
-      }
-      if (amount <= 0.5) continue
-
-      const nums = inv.invoiceNumbers.split(',').map(x => x.trim()).filter(Boolean)
-      const n = nums.length
-      // Chia đều amount cho N; round phần tử cuối để tổng chính xác đến đồng.
-      const per = Math.floor(amount / n)
-      const issueDate = inv.updatedAt ?? inv.createdAt ?? null
-      nums.forEach((num, idx) => {
-        const amt = idx === n - 1 ? amount - per * (n - 1) : per
-        out.push({
-          type: 'invoice', code: `#C26MCB${num}`,
-          bookingCode: b.bookingCode, airlineCode, saleDate, issueDate,
-          amount: amt, route, passengers: paxs,
-        })
+    if (total > 0.5) {
+      out.push({
+        type: 'booking', code: b.bookingCode || '—',
+        bookings: oneBooking,
+        bookingCode: b.bookingCode, airlineCode, saleDate, issueDate: null,
+        amount: total, route, passengers: paxs,
       })
     }
-  }
+
+    emitInvoiceGroups(bIdx)
+  })
+
   return out
 }
 
@@ -1943,7 +2146,7 @@ function RevenueDetailModal({ row, mode = 'revenue', onClose, onReferrerSaved })
             : 'bg-gradient-to-r from-emerald-600 to-teal-600'}`}>
           <div className="min-w-0">
             <div className="text-[11px] font-semibold uppercase tracking-wide text-white/80">
-              {title} — {row.isWalkIn ? 'Khách lẻ' : 'Công ty'}
+              {title} — {row.isGroup ? `Đoàn ${row.members.length} khách` : row.isWalkIn ? 'Khách lẻ' : 'Công ty'}
             </div>
             <div className="text-base font-bold truncate">{row.name}</div>
           </div>

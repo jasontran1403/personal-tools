@@ -135,10 +135,11 @@ export default function FinanceTab() {
 
         {/* ── Hint ── */}
         <div className="p-3.5 rounded-xl bg-blue-50 border border-blue-100 text-[12px] leading-relaxed text-gray-700">
-          💡 <b>Quy tắc tự động:</b> khi bán vé, tài khoản <b>công nợ HNH</b> tăng theo
-          giá vốn (giá gốc + phí thu hộ + phí xuất vé) cho vé <b>KHÁC VJ</b>; vé <b>VJ</b>
-          trừ vào tài khoản <b>ký quỹ VJ</b>. Thanh toán vé vào tài khoản nào thì tài khoản
-          đó tăng. Chi từ tiền mặt/VCB/HD sang <b>HNH</b> sẽ giảm công nợ; chi sang
+          💡 <b>Quy tắc tự động:</b> công nợ HNH lưu dạng <b>số âm</b> (âm = mình đang nợ).
+          Khi bán vé, <b>công nợ HNH</b> tăng theo giá vốn (giá gốc + phí thu hộ + phí xuất
+          vé) cho vé <b>KHÁC VJ</b> → số dư âm thêm; vé <b>VJ</b> trừ vào tài khoản
+          <b>ký quỹ VJ</b>. Thanh toán vé vào tài khoản nào thì tài khoản đó tăng. Chi từ
+          tiền mặt/VCB/HD sang <b>HNH</b> sẽ giảm công nợ (số dư tăng dần về 0); chi sang
           <b> ký quỹ VJ</b> sẽ tăng ký quỹ.
         </div>
       </div>

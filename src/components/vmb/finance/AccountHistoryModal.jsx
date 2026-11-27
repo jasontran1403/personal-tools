@@ -29,12 +29,12 @@ export default function AccountHistoryModal({ account, onClose }) {
     if (row.kind === 'INIT') return { sign: '', color: 'text-gray-500', label: 'Khởi tạo' }
     if (row.kind === 'INCOME') return { sign: '+', color: 'text-green-600', label: 'Thu' }
     if (row.kind === 'EXPENSE') {
-      if (account.code === 'HNH_DEBT') return { sign: '−', color: 'text-blue-600', label: 'Giảm công nợ' }
+      if (account.code === 'HNH_DEBT') return { sign: '+', color: 'text-blue-600', label: 'Giảm công nợ' }
       if (account.code === 'VJ_DEPOSIT') return { sign: '+', color: 'text-blue-600', label: 'Nạp ký quỹ' }
       return { sign: '−', color: 'text-rose-600', label: 'Chi' }
     }
     if (row.kind === 'TICKET') {
-      if (account.code === 'HNH_DEBT') return { sign: '+', color: 'text-rose-600', label: 'Xuất vé (nợ)' }
+      if (account.code === 'HNH_DEBT') return { sign: '−', color: 'text-rose-600', label: 'Xuất vé (nợ)' }
       if (account.code === 'VJ_DEPOSIT') return { sign: '−', color: 'text-rose-600', label: 'Xuất vé (VJ)' }
     }
     return { sign: '', color: 'text-gray-500', label: row.kind }
