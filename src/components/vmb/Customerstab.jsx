@@ -305,6 +305,7 @@ function buildWalkInGroupRow(members) {
     revenue: sum('revenue'),
     debt: sum('debt'),
     unpaidBookings: mergeUnpaidBookingsOf(ms),
+    history: ms.flatMap(m => m.history || []).sort((a, b) => (b.saleDate || 0) - (a.saleDate || 0)),
     paxNames,
     paxCount: paxNames.size,
     latestDomestic: mergeLatestFeeOf(ms, 'latestDomestic'),
@@ -400,10 +401,6 @@ function CustomerNameBlock({ r, onMeta }) {
   }
   return (
     <div>
-      <span className={`mr-2 text-[9px] uppercase tracking-wide px-1.5 py-0.5 rounded font-bold ${
-        r.isWalkIn ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-800'}`}>
-        {r.isWalkIn ? 'Khách lẻ' : 'Công ty'}
-      </span>
       <button type="button" onClick={() => onMeta(r)}
         title="Click để quản lý ngày quan trọng & ghi chú"
         className={`font-semibold text-gray-900 text-left hover:underline decoration-dotted cursor-pointer
@@ -642,7 +639,7 @@ export default function CustomersTab() {
         isWalkIn: true,
         ticketCount: 0,
         ticket: 0, iss: 0, revenue: 0, debt: 0,
-        unpaidBookings: [], paxNames: new Set(),
+        unpaidBookings: [], paxNames: new Set(), history: [],
         // 2026-11-08: Phí xuất vé GẦN NHẤT theo loại tuyến.
         latestDomestic: null,
         latestInternational: null,
@@ -678,6 +675,7 @@ export default function CustomersTab() {
       //   nhưng VẪN tính công nợ (công nợ là số hiện tại).
       const soldAt = b.saleDate || b.createdAt || 0
       const inRange = (fromMs == null || soldAt >= fromMs) && (toMs == null || soldAt <= toMs)
+      const bRoute = buildBookingRoute(b.segments)
       // key → các vé CÒN NỢ của khách hàng đó trong booking này.
       const unpaidByKey = new Map()
       for (const t of (b.tickets || [])) {
@@ -693,7 +691,7 @@ export default function CustomersTab() {
             map.set(key, {
               key, companyId: cid, name: c?.name || `#${cid}`, isWalkIn: false,
               ticketCount: 0, ticket: 0, iss: 0, revenue: 0, debt: 0,
-              unpaidBookings: [], paxNames: new Set(),
+              unpaidBookings: [], paxNames: new Set(), history: [],
               latestDomestic: null, latestInternational: null, referrerName: null,
             })
           }
@@ -710,6 +708,19 @@ export default function CustomersTab() {
         const sums = ticketSums(t, b)
         const r = map.get(key)
         const sellPrice = sums.ticketPrice + sums.issuanceFee
+        r.history.push({
+          ticketId: t.id,
+          bookingId: b.id,
+          bookingCode: b.bookingCode || '—',
+          airlineCode: b.airlineCode || null,
+          saleDate: soldAt || null,
+          route: bRoute,
+          passengerName: t.passengerName || '—',
+          ticketNumber: t.ticketNumber || null,
+          ticketPrice: sums.ticketPrice,
+          issuanceFee: sums.issuanceFee,
+          isRefund: isRefundBooking(b),
+        })
         if (inRange) {
           if (sellPrice > 0.5) {
             r.ticketCount += 1
@@ -788,6 +799,7 @@ export default function CustomersTab() {
       r.noteCount = notes.length
       r.nearestDays = upcoming.length ? daysUntil(upcoming[0]._date, nowMs) : Infinity
       r.paxCount = r.paxNames.size
+      r.history.sort((a, b) => (b.saleDate || 0) - (a.saleDate || 0))
     }
     return groupWalkInRows(list, bookings, walkInKeyOfTicket, bookingWalkInKeys)
   }, [bookings, companies, walkInPassengers, meta, fromMs, toMs])
@@ -1390,6 +1402,89 @@ function newId() {
     : `id-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
+function TicketHistoryPanel({ rows }) {
+  const total = rows.reduce(
+    (a, r) => ({ ticket: a.ticket + r.ticketPrice, iss: a.iss + r.issuanceFee }),
+    { ticket: 0, iss: 0 })
+
+  if (rows.length === 0) {
+    return (
+      <div className="py-16 text-center text-slate-400">
+        <div className="text-4xl opacity-40 mb-2">🎫</div>
+        <div className="text-sm italic">Khách này chưa có vé nào.</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 border-b border-slate-200">
+          <tr>
+            <th className="px-3 py-2.5 text-left text-[11px] font-bold text-slate-600 uppercase tracking-wide w-32">Ngày xuất vé</th>
+            <th className="px-3 py-2.5 text-left text-[11px] font-bold text-slate-600 uppercase tracking-wide w-36">Mã booking</th>
+            <th className="px-3 py-2.5 text-left text-[11px] font-bold text-slate-600 uppercase tracking-wide w-32">Hành trình</th>
+            <th className="px-3 py-2.5 text-left text-[11px] font-bold text-slate-600 uppercase tracking-wide">Hành khách</th>
+            <th className="px-3 py-2.5 text-right text-[11px] font-bold text-slate-600 uppercase tracking-wide w-32">Tiền vé</th>
+            <th className="px-3 py-2.5 text-right text-[11px] font-bold text-slate-600 uppercase tracking-wide w-32">Phí xuất vé</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={`${r.ticketId ?? i}`} className="border-b border-slate-100 hover:bg-slate-50/60 align-top">
+              <td className="px-3 py-2 text-xs text-slate-700 whitespace-nowrap">{fmtDMY(r.saleDate)}</td>
+              <td className="px-3 py-2">
+                <div className="flex flex-wrap items-center gap-1">
+                  <span className="inline-block px-2 py-0.5 rounded font-mono font-bold text-[11px] bg-gray-900 text-white whitespace-nowrap">
+                    {r.bookingCode}
+                  </span>
+                  {r.airlineCode && (
+                    <span className="inline-block px-2 py-0.5 rounded font-mono font-bold text-[10px] whitespace-nowrap"
+                      style={{ background: airlineColor(r.airlineCode), color: textOn(airlineColor(r.airlineCode)) }}>
+                      {r.airlineCode}
+                    </span>
+                  )}
+                  {r.isRefund && (
+                    <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 whitespace-nowrap">
+                      Hoàn
+                    </span>
+                  )}
+                </div>
+              </td>
+              <td className="px-3 py-2 font-mono text-blue-700 font-semibold text-xs">{r.route || '—'}</td>
+              <td className="px-3 py-2 text-xs">
+                <span className="font-semibold text-slate-800">{r.passengerName}</span>
+                {r.ticketNumber && (
+                  <span className="ml-1 font-mono text-[10px] text-slate-400">#{r.ticketNumber}</span>
+                )}
+              </td>
+              <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-800 whitespace-nowrap">
+                {formatMoney(r.ticketPrice, 'VND', { withUnit: false })}
+              </td>
+              <td className="px-3 py-2 text-right font-mono tabular-nums text-slate-800 whitespace-nowrap">
+                {formatMoney(r.issuanceFee, 'VND', { withUnit: false })}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr className="bg-emerald-100 border-t-2 border-emerald-200">
+            <td colSpan={4} className="px-3 py-3 text-right font-bold text-emerald-800 text-sm uppercase tracking-wide">
+              Tổng cộng · {rows.length} vé
+            </td>
+            <td className="px-3 py-3 text-right font-mono tabular-nums font-black text-emerald-800 text-base whitespace-nowrap">
+              {formatMoney(total.ticket, 'VND', { withUnit: false })}
+            </td>
+            <td className="px-3 py-3 text-right font-mono tabular-nums font-black text-emerald-800 text-base whitespace-nowrap">
+              {formatMoney(total.iss, 'VND', { withUnit: false })}
+            </td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  )
+}
+
 function CustomerMetaModal({ customer, initialDates, initialNotes, onClose, onSave, onReferrerSaved }) {
   const [dates, setDates] = useState(() => initialDates.map(d => ({ ...d })))
   const [notes, setNotes] = useState(() => initialNotes.map(n => ({ ...n })))
@@ -1490,12 +1585,25 @@ function CustomerMetaModal({ customer, initialDates, initialNotes, onClose, onSa
                 panel === 'dates' ? 'bg-indigo-100 text-indigo-800' : 'bg-slate-200 text-slate-600'
               }`}>{dates.length}</span>
             </button>
+            <button onClick={() => setPanel('tickets')}
+              className={`px-4 py-2 rounded-lg text-sm font-semibold transition flex items-center gap-2 ${
+                panel === 'tickets'
+                  ? 'bg-white shadow text-emerald-700'
+                  : 'text-slate-500 hover:text-slate-800'
+              }`}>
+              <span>🎫</span> Lịch sử đặt vé
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full ${
+                panel === 'tickets' ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-200 text-slate-600'
+              }`}>{(customer.history || []).length}</span>
+            </button>
           </div>
         </div>
 
         {/* ── Body ── */}
         <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0">
-          {panel === 'notes' ? (
+          {panel === 'tickets' ? (
+            <TicketHistoryPanel rows={customer.history || []} />
+          ) : panel === 'notes' ? (
             <NotesPanel
               notes={notes} nText={nText} setNText={setNText}
               addNote={addNote} removeNote={removeNote} updateNote={updateNote}
